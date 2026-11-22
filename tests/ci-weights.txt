@@ -110,7 +110,7 @@ stuck-worker:4/6 249
 stuck-worker:5/6 160
 stuck-worker:6/6 211
 sub-issue-split 4
-tmux-sandbox 15
+tmux-sandbox 25
 tmux-sandbox-guard 2
 token-redaction 35
 token-usage-claude 5

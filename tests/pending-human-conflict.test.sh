@@ -26,7 +26,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 # 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
 # shellcheck source=lib/tmux-sandbox.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
-tmux_sandbox_on_exit '[ -z "${SANDBOX:-}" ] || { [ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"; }'
 tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +33,8 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
 
-SANDBOX=$(mktemp -d)
+SANDBOX=$(mktemp -d) || exit 1
+if [ -n "${KEEP_SANDBOX:-}" ]; then echo "SANDBOX=$SANDBOX"; else tmux_sandbox_own_dir "$SANDBOX"; fi
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 REAL_GIT=$(command -v git)
 export HOME="$SANDBOX/home"

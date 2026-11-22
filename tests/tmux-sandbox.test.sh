@@ -55,7 +55,8 @@ run_case() {
     mkdir -p "$T/$name.d"
     { printf 'set -uo pipefail\nOUT=%q\nsource %q\n' "$T/$name.d" "$LIB"; cat; } > "$T/$name.sh"
     ( cd "$T" && env -i HOME="$T/home" PATH="${pre:+$pre:}$PATH" LANG=C.UTF-8 \
-        ${CASE_TMUX:+TMUX="$CASE_TMUX"} bash "$T/$name.sh" ) > "$T/$name.out" 2>&1
+        ${CASE_TMUX:+TMUX="$CASE_TMUX"} ${TMP:+TMP="$TMP"} \
+        ${CAVIL_TMUX_REAP_BUDGET:+CAVIL_TMUX_REAP_BUDGET="$CAVIL_TMUX_REAP_BUDGET"} bash "$T/$name.sh" ) > "$T/$name.out" 2>&1
     CASE_RC=$?
 }
 sandbox_dir_of() { sed -n 's|.*TMUX_TMPDIR=\(/tmp/cvtmx\.[A-Za-z0-9]*\)/s.*|\1|p' "$T/$1.out" | head -1; }
@@ -142,18 +143,20 @@ chk "服务进程都已不存在" "$(alive_all "$T/gate.d/servers")" "0"
 
 echo "【6】清理回调：资源还没建出来就退出 → 什么也不删，沙盒照样收尾，原退出码保留"
 run_case early <<'EOF'
-tmux_sandbox_on_exit '[ -z "${X:-}" ] || rm -rf "$X"'
+tmux_sandbox_on_exit '[ -z "${X:-}" ] || : > "$OUT/x-touched"'
 tmux_sandbox_start
 exit 3
 X=$(mktemp -d)
 EOF
 chk "原退出码 3" "$CASE_RC" "3"
 chk "没有清理失败" "$(grep -c '清理失败' "$T/early.out")" "0"
+chk "回调判断出资源还没建、什么也没动" "$([ -e "$T/early.d/x-touched" ] && echo touched || echo no)" "no"
 chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/early.out")" "1"
 
 echo "【7】清理回调触发 shell 致命错误（读未赋值变量、exit 1）→ 后面的清理和沙盒收尾照样执行"
+# 回调里不再自己 set -u：它继承的是测试文件开头的 set -uo pipefail（复审 #3）
 run_case fatal <<'EOF'
-tmux_sandbox_on_exit 'set -u; : "$NOT_SET_ANYWHERE"'
+tmux_sandbox_on_exit ': "$NOT_SET_ANYWHERE"'
 tmux_sandbox_on_exit 'exit 1'
 tmux_sandbox_on_exit ': > "$OUT/third-ran"'
 tmux_sandbox_start
@@ -226,6 +229,129 @@ chk "以失败退出" "$CASE_RC" "1"
 chk "报了没能确认" "$(grep -c '没能确认本次运行的进程都已退出' "$T/readfail.out")" "1"
 d=$(sandbox_dir_of readfail)
 chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
+[ -n "$d" ] && rm -rf "$d"
+
+now() { date +%s.%N; }
+elapsed() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", b - a }'; }
+
+echo "【11】登记要删的目录：只删本次 mktemp 建的，从环境继承来的路径不碰"
+mkdir -p "$T/inherited"; : > "$T/inherited/sentinel"
+cat > "$T/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" cavil-sandbox-keep "*) exit 1 ;; esac
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$T/fakebin/tmux"
+TMP="$T/inherited" run_case inherit_fail "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+EOF
+rm -f "$T/fakebin/tmux"
+chk "启动失败：以失败退出" "$CASE_RC" "1"
+chk "启动失败：继承来的目录和哨兵都还在" "$([ -e "$T/inherited/sentinel" ] && echo yes)" "yes"
+run_case owned <<'EOF'
+tmux_sandbox_start
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+echo "$TMP" > "$OUT/tmp"
+EOF
+chk "正常：退出码 0" "$CASE_RC" "0"
+chk "正常：本次建的目录已删" "$(d=$(cat "$T/owned.d/tmp"); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/fakebin/mktemp"; chmod +x "$T/fakebin/mktemp"
+TMP="$T/inherited" run_case mkfail "$T/fakebin" <<'EOF'
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+EOF
+rm -f "$T/fakebin/mktemp"
+chk "mktemp 失败：以失败退出" "$CASE_RC" "1"
+chk "mktemp 失败：继承来的目录还在" "$([ -e "$T/inherited/sentinel" ] && echo yes)" "yes"
+run_case ownbad <<'EOF'
+tmux_sandbox_own_dir /
+echo CASE-RAN
+EOF
+chk "拒绝登记 /" "$CASE_RC:$(grep -c CASE-RAN "$T/ownbad.out")" "1:0"
+
+echo "【12】改过的五个测试：环境里带着同名变量、启动失败 → 不删别人的目录"
+cat > "$T/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *" cavil-sandbox-keep "*) exit 1 ;; esac
+exec "$REAL_TMUX" "\$@"
+EOF
+chmod +x "$T/fakebin/tmux"
+for f in reap-finished-workers session-isolation poll-pace pending-human-conflict cavil-names; do
+    rm -rf "$T/inh-$f"; mkdir -p "$T/inh-$f"; : > "$T/inh-$f/sentinel"
+    ( cd "$T" && env -i HOME="$T/home" PATH="$T/fakebin:$PATH" LANG=C.UTF-8 \
+        TMP="$T/inh-$f" SANDBOX="$T/inh-$f" TMP_CONF="$T/inh-$f/coding-agent.config" \
+        bash "$TEST_DIR/$f.test.sh" ) > "$T/inh-$f.out" 2>&1
+    r=$?
+    chk "$f：启动失败时退出码非 0、继承来的目录还在" \
+        "$([ "$r" -ne 0 ] && echo fail):$([ -e "$T/inh-$f/sentinel" ] && echo kept)" "fail:kept"
+done
+rm -f "$T/fakebin/tmux"
+
+echo "【13】删目录失败、关门标记写不了 → 记为清理失败，退出码 1，原来红的保留原值"
+printf '#!/usr/bin/env bash\nexit 23\n' > "$T/fakebin/rm"; chmod +x "$T/fakebin/rm"
+run_case rmfail "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+EOF
+chk "rm 返回 23：退出码 1" "$CASE_RC" "1"
+chk "rm 返回 23：报了删除失败" "$(grep -c '清理失败：删除 /tmp/cvtmx.*退出码 23' "$T/rmfail.out")" "1"
+chk "rm 返回 23：没打印成功汇总" "$(grep -c '全部已退出' "$T/rmfail.out")" "0"
+run_case rmfail_red "$T/fakebin" <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+exit 4
+EOF
+rm -f "$T/fakebin/rm"
+chk "用例本来就红：保留原退出码 4" "$CASE_RC" "4"
+for c in rmfail rmfail_red; do d=$(sandbox_dir_of "$c"); [ -n "$d" ] && rm -rf "$d"; done
+run_case nogate <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+chmod 500 "${TMUX_TMPDIR%/s}"
+EOF
+d=$(sandbox_dir_of nogate)
+chk "关门标记写不了：退出码 1" "$CASE_RC" "1"
+chk "关门标记写不了：报了出来" "$(grep -c '写不了关门标记' "$T/nogate.out")" "1"
+[ -n "$d" ] && { chmod 700 "$d"; rm -rf "$d"; }
+
+echo "【14】清空环境的子进程带着原样的 PATH：用的是沙盒的 tmux 包装"
+run_case childpath <<'EOF'
+tmux_sandbox_start
+env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'command -v tmux' > "$OUT/which"
+echo "$TMUX_TMPDIR" > "$OUT/dir"
+EOF
+chk "子进程找到的是包装" "$(w=$(cat "$T/childpath.d/which"); d=$(cat "$T/childpath.d/dir"); [ "$w" = "${d%/s}/bin/tmux" ] && echo wrapper || echo "$w")" "wrapper"
+
+echo "【15】六个不理 SIGTERM 的子进程：一起收，不按个数叠加等待"
+run_case six <<'EOF'
+tmux_sandbox_start
+for i in 1 2 3 4 5 6; do ( trap '' TERM; while :; do sleep 0.2; done ) & echo $! >> "$OUT/pids"; done
+sleep 0.3
+date +%s.%N > "$OUT/t0"
+EOF
+t1=$(now)
+chk "退出码 0" "$CASE_RC" "0"
+chk "六个进程都已不存在" "$(alive_all "$T/six.d/pids")" "0"
+chk "收尾用时不到 8 秒（逐个等要 12 秒以上）" "$(awk -v e="$(elapsed "$(cat "$T/six.d/t0")" "$t1")" 'BEGIN { print (e < 8) ? "yes" : e }')" "yes"
+
+echo "【16】总时限到了还有进程：保留现场、以失败退出，不超时限太多"
+CAVIL_TMUX_REAP_BUDGET=1 run_case budget <<'EOF'
+tmux_sandbox_start
+echo "TMUX_TMPDIR=$TMUX_TMPDIR"
+( trap '' TERM; while :; do sleep 0.2; done ) & echo $! > "$OUT/pids"
+sleep 0.3
+date +%s.%N > "$OUT/t0"
+EOF
+t1=$(now)
+chk "以失败退出" "$CASE_RC" "1"
+chk "报了时限到了还有进程" "$(grep -c '秒后仍有进程' "$T/budget.out")" "1"
+chk "收尾用时不到 3 秒（时限 1 秒）" "$(awk -v e="$(elapsed "$(cat "$T/budget.d/t0")" "$t1")" 'BEGIN { print (e < 3) ? "yes" : e }')" "yes"
+d=$(sandbox_dir_of budget)
+chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
+while read -r p; do kill -9 "$p" 2>/dev/null; done < "$T/budget.d/pids"
 [ -n "$d" ] && rm -rf "$d"
 
 echo

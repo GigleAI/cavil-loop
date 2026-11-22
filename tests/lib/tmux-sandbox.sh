@@ -10,8 +10,9 @@
 #   set -uo pipefail
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"   # ① 载入：建任何东西之前
-#   tmux_sandbox_on_exit my_cleanup                               # ② 登记本文件的清理
+#   tmux_sandbox_on_exit my_cleanup                               # ② 登记本文件的清理（可选）
 #   tmux_sandbox_start                                            # ③ 第一次用 tmux 之前
+#   TMP=$(mktemp -d) || exit 1; tmux_sandbox_own_dir "$TMP"       # ④ 本次建的目录交给收尾删
 #
 # ① 载入只做三件事，不建任何资源：
 #    - 让本测试进程成为「收养人」（Linux 的 PR_SET_CHILD_SUBREAPER）：测试里起的后台进程
@@ -23,9 +24,11 @@
 #    - 定义下面的函数。
 # ② tmux_sandbox_on_exit <命令>：退出时依登记顺序执行，每一项放在单独的子 shell 里
 #    （读到未赋值变量、执行了 exit，都只结束那个子 shell，不会中断后面的清理）。回调
-#    在资源建出来之前就登记好，所以它要先判断资源在不在：变量写成 ${VAR:-}，资源不在
-#    时返回 0（`[ -z "${X:-}" ] || rm -rf "$X"`，不要写成以 `&&` 结尾的短路）。回调在
-#    子 shell 里跑，改不了本进程的变量，只能清理外部资源（目录、进程、文件）。
+#    在资源建出来之前就登记好，所以它要先判断资源在不在，资源不在时返回 0。回调在本测试
+#    原来的选项下执行（set -u 照样生效），子 shell 里跑，改不了本进程的变量。**删目录不
+#    用回调**：变量可能是从环境继承来的，回调里 `rm -rf "$TMP"` 会删掉别人的目录——用 ④。
+# ④ tmux_sandbox_own_dir <目录>：mktemp 成功后立刻登记，收尾时（进程确认收干净之后）删掉
+#    并核对真的没了；删不掉算清理失败。
 # ③ tmux_sandbox_start：建短路径临时目录，TMUX_TMPDIR 指向它、清掉 TMUX / TMUX_PANE
 #    （外层 TMUX 优先于 TMUX_TMPDIR，不清等于没隔离）；在 PATH 最前面放一个 tmux 包装，
 #    每次调用都加 `-f /dev/null`——第一次起服务和中途重开都不读 /etc/tmux.conf 和用户
@@ -43,7 +46,9 @@
 #      用进程句柄打开、核对父进程号仍是本进程，SIGTERM，2 秒后 SIGKILL；循环读清单，
 #      直到连续 3 次读到空，总时限 10 秒；
 #   5. 读到空 → 删临时目录、打印一行汇总；否则保留目录、打印剩余进程号和原因；
-#   6. 退出码：原来非 0 保留原值；原来是 0、但有清理失败或沙盒没确认收干净 → 1。
+#   6. 删掉 ④ 登记的目录（第 5 步保留现场时一并保留）；
+#   7. 退出码：原来非 0 保留原值；原来是 0、但有清理失败（回调失败、关门标记写不了、
+#      目录删不掉）或沙盒没确认收干净 → 1。
 #
 # ⚠️ 这是尽力清理，不保证一个不漏：读清单是一个个进程地读，扫描途中正好被过继过来的
 # 进程可能漏掉、也报不出来。漏下的进程不会被别的运行连上或误杀（每次运行的服务地址都
@@ -75,6 +80,7 @@ fi
 _TMUX_SANDBOX_DIR=""
 _TMUX_SANDBOX_REAL=""
 _TMUX_SANDBOX_HOOKS=()
+_TMUX_SANDBOX_OWNED=()
 _TMUX_SANDBOX_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 tmux_sandbox_on_exit() {   # <命令>
@@ -141,20 +147,47 @@ tmux_sandbox_socket() {
     echo "$_TMUX_SANDBOX_DIR/s/tmux-$(id -u)/default"
 }
 
+# tmux_sandbox_own_dir <目录>：本次运行自己建的目录，收尾时删掉（GitHub#647 复审 #1）。
+# 只在 mktemp 成功之后、拿着它刚打印的路径调用——不要登记一个从变量里读出来、可能是从
+# 环境继承下来的路径。拒绝空串、相对路径、/ 和不存在的目录（以失败退出）。
+tmux_sandbox_own_dir() {
+    case "${1:-}" in
+        ""|/|/.|//) _tmux_sandbox_fail "拒绝登记要删除的目录：「${1:-}」" ;;
+        /*) ;;
+        *) _tmux_sandbox_fail "拒绝登记相对路径：$1" ;;
+    esac
+    [ -d "$1" ] || _tmux_sandbox_fail "要登记删除的目录不存在：$1"
+    _TMUX_SANDBOX_OWNED+=("$1")
+}
+
+_tmux_sandbox_rm() {   # <目录>：删掉并核对真的没了；失败返回 1 并说明
+    local r=0
+    rm -rf -- "$1" || r=$?
+    if [ "$r" -ne 0 ] || [ -e "$1" ]; then
+        echo "tmux 沙盒：清理失败：删除 $1（退出码 $r，$([ -e "$1" ] && echo 目录还在 || echo 目录已不在)）" >&2
+        return 1
+    fi
+}
+
 _tmux_sandbox_exit() {
-    local rc=$? bad=0 hook r i
-    set +e +u
+    local rc=$? bad=0 hook r i keep=0
+    # 回调在本测试原来的选项下执行（-u 照样生效，复审 #3），每个放在单独的子 shell 里：
+    # 读到未赋值变量、exit，都只结束那个子 shell。`if` 里的命令不受 -e 影响，所以这里
+    # 不用先关 -e；本函数自己要的选项调整放在回调都跑完之后。
     for ((i = 0; i < ${#_TMUX_SANDBOX_HOOKS[@]}; i++)); do
         hook="${_TMUX_SANDBOX_HOOKS[$i]}"
-        ( eval "$hook" )
-        r=$?
+        if ( eval "$hook" ); then r=0; else r=$?; fi
         if [ "$r" -ne 0 ]; then
             echo "tmux 沙盒：清理失败：$hook，退出码 $r" >&2
             bad=1
         fi
     done
+    set +e +u
     if [ -n "$_TMUX_SANDBOX_DIR" ]; then
-        : > "$_TMUX_SANDBOX_DIR/closed"
+        if ! : > "$_TMUX_SANDBOX_DIR/closed" 2>/dev/null || [ ! -e "$_TMUX_SANDBOX_DIR/closed" ]; then
+            echo "tmux 沙盒：清理失败：写不了关门标记 $_TMUX_SANDBOX_DIR/closed，包装没能关上" >&2
+            bad=1
+        fi
         "$_TMUX_SANDBOX_REAL" -S "$_TMUX_SANDBOX_DIR/s/tmux-$(id -u)/default" kill-server >/dev/null 2>&1
         local reap
         reap="$(python3 "$_TMUX_SANDBOX_LIB/tmux_sandbox_reap.py" "$$" 2>&1)"
@@ -163,13 +196,24 @@ _tmux_sandbox_exit() {
             local sessions servers
             sessions=$(grep -c '^session ' "$_TMUX_SANDBOX_DIR/log" 2>/dev/null)
             servers=$(awk '$1 == "server" && $2 != "" {print $2}' "$_TMUX_SANDBOX_DIR/log" 2>/dev/null | sort -u | wc -l)
-            rm -rf "$_TMUX_SANDBOX_DIR"
-            echo "tmux 沙盒：成功建出 ${sessions:-0} 个业务会话，起过 ${servers:-0} 个服务，全部已退出（${reap}）"
+            if _tmux_sandbox_rm "$_TMUX_SANDBOX_DIR"; then
+                echo "tmux 沙盒：成功建出 ${sessions:-0} 个业务会话，起过 ${servers:-0} 个服务，全部已退出（${reap}）"
+            else
+                bad=1
+            fi
         else
             echo "tmux 沙盒：没能确认本次运行的进程都已退出，保留 $_TMUX_SANDBOX_DIR：${reap}" >&2
-            bad=1
+            bad=1; keep=1
         fi
     fi
+    # 本次运行登记的目录：进程没确认收干净时一起保留（现场），否则逐个删并核对。
+    for ((i = 0; i < ${#_TMUX_SANDBOX_OWNED[@]}; i++)); do
+        if [ "$keep" = 1 ]; then
+            echo "tmux 沙盒：一并保留 ${_TMUX_SANDBOX_OWNED[$i]}" >&2
+        else
+            _tmux_sandbox_rm "${_TMUX_SANDBOX_OWNED[$i]}" || bad=1
+        fi
+    done
     if [ "$rc" -eq 0 ] && [ "$bad" -ne 0 ]; then rc=1; fi
     exit "$rc"
 }

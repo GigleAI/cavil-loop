@@ -14,12 +14,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 # 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
 # shellcheck source=lib/tmux-sandbox.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
-tmux_sandbox_on_exit '[ -z "${TMP:-}" ] || rm -rf "$TMP"'
 tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d)" || exit 1
+tmux_sandbox_own_dir "$TMP"
 
 FAKE_HOME="$TMP/home"
 WT="$TMP/wt/issue-42"

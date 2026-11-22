@@ -69,6 +69,22 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
 tmux_sandbox_start
 env -i PATH="$PATH" bash -c 'tmux ls'
 EOF
+case_from "用沙盒的文件里 env -i 重置了 PATH（绕过包装）" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i PATH=/usr/bin:/bin TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
+EOF
+case_from "续行写的 env -i 没带 TMUX_TMPDIR=" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i PATH="$PATH" \
+    HOME="$H" bash -c 'tmux ls'
+EOF
+case_from "清理回调里删目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_on_exit 'rm -rf "$TMP"'
+tmux_sandbox_start
+EOF
 case_from "载入沙盒之前就 mktemp" report <<'EOF'
 TMP=$(mktemp -d)
 source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
@@ -89,11 +105,14 @@ echo "【2】不报的写法"
 case_from "按规矩用沙盒" ok <<'EOF'
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
-tmux_sandbox_on_exit '[ -z "${TMP:-}" ] || rm -rf "$TMP"'
+tmux_sandbox_on_exit ': > "$OUT/hook-ran"'
 tmux_sandbox_start
-TMP=$(mktemp -d)
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
 tmux new-session -d -s x 'sleep 3'
 env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
+env -i HOME="$H" PATH="$PATH" \
+    TMUX_TMPDIR="${TMUX_TMPDIR:-}" bash -c 'tmux ls'
 EOF
 case_from "带 -S / -L 的调用" ok <<'EOF'
 tmux -S "$SOCK" kill-server 2>/dev/null || true

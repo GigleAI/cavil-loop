@@ -11,7 +11,10 @@ tests/tmux-sandbox-guard.test.sh 调用。对每个 tests/*.test.sh：
    （`unset … TMUX …` 或 `exec env -i` 重跑自己）。
 3. source 了 tests/lib/tmux-sandbox.sh 的文件：source 之前不许有 mktemp / mkdir / trap /
    tmux 调用（载入时会重新执行本文件，之前建的东西会建两遍）；source 之后不许自己设
-   `EXIT` trap（改用 tmux_sandbox_on_exit）；每个 `env -i` 都要带 `TMUX_TMPDIR=`。
+   `EXIT` trap（改用 tmux_sandbox_on_exit）；每个 `env -i` 都要带 `TMUX_TMPDIR=` 和原样的
+   `PATH="$PATH"`（否则子进程绕过包装：不加空配置、关门后也拦不住）；清理回调里不许
+   `rm`（删目录用 tmux_sandbox_own_dir）。续行（行尾反斜杠）接成一行再看。只认这几种写法，
+   PATH 先被别处改掉再传、子进程自己再改 PATH 这类看不出来（写在 AGENTS.md）。
 4. 任何测试文件里用绝对路径直接调 tmux（`/usr/bin/tmux ls`）都报：它绕过沙盒的包装。
 
 管不到（写在 AGENTS.md）：经变量或包装函数调用的 tmux（`"$REAL_TMUX" …`、`T()`）、
@@ -37,10 +40,18 @@ SANDBOX_START = re.compile(r"(?:^|[;&|(]|\bthen\b)\s*tmux_sandbox_start\b")
 
 
 def code_lines(text):
-    """(行号, 行) —— 去掉注释行和 here-doc 正文。"""
+    """(行号, 行) —— 去掉注释行和 here-doc 正文；以反斜杠结尾的续行接成一行，记在第一行的行号上。"""
     out = []
     end = None
+    pending = None   # (行号, 已接上的文字)
     for no, line in enumerate(text.splitlines(), 1):
+        if pending is not None:
+            line = pending[1] + " " + line.lstrip()
+            no = pending[0]
+            pending = None
+        if end is None and line.endswith("\\") and not line.lstrip().startswith("#"):
+            pending = (no, line[:-1])
+            continue
         if end is not None:
             if line.strip() == end:
                 end = None
@@ -93,8 +104,13 @@ def check(path, text):
         for no, line in lines:
             if no > src and re.search(r"\btrap\b", line) and re.search(r"\bEXIT\b", line):
                 problems.append((no, "载入 tmux 沙盒之后又自己设 EXIT trap；改用 tmux_sandbox_on_exit"))
-            if re.search(r"\benv\s+-i\b", line) and "TMUX_TMPDIR=" not in line:
-                problems.append((no, "env -i 没带 TMUX_TMPDIR=，子进程会连到别的 tmux 服务"))
+            if re.search(r"\benv\s+-i\b", line):
+                if "TMUX_TMPDIR=" not in line:
+                    problems.append((no, "env -i 没带 TMUX_TMPDIR=，子进程会连到别的 tmux 服务"))
+                if not re.search(r"""\bPATH=["']?\$\{?PATH\b""", line):
+                    problems.append((no, "env -i 没把 PATH 原样带过去（PATH=\"$PATH\"），子进程会绕过沙盒的 tmux 包装"))
+            if re.search(r"\btmux_sandbox_on_exit\b", line) and re.search(r"\brm\b", line):
+                problems.append((no, "清理回调里删目录：变量可能是从环境继承的，改用 mktemp 之后的 tmux_sandbox_own_dir"))
         if start is None:
             problems.append((src, "载入了 tmux 沙盒却没调用 tmux_sandbox_start"))
     if first_call is not None:

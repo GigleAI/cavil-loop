@@ -3,8 +3,9 @@
 结束测试进程 P 名下能看到的全部直接子进程：P 是收养人，测试起的后台进程（tmux 服务、
 服务退出后留下的窗格程序、没结束的后台任务）祖先一退出就会出现在这里。
 
-每个进程：用进程句柄打开（「进程不存在」= 已退出）→ 再读一次父进程号仍是 P 才处理
-（变了说明原进程已退出、进程号被复用）→ SIGTERM，等 2 秒；还在就 SIGKILL，再等 2 秒。
+每读到一批：逐个用进程句柄打开（「进程不存在」= 已退出）、再读一次父进程号仍是 P 才
+处理（变了说明原进程已退出、进程号被复用）；整批 SIGTERM，一起等最多 2 秒；还在的
+SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总时限。
 某个进程退出后它的子进程又会被过继过来，所以循环读清单，直到连续 3 次（间隔 0.2 秒）
 都读到空，总时限 10 秒。
 
@@ -50,28 +51,59 @@ def children(parent, skip):
     return out
 
 
-def wait_exit(fd, secs):
-    return bool(select.select([fd], [], [], secs)[0])
+def budget_from_env():
+    """总时限（秒）。CAVIL_TMUX_REAP_BUDGET 只给 tests/tmux-sandbox.test.sh 用：0.1–60 之外一律 10。"""
+    try:
+        v = float(os.environ.get("CAVIL_TMUX_REAP_BUDGET", ""))
+    except ValueError:
+        return TIMEOUT
+    return v if 0.1 <= v <= 60 else TIMEOUT
 
 
-def stop(parent, pid):
+def wait_all(fds, until):
+    """等这些进程句柄退出，最多到 until（单调时钟）；返回还没退出的。"""
+    left = set(fds)
+    while left:
+        rest = until - time.monotonic()
+        if rest <= 0:
+            break
+        ready, _, _ = select.select(list(left), [], [], rest)
+        left -= set(ready)
+    return left
+
+
+def stop_batch(parent, pids, deadline):
+    """整批一起停（复审 #5：不再逐个等，n 个不理 SIGTERM 的进程不会叠出 n×2 秒）：
+    全部 SIGTERM → 一起等最多 2 秒 → 还在的 SIGKILL → 一起等最多 2 秒。每一步的等待
+    都不超过剩下的总预算。返回发过信号的个数。"""
+    fds = {}
     try:
-        fd = os.pidfd_open(pid)
-    except ProcessLookupError:
-        return False
-    try:
-        st = stat_of(pid)
-        if st is None or st[1] != parent or st[0] == "Z":
-            return False
-        signal.pidfd_send_signal(fd, signal.SIGTERM)
-        if not wait_exit(fd, 2):
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
-            wait_exit(fd, 2)
-        return True
-    except ProcessLookupError:
-        return False
+        for pid in pids:
+            try:
+                fd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue
+            st = stat_of(pid)
+            if st is None or st[1] != parent or st[0] == "Z":
+                os.close(fd)
+                continue
+            fds[fd] = pid
+        for fd in list(fds):
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        left = wait_all(fds, min(time.monotonic() + 2, deadline))
+        for fd in left:
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        wait_all(left, min(time.monotonic() + 2, deadline))
+        return len(fds)
     finally:
-        os.close(fd)
+        for fd in fds:
+            os.close(fd)
 
 
 def main():
@@ -79,7 +111,8 @@ def main():
     skip = {os.getpid()}
     if os.getppid() != parent:
         skip.add(os.getppid())   # 调用方的命令替换子 shell
-    deadline = time.monotonic() + TIMEOUT
+    budget = budget_from_env()
+    deadline = time.monotonic() + budget
     empty = 0
     stopped = 0
     try:
@@ -90,17 +123,18 @@ def main():
                 if empty >= EMPTY_ROUNDS:
                     print("结束了 %d 个进程" % stopped)
                     return 0
-                time.sleep(0.2)
+                time.sleep(max(0.0, min(0.2, deadline - time.monotonic())))
                 continue
             empty = 0
-            for pid in kids:
-                if stop(parent, pid):
-                    stopped += 1
+            stopped += stop_batch(parent, kids, deadline)
         left = children(parent, skip)
     except OSError as e:
         print("读进程清单出错：%s" % e)
         return 2
-    print("10 秒后仍有进程：%s" % " ".join(map(str, left)) if left else "10 秒内没读到连续 3 次空清单")
+    if left:
+        print("%g 秒后仍有进程：%s" % (budget, " ".join(map(str, left))))
+    else:
+        print("%g 秒内没读到连续 %d 次空清单" % (budget, EMPTY_ROUNDS))
     return 1
 
 
