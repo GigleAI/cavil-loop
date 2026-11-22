@@ -81,6 +81,7 @@ or a single line `<!-- merge-followup:none -->` when nothing is left. Workers ar
 - **A PR whose body cannot be read** is listed as "body unreadable, follow-ups unknown" and re-read every round for 30 rounds, then every 30 rounds; once read, a new full comment follows. If its branch name does not tell which issue it belongs to either, after 30 rounds the reminder goes on the PR itself (comment + `pending/human`), its worktree is not cleaned up (check what is left by hand), and until the reminder is confirmed no later PR's bot notice says "完成".
 - **Labels** are written one at a time, re-reading the issue before each write and checking it after; an issue that already carries a new round's workflow label keeps its labels (the comment is still posted). An autopilot merge posts its description (the PR's summary block and the merge basis) as part of the same comment.
 - **The bot notice** is computed from the same conclusion as the comment, twice from fresh reads, and sent only when both agree; it waits until the issue's comment and labels are confirmed.
+- With `AUTO_CLEANUP_ON_MERGE=false` the hand-over still runs; only the local clean-up is skipped (the comment and labels do not wait for it).
 - Every step that cannot read what it needs writes nothing and is retried next round; after 30 failed rounds the issue is set aside until another PR is merged into it.
 
 </details>

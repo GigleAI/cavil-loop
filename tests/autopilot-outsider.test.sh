@@ -490,7 +490,8 @@ cm 7 604 req-bot 2026-02-03T00:00:00Z '机器人转述'
 cm 7 605 helper 2026-02-04T00:00:00Z '有写权限的协作者'
 tick
 chk "照常合并" "$(merged)/$(has_label pending/human)" "1/no"
-chk "到达性 · 合并前查了评论作者（读了 issue 7 的评论两次：决定时 + 合并前）" "$(n_calls "$R/issues/7/comments\$")" 2
+# 只数合并请求之前的：合并之后的交接（GitHub#656）还会按标记读 issue 7 的评论
+chk "到达性 · 合并前查了评论作者（读了 issue 7 的评论两次：决定时 + 合并前）" "$(compat_cut_after_merge < "$CALLS" | grep -cE -- "$R/issues/7/comments\$")" 2
 
 section "【7】外人评论删掉之后仍然拦；维护者重新授权后合并；之后又来新的外人评论再拦"
 fresh "$ON"; happy

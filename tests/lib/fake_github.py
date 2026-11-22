@@ -811,6 +811,11 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
                                                 "commit_id": "m" * 40, "created_at": now_iso()})
         save("items.json", items)
         save("events.json", _evs)
+    # hook_after_PUT_pulls_<n>_merge（GitHub#656）：合并成功之后、响应返回之前运行——测试用它在「合并」和「同一轮里
+    # 接着做的合并后交接」之间插一步（例如让交接这一轮读不到 issue）
+    _mh = p("hook_after_PUT_pulls_%s_merge" % parts[1])
+    if os.path.exists(_mh):
+        subprocess.run(["bash", _mh], check=False, stdin=subprocess.DEVNULL, timeout=30)
     emit({"merged": True, "sha": "m" * 40})
 
 emit({})

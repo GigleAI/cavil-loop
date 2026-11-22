@@ -348,7 +348,8 @@ if [ -n "$BASE" ] && [ -f "$OLD/scripts/dispatch-issue-comment.sh" ]; then
     dispatch_all "$OLD" "$P2" "$TMP/out-oldscripts"
     norm() { sed -e "s|$REPO_DIR|<ROOT>|g" -e "s|$OLD|<ROOT>|g" -e "s|$TMP/proj-[a-z]*|<P>|g" \
         -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' \
-        -e 's/coding-agent-launch: [0-9a-f-]*/coding-agent-launch: <ID>/' "$1"; }
+        -e 's/coding-agent-launch: [0-9a-f-]*/coding-agent-launch: <ID>/' "$1" \
+        | grep -vF '**合并后待办的登记（A 类，PR 正文）**'; }   # GitHub#656 给复审加的这一条和本测试比的东西无关
     if [ -s "$TMP/out-oldscripts/review.md" ] && diff <(norm "$TMP/out-new/review.md") <(norm "$TMP/out-oldscripts/review.md") > "$TMP/review.diff"; then
         ok "同一份审查标准下，复审 prompt 与合并基点的脚本拼出的逐字相同"
     else

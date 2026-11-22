@@ -45,6 +45,7 @@ merge_followup_parse() {
 # 标签：issue 目标的标签一律交给托管交接那套（autopilot_merged_handoff：一次写一个、写前判两次、写后核对），
 #       交接记录放在 .autopilot.handoff["mf<N>"]，带 mf: true（旧的托管交接记录没有它，由迁移接管）。
 
+MF_CLEANED_THIS_ROUND=" "   # 这一轮刚做完合并清理的工作编号（空格分隔），只在本进程内有效
 MF_DISCOVERED=0         # 本轮合并发现成功（列表整个读到、新记录全部落盘）：机器人通知依据的第一项
 MF_MAX_TRIES="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}"
 
@@ -56,7 +57,8 @@ mf_set() {   # <jq 表达式（作用于 .merge_followup）> [jq 参数…]
     local expr="$1" sf="${STATE_FILE:-$STATE_DIR/state.json}" tmp
     shift
     tmp=$(mktemp) || return 1
-    if jq "$@" ".merge_followup = ((.merge_followup // {}) | $expr)" "$sf" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    # 写完是空的就不留这一项：没合并过 PR 的项目 state.json 一字不变
+    if jq "$@" ".merge_followup = ((.merge_followup // {}) | $expr) | if .merge_followup == {} then del(.merge_followup) else . end" "$sf" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
         mv "$tmp" "$sf"
     else
         rm -f "$tmp"; log "  ⚠️ 合并后交接：状态写入失败（${expr}）"; return 1
@@ -330,7 +332,7 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
     # 迁移接管的、升级前已发过说明的（desc_sent）不再并进来
     jq -c --arg nw "$newest" 'map(select(.pr == $nw)) | .[0]
         | if . != null and .ap != null and .ap.pre == "found" and (.ap.desc_sent // false) == false
-          then {pr: .pr, title: (.ap.title // .title // ""), desc: (.ap.desc // ""), head: (.ap.head // "")} else null end' "$d/recs" > "$d/ap" || return 1
+          then {pr: .pr, title: (.ap.title // .title // ""), desc: (.ap.desc // ""), head: (.ap.head // ""), closes: (.closes // false)} else null end' "$d/recs" > "$d/ap" || return 1
     jq -cn --arg n "$n" --arg k "$kind" --arg s "$st" --argjson sup "$sup" --arg nw "$newest" --slurpfile ap "$d/ap" --slurpfile r "$d/recs" \
         --arg H "$LABEL_PENDING_HUMAN" --arg D "$LABEL_DONE" --arg A "${LABEL_PENDING_AGENT_DEFAULT:-pending/agent}" \
         '{target: $n, kind: $k, state: $s, superseded: $sup, newest: $nw, autopilot: $ap[0], labels: {human: $H, done: $D, agent: $A}, records: $r[0]}' \
@@ -365,9 +367,10 @@ mf_try_fail() {   # <目标> <原因>：一次真正尝试了读写却没成功�
 # ── T6–T8：交接一个目标 ──
 mf_target_tick() {   # <目标> [兜底 PR]
     local n="$1" fb="${2:-}" c1 c2 fp v sent bf rc pr own fv labs
-    # 做出这个 PR 的那一轮留下的 doing/agent：会话已经不在（合并清理刚收掉它，或早就没了）就不是「新一轮」，
-    # 先摘掉（主干合并后也摘它）；会话还在才算有人接着在干，交接照表 1 第 3 行不动标签
-    if [ -z "$fb" ] && [ -n "${LABEL_AGENT_DOING:-}" ] \
+    # 做出这个 PR 的那一轮留下的 doing/agent：这一轮刚为这个 issue 做完合并清理（会话已收掉）、也确实没有会话，
+    # 它就不是「新一轮」，先摘掉——和主干「清理成功后摘 doing/agent」同一时刻；之后的轮次里再出现的 doing/agent
+    # 是人或 daemon 新开的一轮，交接照表 1 第 3 行不动标签
+    if [ -z "$fb" ] && [ -n "${LABEL_AGENT_DOING:-}" ] && case "$MF_CLEANED_THIS_ROUND" in *" $n "*) true ;; *) false ;; esac \
        && labs=$(gh api "repos/$REPO/issues/$n" --jq '[.labels[].name]' 2>/dev/null) \
        && printf '%s' "$labs" | jq -e --arg D "$LABEL_AGENT_DOING" 'index($D) != null' >/dev/null 2>&1 \
        && ! session_alive "$(tmux_session_name "$n")"; then

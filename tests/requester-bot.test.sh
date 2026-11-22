@@ -294,7 +294,8 @@ for mode in label greedy; do
     done
     A="$SANDBOX/off-old-$mode/gh"; B="$SANDBOX/off-new-$mode/gh"
     if [ "$OFF_SAME" = 0 ]; then
-    chk "关闭 · $mode 模式：GitHub 调用逐条相同" "$(cmp -s "$A/calls.log" "$B/calls.log" && echo same || echo diff)" same
+    # 合并清理那一段见 compat_merge_calls（写调用另记一行 WRITE …，和列表无关，原样比）
+    chk "关闭 · $mode 模式：GitHub 调用逐条相同" "$(cmp -s <(compat_merge_calls < "$A/calls.log") <(compat_merge_calls < "$B/calls.log") && echo same || echo diff)" same
     chk "关闭 · $mode 模式：派工记录相同" "$(cmp -s "$A/dispatch.log" "$B/dispatch.log" && echo same || echo diff)" same
     chk "关闭 · $mode 模式：最终标签相同" "$(cmp -s <(jq -S '.items|map_values(.labels)' "$A/state.json") <(jq -S '.items|map_values(.labels)' "$B/state.json") && echo same || echo diff)" same
     fi

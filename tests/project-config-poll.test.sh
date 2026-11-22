@@ -186,8 +186,8 @@ scenarios() {   # <同时几条> <派工失败上限> <自愈上限> <合并后�
     world two-pending; poll
     chk "两条待派工：这一轮起了 $1 个 worker 会话" "$(sessions)" "$1"
     chk "合并的 PR 记为已清理：$4" "$(cleaned)" "$4"
-    # 开着：这一轮确实列了已合并 PR（「已清理」不是凑巧）；关着：整段跳过，一次都不列（上面起了会话，说明这一轮确实跑了）
-    chk "这一轮列没列已合并 PR：$4" "$([ "$(grep -c '^gh pr list .*--state merged' "$GD/calls.log" 2>/dev/null || true)" -ge 1 ] && echo true || echo false)" "$4"
+    # 开着关着都列已合并 PR：合并后的交接（GitHub#656）每轮都做，关掉的只是本机清理（上面「已清理」随开关变）
+    chk "这一轮列了已合并 PR（合并清理 $4）" "$([ "$(grep -c '^gh pr list .*--state merged' "$GD/calls.log" 2>/dev/null || true)" -ge 1 ] && echo true || echo false)" "true"
     world failing; poll
     chk "派工失败：日志写「第 1/$2 次」" "$(logged "#$A 派工失败（第 1/$2 次")" "1"
     world dead-worker; poll

@@ -329,7 +329,7 @@ chk "… state 不新增字段" "$(jq -c . "$STATE_DIR/state.json")" "{}"
 
 echo "【7】接线：merge 钩子与派工脚本真的调用了它们"
 chk "合并发现时汇总无条件入队（不看清理成没成、不在任何状态分支里）" \
-    "$(grep -cE '^ {12}sub_issue_rollup_enqueue "\$pr"' "$REPO_DIR/scripts/_merge_followup.sh")" "1"
+    "$(grep -cE '^ {12}\[ "\$\{AUTO_CLEANUP_ON_MERGE:-true\}" = false \] \|\| sub_issue_rollup_enqueue "\$pr"' "$REPO_DIR/scripts/_merge_followup.sh")" "1"
 chk "merge 钩子不再把「读不到状态」兜底成 OPEN" \
     "$(grep -c 'echo "OPEN"' "$REPO_DIR/scripts/agent-poll.sh")" "0"
 chk "每轮先做合并后的交接、再清汇总队列" \

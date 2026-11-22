@@ -195,7 +195,8 @@ def conclude(d):
     needs_comment = st == "open" or bool(fu) or bool(ap)
     # reminder: a closed target keeps / gets pending/human when follow-ups are left, and a closed issue after an
     # autopilot merge (the PR itself, when it is the target, only with follow-ups — its other labels stay as before)
-    reminder = st == "closed" and (bool(fu) or (bool(ap) and kind == "issue"))
+    # (only when the PR's own close keyword closed it — `ap.closes`; a target someone closed by hand just gets Done, as before)
+    reminder = st == "closed" and (bool(fu) or (bool(ap) and kind == "issue" and bool(ap.get("closes"))))
     lines = []
     where = "本 issue " if kind == "issue" else "本 PR "
     if ap:
@@ -216,6 +217,9 @@ def conclude(d):
                     "（daemon 只在维护者亲手关闭之后才认为这些待办已结束）。" % where.rstrip())
     elif st == "closed" and kind == "pr":
         todo = "本条不需要人做任何事；要撤回就在 GitHub 上 revert 这个 PR。"
+    elif st == "closed" and not reminder:
+        todo = "要人做的：%s已关闭（`%s`），不需要再做什么；要返工就重开%s、摘掉 `%s`、打 `%s`。" % (
+            where, L["done"], where.rstrip(), L["done"], L["agent"])
     elif st == "closed":
         todo = ("要人做的：%s已随合并关闭，挂着 `%s` 提醒人看。看过满意就摘掉 `%s`（`%s` 留着）；要返工就重开%s、摘掉 `%s` 和 `%s`、打 `%s`。"
                 % (where, L["human"], L["human"], L["done"], where.rstrip(), L["done"], L["human"], L["agent"]))

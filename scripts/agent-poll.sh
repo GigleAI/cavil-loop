@@ -970,6 +970,7 @@ if gh pr list --repo "$REPO" --state merged --limit 30 \
                 remember_worker_model "$issue_n" ""
                 remember_trigger_label "$issue_n" ""
                 mf_cleanup_mark "$prnum" done || true
+                MF_CLEANED_THIS_ROUND="${MF_CLEANED_THIS_ROUND}${issue_n} "
                 log "  auto-cleanup PR #$prnum done"
             else
                 mf_cleanup_mark "$prnum" retry || true

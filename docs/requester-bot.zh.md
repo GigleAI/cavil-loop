@@ -127,7 +127,7 @@ chmod 600 <项目目录>/cavil-loop.config
 
 1. agent 发出方案后，issue 上出现 `pending/requester-bot` 标签；`poll.log` 里有 `notify-requester-bot #<编号>: ✅ 已叫醒 grokbot`，紧跟 `已通知 webhook（HTTP 200）`
 2. grokbot 在挂着等待标签的那个条目上留言说明转给了谁，**这时 `pending/requester-bot` 仍挂着**；grokbot 下一次扫描不再转第二遍。之后它在同一个条目上把答复原文贴回、摘掉 `pending/requester-bot`、打上 `pending/agent`；下一轮巡检 agent 接着干
-3. PR 合并后，issue 上出现「需求已完成」评论并重新挂上 `pending/requester-bot`，`poll.log` 里有 `issue #<编号>：已通知 webhook（HTTP 200）`
+3. PR 合并后，issue 上出现合并结果评论并重新挂上 `pending/requester-bot`，`poll.log` 里有 `issue #<编号>：已通知 webhook（HTTP 200）`
 
 任何一步对不上，看下面的[排查](#排查)。
 
@@ -157,16 +157,16 @@ cavil-loop 只管自己这一侧，下面八条由 grokbot 实现。概括起来
    ```
    <!-- requester-bot-reply-ops:end -->
 
-5. **收到「需求已完成」/「已关闭，没有合并」的评论**（daemon 发在来源 issue 上）：把结果告诉提需求的人，再摘掉 `pending/requester-bot`；这条需求到此结束
+5. **收到合并结果 /「已关闭，没有合并」的评论**（daemon 发在来源 issue 上）：把结果告诉提需求的人，再摘掉 `pending/requester-bot`。只有标题是「需求已完成」的才表示这条需求到此结束；「需求还有待办」带着还剩什么的清单（由维护者处理），「是否还有后续由维护者确认」表示还要维护者确认
 6. **不碰挂着 `pending/human` 的条目**：那是交给维护者的
 7. **附件**：提需求的人给的图片等可以贴进 issue，agent 会自己下载阅读；反方向（agent 发附件给 grokbot）不支持
-8. **维护者自己的条目**（项目打开了 `REQUESTER_BOT_WAKE_ANY_ITEM` 时才会出现）：先按[交接协议里的「先分流」](#交接协议)判断这条是不是 grokbot 提的需求——**不能只看当前条目的正文有没有来源标记**：PR 的正文通常没有标记，要看它关联的 issue；普通作者的正文里引用了标记也不算。不是 grokbot 提的需求，要转给谁写在交接评论里。按[维护者自己的条目 → 交接协议](#交接协议)找到叫醒记录和它指向的交接评论，判出「就绪」才转达，「准备中」这一轮什么都不做；转达过的不重复转、等待标签不摘（第 3 条）；答复照第 4 条贴回同一个条目。这类条目合并后不会收到「需求已完成」
+8. **维护者自己的条目**（项目打开了 `REQUESTER_BOT_WAKE_ANY_ITEM` 时才会出现）：先按[交接协议里的「先分流」](#交接协议)判断这条是不是 grokbot 提的需求——**不能只看当前条目的正文有没有来源标记**：PR 的正文通常没有标记，要看它关联的 issue；普通作者的正文里引用了标记也不算。不是 grokbot 提的需求，要转给谁写在交接评论里。按[维护者自己的条目 → 交接协议](#交接协议)找到叫醒记录和它指向的交接评论，判出「就绪」才转达，「准备中」这一轮什么都不做；转达过的不重复转、等待标签不摘（第 3 条）；答复照第 4 条贴回同一个条目。这类条目合并后不会收到合并结果评论
 
 </details>
 
 ## 一条需求的完整来回：issue 上会看到什么
 
-一条需求依次走过：issue → 方案 → 答复 → PR →（汇报与认可）→ 维护者合并 →「需求已完成」。下表列出每一步的标签和评论。
+一条需求依次走过：issue → 方案 → 答复 → PR →（汇报与认可）→ 维护者合并 → 合并结果评论。下表列出每一步的标签和评论。
 
 <details><summary>逐步列出（以 <code>REQUESTER_BOT_REPORT_FIRST=true</code> 为例）</summary>
 
@@ -181,7 +181,7 @@ cavil-loop 只管自己这一侧，下面八条由 grokbot 实现。概括起来
 | 7. 汇报结果 | agent / reviewer | PR `pending/requester-bot` | 结果汇报（写明提交编号） |
 | 8. 转达、提需求方认可 | grokbot | PR 转达后仍是 `pending/requester-bot`，带回认可时换成 `pending/agent` | PR 上（不是来源 issue）：「已转给谁」；认可的答复原文 |
 | 9. 交维护者 | agent | PR `pending/human` | 合并说明（一屏读完：一句话上下文 + 改了什么 / 怎么改 / 为什么 + 合并后要做的事）+ 交人评论 |
-| 10. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发「需求已完成」 |
+| 10. 合并 | 维护者 | PR `Done`；issue 挂上 `pending/requester-bot` | daemon 发合并结果评论 |
 | 11. 收尾 | grokbot | issue 摘掉 `pending/requester-bot` | — |
 
 `REQUESTER_BOT_REPORT_FIRST=false` 时没有第 7、8 步：做完直接交维护者，合并后照样有第 10、11 步。
@@ -204,7 +204,7 @@ cavil-loop 只管自己这一侧，下面八条由 grokbot 实现。概括起来
 | `找不到 curl，webhook 跳过` | 本机装上 curl |
 | grokbot 留言「已转给谁」之后，等待标签马上就没了，条目一个流程标签都不剩 | grokbot 转达后自己摘了等待标签，违反[约定第 3 条](#grokbot-那边要照做的约定)。daemon 不会因此派工（见下一行），只是看板上看不出在等答复。要改的是 grokbot 那边：转达后不摘，带回答复时才摘 |
 | 条目一个流程标签都没有、一直没人接着干，`poll.log` 有 `不续工——#<编号> 最近一次挂上等待标签 … 之后，没人打过派工标签` | 等待标签被提前摘掉了、又没打 `pending/agent`。答复已经贴回：打 `pending/agent` 就会续上。还没答复：不用动，答复回来时 grokbot 照第 4 条打 `pending/agent` 就会续上；同时提醒 grokbot 那边转达后不要摘（[约定第 3、4 条](#grokbot-那边要照做的约定)）。**别手动把等待标签挂回去**：维护者自己的条目上，手动挂上的标签没有对应的叫醒记录，grokbot 30 分钟后会判「出错」交维护者（见[交接协议](#交接协议)）；机器人提的需求上，也可能被当成新的一次叫醒再转一遍 |
-| 合并后 grokbot 没收到「需求已完成」 | 合并后清理被关了（`AUTO_CLEANUP_ON_MERGE`）；或关闭未合并时同一项需求还有别的 PR 开着（这种不通知）；或写身份不在 `REQUESTER_BOT_ALLOWED_ACTORS` 里——`poll.log` 会写明原因 |
+| 合并后 grokbot 没收到合并结果评论 | 合并后清理被关了（`AUTO_CLEANUP_ON_MERGE`）；或关闭未合并时同一项需求还有别的 PR 开着（这种不通知）；或写身份不在 `REQUESTER_BOT_ALLOWED_ACTORS` 里——`poll.log` 会写明原因 |
 
 </details>
 
@@ -339,7 +339,7 @@ REQUESTER_BOT_WAKE_ANY_ITEM=true     # 默认 false
 | 代码复审通过（`REQUESTER_BOT_REPORT_FIRST=true`） | 叫醒 grokbot 汇报当前提交 | 同左 |
 | 提需求方认可当前提交 | 交维护者合并（`pending/human`） | 交复审（`pending/review`）→ 复审核对认可的就是 PR 最新提交、重跑测试 → `pending/merge` → daemon 按托管的固定条件合并 |
 | 代码复审通过（`REQUESTER_BOT_REPORT_FIRST=false`） | 交维护者合并 | `pending/merge` → daemon 合并 |
-| 合并后 | daemon 发「需求已完成」 | 同左 |
+| 合并后 | daemon 发合并结果评论 | 同左 |
 
 认可之后又有新提交（比如维护者在 PR 上提了修改），旧认可作废，要重新复审、重新汇报。daemon 不判断评论内容：「认可的是哪个提交」由复审按[交接规则的证据规则](#grokbot-那边要照做的约定)核对，daemon 合并前的检查一条不少。这些规则由派工提示词里「外部需求机器人提的需求 + 托管」一段交给 worker 和复审，只在两个功能都开、条目是托管条目时出现。见 [operations](operations.zh.md#托管标签可选默认关闭)。
 
@@ -458,7 +458,7 @@ PR 合并、或没合并就被关掉时，daemon 自动通知机器人，不需�
 <details><summary>怎么做，以及什么时候不做</summary>
 
 - **只通知机器人提的需求**：PR 关联的 issue 要满足上表「作者 + 标记」两条，判定和叫醒脚本是同一份
-- **做法**：在那个 issue 上留一条结果评论（「需求已完成：PR #N 已合并」并写明合并提交；或「PR #N 已关闭，没有合并」）→ 给那个 issue 加等待标签并读回确认 → 调一次 webhook（`kind` 是 `issue`，编号是来源 issue）。issue 已被 `Closes #N` 自动关掉也照样留评论、加标签。不指派机器人
+- **做法**：在那个 issue 上留一条结果评论（合并的是三种之一，和 daemon 在 issue 上发的清单评论用同一份结论，见[架构](architecture.zh.md#合并之后还剩什么谁来做)：「需求还有待办」带清单；只有 PR 写明没有待办（或清单已结束）、且维护者亲手关闭了需求时才是「需求已完成」；其余是「是否还有后续由维护者确认」；都写明合并提交。或「PR #N 已关闭，没有合并」）。合并的通知要等 issue 上的清单评论和标签确认之后才发→ 给那个 issue 加等待标签并读回确认 → 调一次 webhook（`kind` 是 `issue`，编号是来源 issue）。issue 已被 `Closes #N` 自动关掉也照样留评论、加标签。不指派机器人
 - **机器人那边要约定**：已关闭但挂着等待标签的条目也要拉，转达后自己摘掉标签
 - **关闭未合并、但同一项需求还有别的 PR 开着**：不通知（工作还在继续）。这一条每次要发之前都现查——首轮没发成、重试前新开了 PR，也不会再发；打开的 PR 列表读不到时当成不知道，留到下轮，不当成「没有」。这项需求已经通知过「已合并」时，旧 PR 的关闭也不再通知
 - **写身份要在允许名单里**：和叫醒脚本同一关；不在名单或读不到身份就不写，留到下轮，`poll.log` 写明原因
