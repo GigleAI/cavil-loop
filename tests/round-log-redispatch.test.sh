@@ -10,7 +10,9 @@
 #   1. 查被打断的是哪次派工：文档里 round-log-redispatch-ops 那段命令按字面在只带 HOME / PATH / LANG
 #      的环境里跑（只把示例编号 123 和示例账号换成真的，人照做时也是这样），中英两份一字不差。
 #      只认仍然有效的 daemon 派工：loop 账号挂的 doing/agent、紧挨着之前 loop 账号摘掉恰好一个派工标签、
-#      之后流程标签没再变过、没挂 pending/human、前后两次读的标签相同（PR #652 复审第 2 轮）。
+#      之后流程标签没再变过、没挂 pending/human、前后两次读的标签相同（PR #652 复审第 2 轮）；
+#      条目还开着、没挂任何保护标签（pending/blocked / pending/merge / pending/PR / Done 也算）、派工之后没关过 / 重开过
+#      （第 3 轮）。loop 账号照手册另一段命令查（最新评论里带用量记录的评论只有一个作者），首轮只有正文的 PR 上也查得到。
 #      看的是标签历史里 daemon 最后一次挂 doing/agent 前摘掉的那个标签——不是最后一条评论：
 #      只有 PR 正文、没有 worker 评论的首轮复审也要回到 pending/review。
 #   2. 照文档在页面上做的那一步（摘 doing/agent、挂 RESTORE 给出的标签），这里用同一个假 GitHub 的写接口做。
@@ -188,40 +190,87 @@ chk "事件没有账号字段：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "U
 mkpr 13; ev 13 labeled pending/review; dispatch_flip 13 pending/review; ev 13 labeled pending/human; ev 13 unlabeled doing/agent
 labels 13 "doing/agent"
 run_block 13
-chk "历史里 doing/agent 已被摘掉：UNKNOWN（保留交人）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the label history does not end with doing/agent added nz"
+chk "历史里 doing/agent 已被摘掉：UNKNOWN（保留交人）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the history does not end with doing/agent added nz"
 # PR 14：同时挂着 pending/human
 mkpr 14; ev 14 labeled pending/review; dispatch_flip 14 pending/review; ev 14 labeled pending/human; labels 14 "doing/agent,pending/human"
 run_block 14
-chk "同时挂着 pending/human：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item is on pending/human too nz"
+chk "同时挂着 pending/human：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item is on a protecting label nz"
 # PR 15：派工之后有人又挂了一个派工标签
 mkpr 15; ev 15 labeled pending/review; dispatch_flip 15 pending/review; ev 15 labeled pending/agent maint; ev 15 unlabeled pending/agent maint
 labels 15 "doing/agent"
 run_block 15
-chk "派工之后流程标签又变过：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: labels changed after the dispatch nz"
+chk "派工之后流程标签又变过：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item changed after the dispatch nz"
 # PR 16：第一次读到 doing/agent，读历史的同时 daemon 摘掉它、挂上 pending/human
 mkpr 16; ev 16 labeled pending/review; dispatch_flip 16 pending/review; labels 16 "doing/agent"
 printf '%s\n' "cd '$GD' && jq '.[\"16\"] = [\"pending/human\"]' labels.json > l.tmp && mv l.tmp labels.json" > "$GD/shim_hook_16"
 run_block 16; rm -f "$GD/shim_hook_16"
-chk "读的过程中交了人：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the labels changed while reading nz"
+chk "读的过程中交了人：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item changed while reading nz"
 chk "到达性 · 替身确实改了标签" "$(jq -c '.["16"]' "$GD/labels.json")" '["pending/human"]'
 # issue 3：标签历史里根本没有挂 doing/agent 的记录（历史和现状对不上）
 mkissue 3; labels 3 "doing/agent"
 run_block 3
-chk "历史里没有派工：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the label history does not end with doing/agent added nz"
+chk "历史里没有派工：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the history does not end with doing/agent added nz"
 # issue 2：同一次派工摘掉了两个派工标签，分不清
 mkissue 2; ev 2 labeled pending/agent maint; ev 2 labeled pending/review maint
 ev 2 unlabeled pending/review; ev 2 unlabeled pending/agent; ev 2 labeled doing/agent; labels 2 "doing/agent"
 run_block 2
 chk "摘掉的派工标签不止一个：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: cannot tell which label dispatched it nz"
+# PR 17–19：daemon 已挂上等前置 / 待合并 / 转 PR 跟踪，还没摘 doing/agent（三个保护标签）
+for x in 17:pending/blocked 18:pending/merge 19:pending/PR; do
+    n="${x%%:*}"; lb="${x#*:}"
+    mkpr "$n"; ev "$n" labeled pending/review; dispatch_flip "$n" pending/review; ev "$n" labeled "$lb"; labels "$n" "doing/agent,$lb"
+    run_block "$n"
+    chk "挂着 $lb（还没摘 doing/agent）：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item is on a protecting label nz"
+done
+# PR 20：已关闭，标签没跟着变
+mkpr 20; ev 20 labeled pending/review; dispatch_flip 20 pending/review; ev 20 closed ""; labels 20 "doing/agent"
+jset items.json '.["20"].state = "closed"'
+run_block 20
+chk "条目已关闭：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item is closed nz"
+# PR 21：派工之后被关过又重开（现在开着、标签没变）
+mkpr 21; ev 21 labeled pending/review; dispatch_flip 21 pending/review; ev 21 closed ""; ev 21 reopened ""; labels 21 "doing/agent"
+run_block 21
+chk "派工之后关过又重开：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item changed after the dispatch nz"
+# PR 22：同时还挂着派工标签
+mkpr 22; ev 22 labeled pending/review; dispatch_flip 22 pending/review; ev 22 labeled pending/review maint; labels 22 "doing/agent,pending/review"
+run_block 22
+chk "同时挂着派工标签：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item carries a dispatch label too nz"
+# 没换 loop 账号就运行
+RC=0; OUT="$(env -i HOME="$HOME" PATH="$SANDBOX/shim:$SANDBOX/bin:$SYS_PATH" LANG=C.UTF-8 FAKE_GH_DIR="$GD" FAKE_GH_REPO=owner/repo \
+    bash <(sed "s/N=123/N=8/" "$SANDBOX/block.sh") 2>&1)" || RC=$?
+chk "没换 loop 账号：UNKNOWN、不读 GitHub 也不给标签" "$(printf '%s\n' "$OUT" | tail -1) $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: fill in LOOP first nz"
 # 读不到
 : > "$GD/F_issues_5_events"; run_block 5; rm -f "$GD/F_issues_5_events"
-chk "标签历史读不到：UNKNOWN（不给标签）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: could not read the label history nz"
+chk "标签历史读不到：UNKNOWN（不给标签）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: could not read the history nz"
 : > "$GD/F_issues_5"; run_block 5; rm -f "$GD/F_issues_5"
 chk "条目读不到：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: could not read the item nz"
 
+echo "── 1b. 照手册查 loop 账号 ──"
+chk "round-log-loop-account-ops：中英两份文档里的命令一字不差" \
+    "$(doc_block operations.zh.md round-log-loop-account-ops)" "$(doc_block operations.md round-log-loop-account-ops)"
+doc_block operations.md round-log-loop-account-ops > "$SANDBOX/acct.sh"
+run_acct() { RC=0; OUT="$(env -i HOME="$HOME" PATH="$SANDBOX/bin:$SYS_PATH" LANG=C.UTF-8 FAKE_GH_DIR="$GD" FAKE_GH_REPO=owner/repo \
+    bash "$SANDBOX/acct.sh" 2>&1)" || RC=$?; LAST="$(printf '%s\n' "$OUT" | tail -1)"; }
+# PR 8 自己没有任何评论（首轮只有正文）；loop 账号的交付和复审在别的条目上，维护者的普通评论不带用量记录
+echo '{"5":[{"id":901,"body":"交付\n<!-- agent-metrics agent=claude wt=5 -->","user":{"login":"loop-bot"}}],
+       "9":[{"id":902,"body":"请看一下","user":{"login":"maint"}},{"id":903,"body":"<!-- codex-review-round:1 -->\n结论\n<!-- agent-metrics agent=codex wt=9 -->","user":{"login":"loop-bot"}}]}' > "$GD/comments.json"
+chk "到达性 · 条目 8 自己没有评论" "$(jq -c '.["8"] // []' "$GD/comments.json")" '[]'
+run_acct
+chk "只有 loop 账号写带用量记录的评论：LOOP loop-bot、退出 0" "$LAST $RC" "LOOP: loop-bot 0"
+sed -e "s/N=123/N=8/" -e "s/LOOP=loop-account/LOOP=${LAST#LOOP: }/" "$SANDBOX/block.sh" > "$SANDBOX/block-8b.sh"
+RC=0; OUT="$(env -i HOME="$HOME" PATH="$SANDBOX/shim:$SANDBOX/bin:$SYS_PATH" LANG=C.UTF-8 FAKE_GH_DIR="$GD" FAKE_GH_REPO=owner/repo bash "$SANDBOX/block-8b.sh" 2>&1)" || RC=$?
+chk "用查出的账号跑恢复命令：首轮复审 RESTORE pending/review" "$(printf '%s\n' "$OUT" | tail -1) $RC" "RESTORE: pending/review 0"
+jset comments.json '.["9"] += [{id:904, body:"抄了一行 <!-- agent-metrics agent=x -->", user:{login:"someone"}}]'
+run_acct
+chk "带用量记录的评论有两个作者：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: more than one author: loop-bot someone nz"
+echo '{}' > "$GD/comments.json"; run_acct
+chk "最近的评论里没有 agent 评论：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: no agent comment among the latest 100 nz"
+: > "$GD/F_issues_comments"; run_acct; rm -f "$GD/F_issues_comments"
+chk "评论读不到：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: could not read the comments nz"
+
 echo "── 2. 照做：摘 doing/agent、挂回 RESTORE 的标签，真跑一轮 poller ──"
 # 别的条目都放回不会被派工的样子，只留 PR 8 和 issue 5 这两条
-for n in 9 6 4 3 2 11 12 13 14 15 16; do labels "$n" "pending/human"; done
+for n in 9 6 4 3 2 11 12 13 14 15 16 17 18 19 20 21 22; do labels "$n" "pending/human"; done
 for n in 8 5; do
     run_block "$n"; restore="${LAST#RESTORE: }"
     env PATH="$SANDBOX/bin:$PATH" gh api -X DELETE "repos/owner/repo/issues/$n/labels/doing%2Fagent" >/dev/null 2>&1

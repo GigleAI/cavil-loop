@@ -35,15 +35,21 @@
 # dispatch removes its trigger label and then adds doing/agent with the write account (flip_to_doing →
 # gh_label_flip), so the label to put back is the one the loop account removed right before it added doing/agent
 # — a first-round review whose delivery is only the PR description has no worker comment at all (PR #652 code
-# review round 1). Only a dispatch that still stands counts: the last doing/agent event is "added" and by the loop
-# account (named in the block — the person running it is not the loop), exactly one trigger label removed by it
-# right before, no flow-label event after it, no pending/human now, and the item's labels read the same before
-# and after the history. A maintainer doing the same two steps by hand, events with no account, a later
-# hand-over, labels changing while reading — all UNKNOWN, and UNKNOWN changes nothing (round 2).
+# review round 1). A label is given only for a dispatch that still stands, judged in one jq program over two
+# reads of the item and the whole event history between them. Three review rounds each found one more input, so
+# every input is listed here and none may be added piecemeal: the item is open and both reads agree on state and
+# labels; it carries doing/agent, no dispatch label and none of the protecting labels this script's own write
+# check uses (pending/human, pending/blocked, pending/merge, pending/PR) plus Done; the last doing/agent event is
+# "added" by the loop account; after it no closed / reopened / merged event and no event on a dispatch label, a
+# protecting label, doing/agent or a nameless label; right before it the loop account removed exactly one
+# dispatch label. Anything else — a missing field, an unknown account, a failed read — is UNKNOWN, and UNKNOWN
+# changes nothing. The loop account is named in the block (whoever runs it is not the loop); the docs' first
+# block finds it from the latest comments carrying the usage footer's machine record — exactly one author, or
+# UNKNOWN — so a PR whose delivery is only its description still has a source (rounds 2–3).
 # The blocks behind <!-- round-log-check-ops / -off-ops / -on-ops:begin --> are run verbatim by
 # tests/project-config.test.sh §9 (they trust only the settings script's RESULT= word, never its exit code: a save
-# killed after the rename exits non-zero with the file written); <!-- round-log-redispatch-ops:begin --> is run
-# verbatim by tests/round-log-redispatch.test.sh, which then puts the label back and runs a real poll round.
+# killed after the rename exits non-zero with the file written); <!-- round-log-loop-account-ops:begin --> and
+# <!-- round-log-redispatch-ops:begin --> are run verbatim by tests/round-log-redispatch.test.sh, which then puts the label back and runs a real poll round.
 # Keep the two doc copies identical.
 set -uo pipefail
 
