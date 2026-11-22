@@ -414,30 +414,42 @@ mf_pr_state() {   # <PR> → stdout 一行 JSON {merged, head_sha, labels, last:
     flows=$(mf_flow_labels)
     { printf '%s\n' "$pj"; printf '%s\n' "$ev"; } | jq -cs --argjson f "$flows" '
         .[0] as $p | .[1] as $pages
-        | if ($p.labels | type) != "array" or ($p.merged | type) != "boolean" or (($p.head.sha // "") == "") then error("pr") else . end
+        | if ($p.labels | type) != "array" or ($p.merged | type) != "boolean"
+             or any(($p.merge_commit_sha, $p.base.ref, $p.head.ref, $p.head.sha, $p.head.repo.full_name); (. // "") == "")
+          then error("pr") else . end
         | [$pages[] | if type == "array" then .[] else error("page") end] as $e
         | [$e[] | select((.event == "labeled" or .event == "unlabeled") and ((.label.name // "") as $l | $f | index($l)) != null)] as $le
         | if any($le[]; (.id | type) != "number" or ((.created_at // "") == "")) then error("event") else . end
         | ([$e | to_entries[] | select(.value.event == "merged") | .key] | last) as $mp
-        | {merged: $p.merged, head_sha: $p.head.sha, labels: ([$p.labels[].name] | sort), merged_pos: $mp,
+        | {merged: $p.merged, ident: {sha: $p.merge_commit_sha, base: $p.base.ref, head_ref: $p.head.ref, head_sha: $p.head.sha,
+                                     head_repo: $p.head.repo.full_name},
+           labels: ([$p.labels[].name] | sort), merged_pos: $mp,
            last: (reduce ($e | to_entries[] | select(.value.event == "labeled" and ((.value.label.name // "") as $l | $f | index($l)) != null)) as $x
-                  ({}; .[$x.value.label.name] = {id: $x.value.id, at: $x.value.created_at, pos: $x.key}))}' 2>/dev/null
+                  ({}; .[$x.value.label.name] = {id: $x.value.id, at: $x.value.created_at, pos: $x.key,
+                                                 by: ((($x.value.actor // {}).login // "") | ascii_downcase)}))}' 2>/dev/null
 }
 mf_flow_labels() {
     printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" \
         "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))'
 }
 mf_pr_labels() {   # <PR> <true|false>
-    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect touched='[]' out
+    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect touched='[]' out me
     at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
     [ -n "$at" ] || return 1
     s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
-    [ "$(printf '%s' "$s0" | jq -r '.merged')" = true ] \
-        && [ "$(printf '%s' "$s0" | jq -r '.head_sha')" = "$(mf_get '.prs[$p].head_sha // ""' --arg p "$pr" | jq -r .)" ] || {
-        log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
+    # 身份口径和清单判定那边（_mf_conclude_in）同一套五项：合并提交、目标分支、来源分支、分支最新提交、来源仓库
+    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" '
+        . as $s | $s.merged == true and all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k | (($r[$k] // "") != "" and $r[$k] == $s.ident[$k]))' \
+        >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
+    me=$(write_identity_login | tr '[:upper:]' '[:lower:]'); [ -n "$me" ] || return 1
     flows=$(mf_flow_labels)
-    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" '
-        .merged_pos as $mp | [.labels[] | select(. as $l | ($f | index($l)) != null)] as $on
+    # 交接自己写的那个提醒（写入账号挂上的 pending/human——上一轮写了一半：加了提醒、摘旧标签失败）不是新一轮：
+    # 它不挡这次收尾，提醒本身按 <reminder> 保留或摘掉。只认 pending/human：别的流程标签哪怕是写入账号挂的
+    # （比如新一轮派工时 daemon 翻的 doing/agent）也照常算新一轮
+    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" --arg me "$me" --arg H "$LABEL_PENDING_HUMAN" '
+        .merged_pos as $mp | . as $S
+        | [.labels[] | select(. as $l | ($f | index($l)) != null)
+                     | select(. != $H or (($S.last[.] // {}).by // "") != $me)] as $on
         | [ $on[] as $l | (.last[$l] // null) as $x
             # 先后按事件在记录里的位置比（合并和挂标签常在同一秒）：排在「merged」事件之后 = 新一轮；没有 merged 事件时
             # 才按时间比，同一秒算判不了
@@ -481,7 +493,7 @@ mf_pr_labels() {   # <PR> <true|false>
 # 两份 PR 现状是不是同一个：身份、标签集合一样，没被这次写过的流程标签最后一次「加上」的事件也一样
 mf_pr_state_same() {   # <现读> <期望> <这次写过的标签 JSON 数组>
     jq -en --argjson a "$1" --argjson b "$2" --argjson t "$3" '
-        $a.merged == $b.merged and $a.head_sha == $b.head_sha and $a.labels == $b.labels
+        $a.merged == $b.merged and $a.ident == $b.ident and $a.labels == $b.labels
         and (($a.last | with_entries(select(.key as $k | ($t | index($k)) == null) | .value = .value.id))
              == ($b.last | with_entries(select(.key as $k | ($t | index($k)) == null) | .value = .value.id)))' >/dev/null 2>&1
 }

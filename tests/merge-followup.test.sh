@@ -413,6 +413,26 @@ chk "  → 到达性：日志写明两次写之间被改" "$(grep -c 'PR #231 �
 tick
 chk "下一轮：重挂的 pending/review 是合并之后挂的 → 不动，交接收敛" "$(labels_of 231)/$(jq -r '.merge_followup.prs["231"].handed // "none"' "$STATE")" "Done,pending/review/1"
 
+echo "㉔ 交接目标是 PR 本身、写了一半（加了 Done 和提醒、摘旧标签失败）→ 下一轮认得出提醒是自己加的，接着摘旧标签收尾"
+fresh
+mkmerged 241 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+touch "$GD/F_delete_labels"
+tick
+chk "第 1 轮：Done、提醒加上了，旧标签摘不掉，没记已交接" "$(labels_of 241)/$(jq -r '.merge_followup.prs["241"].handed // "none"' "$STATE")" "Done,pending/human,pending/review/none"
+rm -f "$GD/F_delete_labels"
+tick
+chk "第 2 轮：摘掉旧标签、提醒留着、交接收敛（没把自己加的提醒当成新一轮）" "$(labels_of 241)/$(jq -r '.merge_followup.prs["241"].handed // "none"' "$STATE")/$(jq -r '.merge_followup.prs["241"].pr_superseded // false' "$STATE")" "Done,pending/human/1/false"
+
+echo "㉕ 两步写之间 PR 的目标分支变了（标签不变）→ 停手，之后也不再写"
+fresh
+mkissue 250 "" open
+mkmerged 251 feature/issue-250 "Refs #250"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q items.json > i.tmp && mv i.tmp items.json\n' "$GD" '.["251"].base.ref = "release"' > "$GD/hook_after_POST_issues_251_labels_1"
+tick
+chk "这一轮：加了 Done 就停手，旧标签还在、没记已交接、日志写明" "$(labels_of 251)/$(jq -r '.merge_followup.prs["251"].handed // "none"' "$STATE")/$(grep -c 'PR #251 的标签在两次写之间被人改了' "$W/state/poll.log")" "Done,pending/review/none/1"
+tick
+chk "下一轮：身份和记录对不上，不再写" "$(labels_of 251)/$(jq -r '.merge_followup.prs["251"].handed // "none"' "$STATE")" "Done,pending/review/none"
+
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]
