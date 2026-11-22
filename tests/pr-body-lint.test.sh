@@ -307,9 +307,9 @@ BASE=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || true)
 [ -n "$BASE" ] && git -C "$REPO_DIR" archive "$BASE" | tar -x -C "$OLD"
 cp "$REPO_DIR/REVIEW.md" "$TMP/review-new.md"
 NEW_LINE='GitHub 上 issue / PR 的正文和评论都有修改历史'
-# 「旧审查标准」= 现在的 REVIEW.md 去掉那一条。不取合并基点的 REVIEW.md：那一条合进主干之后，
-# 合并基点本身就带着它，这组对拍在每个分支上都会红（GitHub#658 发现，主干上的 c35f4540 已经红了）。
-grep -vF -- "$NEW_LINE" "$REPO_DIR/REVIEW.md" > "$TMP/review-old.md" || :
+# 旧版审查标准 = 当前这份去掉新条目那一行。不从合并基点取：这一条进了主干以后，任何分支的合并基点
+# 都已经带着它（PR #657 的 CI：试合并的合并基点就是主干本身，这一条对每个 PR 都红）
+grep -vF -- "$NEW_LINE" "$TMP/review-new.md" > "$TMP/review-old.md" || :
 
 echo "── 【3】真实派工的成品 prompt ──"
 P=$(make_project new "$TMP/review-new.md")
@@ -351,8 +351,8 @@ else
     bad "取不到合并基点（git merge-base HEAD origin/main），没法对拍复审 prompt"
 fi
 has "$TMP/out-new/review.md" "$NEW_LINE" && ok "主干是新审查标准：复审 prompt 带新条目" || bad "新审查标准没进复审 prompt"
-has "$TMP/review-new.md" "$NEW_LINE" && [ -s "$TMP/review-old.md" ] && ! has "$TMP/review-old.md" "$NEW_LINE" \
-    && ok "旧审查标准样本：有内容、不含新条目；新样本含新条目" || bad "审查标准样本没造对（新样本缺新条目，或旧样本为空 / 仍含新条目）"
+check "旧版审查标准里确实只少了新条目那一行" \
+    "$(diff "$TMP/review-new.md" "$TMP/review-old.md" | grep -c '^<')/$(grep -cF -- "$NEW_LINE" "$TMP/review-old.md")" "1/0"
 P3=$(make_project oldmd "$TMP/review-old.md")
 dispatch_all "$REPO_DIR" "$P3" "$TMP/out-oldmd"
 [ -s "$TMP/out-oldmd/review.md" ] && ! has "$TMP/out-oldmd/review.md" "$NEW_LINE" \
