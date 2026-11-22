@@ -343,8 +343,7 @@ LABEL_PENDING_LATER="pending/later"
 # list, polling identity; directories come from a local `git fetch` + diff), never during polling. A list
 # that cannot be read is written as "could not read", never as "nothing else". At most 20 items, and at most
 # CONCURRENT_WORK_MAX_BYTES bytes in all, with the real remainder stated. Reviews do not get the section.
-# On by default: a config without this line has it on. `false` or an empty value = off: prompts and GitHub
-# calls are byte-identical to before.
+# Empty / false / line missing = off: prompts and GitHub calls are byte-identical to before.
 #
 # 设成 true 时，worker 的每次派工（新 issue、issue 评论、PR 评论、拆出来的子项）提示词里多一段：其他带
 # doing/agent、复审标签（配了才算）、pending/PR 的打开条目，每条一行——编号、状态、标题、一句改动摘要
@@ -365,14 +364,16 @@ ENABLE_CONCURRENT_WORK_HINT=true
 # queues an autopilot merge, daemon comments and waiting-on-prerequisite notes stay separate. Only the loop's
 # own comments are ever edited; people are asked to reply in the hand-off comments, not to edit the record.
 # The weekly report and the per-PR time stats count each section as one comment would have been counted.
-# Empty / false / line missing = off: prompts and GitHub calls are byte-identical to before.
+# On by default: a config without this line has it on. `false` or an empty value = off: prompts and GitHub
+# calls are byte-identical to before. Removing the line does not turn it off.
 #
-# 默认打开（配置里没有这一行也算开）：agent 之间的来回（交方案 / 交 PR → 复审 → 修订 → ……）写进同一条「往返记录」评论：每次交给
-# agent 的交付（发完翻复审标签或派工标签）在末尾追加一节，只写改了什么、给下一个 agent 的交代和用量；完整版本
-# 放在记录顶部、换成最新的。交给人的评论、托管交合并的复审结论、daemon 的评论、等前置登记照现在单独发。只改
-# loop 自己发的往返记录，不改任何人的评论；人请在交人评论里回复，不要编辑往返记录。周报和单 PR 耗时统计把每一节
-# 当作一条评论来算，结果与以前一样。改写不成就另起一条完整的新记录。写成 false 或空值 = 关闭，提示词和
-# GitHub 调用与以前逐字节一样；删掉这一行不是关闭，是回到默认的开。
+# 默认打开（配置里没有这一行也算开）：agent 之间的来回（交方案 / 交 PR → 复审 → 修订 → ……）写进同一条
+# 「往返记录」评论：每次交给 agent 的交付（发完翻复审标签或派工标签）在末尾追加一节，只写改了什么、
+# 给下一个 agent 的交代和用量；完整版本放在记录顶部、换成最新的。交给人的评论、托管交合并的复审结论、
+# daemon 的评论、等前置登记照现在单独发。只改 loop 自己发的往返记录，不改任何人的评论；人请在交人评论里
+# 回复，不要编辑往返记录。周报和单 PR 耗时统计把每一节当作一条评论来算，结果与以前一样。改写不成就另起
+# 一条完整的新记录。写成 false 或空值 = 关闭，提示词和 GitHub 调用与以前逐字节一样；删掉这一行不是关闭，
+# 是回到默认的开。
 ENABLE_ROUND_LOG=true
 
 # The most bytes the list above may take (whole lines only; the closing "N more not listed" line counts).
