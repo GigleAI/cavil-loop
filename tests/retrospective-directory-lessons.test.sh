@@ -44,6 +44,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 往返记录 GitHub#669 起没写就开；这里看的是它关着时拼出的提示词
+ENABLE_ROUND_LOG=""
 CONF
 PROMPTS="$TMP/project/.agents/skills/cavil-loop/prompts"
 mkdir -p "$TMP/state" "$TMP/wt" "$PROMPTS" "$TMP/skill/prompts"

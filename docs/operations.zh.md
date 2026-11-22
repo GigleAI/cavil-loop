@@ -1318,8 +1318,8 @@ agent 跑叫醒脚本：挂 `LABEL_PENDING_REQUESTER_BOT`，确认挂上后调�
 ## 往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）
 
 agent 之间的一段来回——交方案或 PR、复审、修订、再复审……——只占**一条**评论，叫「往返记录」，不再每一步一条。
-配置里写 `ENABLE_ROUND_LOG=true` 才开（模板里写了；配置里没有这一行时算关，`poll.log` 提示一次）。写
-`ENABLE_ROUND_LOG=false`（或删掉这一行）即关闭。
+默认打开：配置里没有这一行、或写 `ENABLE_ROUND_LOG=true`，都是开。写 `ENABLE_ROUND_LOG=false`（或空值
+`ENABLE_ROUND_LOG=""`）即关闭；删掉这一行会回到默认的开。
 
 <details><summary>记录里写什么、什么照旧单独发</summary>
 
@@ -1368,8 +1368,8 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 
 <details><summary>关掉</summary>
 
-写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；之后的交付恢复成普通评论。要让
-所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
+写 `ENABLE_ROUND_LOG=false`（或空值）。删掉这一行不是关闭——没有这一行就是开。已有的记录原样留着、照常被读取和
+统计；之后的交付恢复成普通评论。
 
 </details>
 
