@@ -153,21 +153,100 @@ pub fn send_bytes_with(req: &HttpRequest, limit: u64, policy: &Policy) -> Result
 type Answer<T> = (u16, Vec<(String, String)>, T);
 
 fn send_as<T>(agent: &ureq::Agent, req: &HttpRequest, policy: &Policy, body: &dyn Fn(&mut ureq::Body) -> Result<T, ureq::Error>) -> Result<Answer<T>, String> {
-    let started = Instant::now();
     let read = is_read(req);
+    let clock = retry_clock();
+    retry_loop(policy, read, clock.as_ref(), &mut |left| attempt(agent, req, left, body))
+}
+
+/// GitHub#649: where the retry loop takes its time from and how it waits. The application always
+/// uses `RealClock`; only the test entry (the harness) can switch the process to `VirtualClock`.
+pub trait RetryClock: Send + Sync {
+    /// time passed since `start()` was called on this loop
+    fn elapsed(&self, start: &RetryStart) -> Duration;
+    fn start(&self) -> RetryStart;
+    /// wait before the next try
+    fn wait(&self, d: Duration);
+}
+
+/// The moment one request's loop began, in the clock's own terms.
+pub struct RetryStart {
+    real: Instant,
+    /// a virtual clock's waits so far, when the loop began
+    waited: Duration,
+}
+
+/// Real time and real sleeps: what the application uses.
+pub struct RealClock;
+
+impl RetryClock for RealClock {
+    fn start(&self) -> RetryStart {
+        RetryStart { real: Instant::now(), waited: Duration::ZERO }
+    }
+    fn elapsed(&self, start: &RetryStart) -> Duration {
+        start.real.elapsed()
+    }
+    fn wait(&self, d: Duration) {
+        std::thread::sleep(d);
+    }
+}
+
+/// GitHub#649, tests only: a wait does not sleep, it is added to a running total and reported;
+/// "time passed" = real time passed + the waits added since the loop began. So the count, the
+/// budget and when a request gives up stay what they are with real waits, only nobody sleeps.
+pub struct VirtualClock {
+    waited: std::sync::Mutex<Duration>,
+    report: Box<dyn Fn(Duration) + Send + Sync>,
+}
+
+impl VirtualClock {
+    pub fn new(report: Box<dyn Fn(Duration) + Send + Sync>) -> VirtualClock {
+        VirtualClock { waited: std::sync::Mutex::new(Duration::ZERO), report }
+    }
+}
+
+impl RetryClock for VirtualClock {
+    fn start(&self) -> RetryStart {
+        RetryStart { real: Instant::now(), waited: *self.waited.lock().unwrap() }
+    }
+    fn elapsed(&self, start: &RetryStart) -> Duration {
+        start.real.elapsed() + self.waited.lock().unwrap().saturating_sub(start.waited)
+    }
+    fn wait(&self, d: Duration) {
+        *self.waited.lock().unwrap() += d;
+        (self.report)(d);
+    }
+}
+
+static RETRY_CLOCK: OnceLock<std::sync::Arc<dyn RetryClock>> = OnceLock::new();
+
+/// The clock every request's retry loop uses: the real one unless the test entry installed another.
+pub fn retry_clock() -> std::sync::Arc<dyn RetryClock> {
+    RETRY_CLOCK.get_or_init(|| std::sync::Arc::new(RealClock)).clone()
+}
+
+/// GitHub#649: called only by the test entry (the harness, with its own command-line switch) before
+/// any request is sent. Refused once a clock is in place, so it can never change mid-run.
+pub fn install_retry_clock(c: std::sync::Arc<dyn RetryClock>) -> Result<(), String> {
+    RETRY_CLOCK.set(c).map_err(|_| "retry clock already in place".to_string())
+}
+
+/// GitHub#364 / #649: the one retry loop. `attempt` gets the time that is left and makes one try;
+/// the loop decides from the clock whether there is time for the next wait and another try.
+fn retry_loop<T>(policy: &Policy, read: bool, clock: &dyn RetryClock, attempt: &mut dyn FnMut(Duration) -> Result<T, Broke>) -> Result<T, String> {
+    let started = clock.start();
     let mut retries = 0usize;
     loop {
-        let left = policy.budget.saturating_sub(started.elapsed());
-        let broke = match attempt(agent, req, left, body) {
+        let left = policy.budget.saturating_sub(clock.elapsed(&started));
+        let broke = match attempt(left) {
             Ok(r) => return Ok(r),
             Err(b) => b,
         };
         let again = broke.network && (broke.phase == Phase::Connect || read);
         let wait = policy.delays.get(retries).copied();
-        let left = policy.budget.saturating_sub(started.elapsed());
+        let left = policy.budget.saturating_sub(clock.elapsed(&started));
         match wait {
             Some(wait) if again && left > wait => {
-                std::thread::sleep(wait);
+                clock.wait(wait);
                 retries += 1;
             }
             _ => return Err(with_retries(broke.message, retries)),
@@ -809,5 +888,120 @@ mod tests {
         ] {
             assert!(!graphql_only_queries(doc), "{doc}");
         }
+    }
+
+    // ---- GitHub#649: the retry loop on a clock the test moves by hand ----
+
+    /// time only moves when an attempt says how long it took or the loop waits
+    struct HandClock(std::sync::Mutex<Duration>, std::sync::Mutex<Vec<Duration>>);
+
+    impl HandClock {
+        fn new() -> HandClock {
+            HandClock(std::sync::Mutex::new(Duration::ZERO), std::sync::Mutex::new(vec![]))
+        }
+        fn pass(&self, d: Duration) {
+            *self.0.lock().unwrap() += d;
+        }
+        fn waits(&self) -> Vec<u64> {
+            self.1.lock().unwrap().iter().map(|d| d.as_millis() as u64).collect()
+        }
+    }
+
+    impl RetryClock for HandClock {
+        fn start(&self) -> RetryStart {
+            RetryStart { real: Instant::now(), waited: *self.0.lock().unwrap() }
+        }
+        fn elapsed(&self, start: &RetryStart) -> Duration {
+            self.0.lock().unwrap().saturating_sub(start.waited)
+        }
+        fn wait(&self, d: Duration) {
+            self.pass(d);
+            self.1.lock().unwrap().push(d);
+        }
+    }
+
+    fn broke(phase: Phase) -> Broke {
+        Broke { phase, network: true, message: "reset".into() }
+    }
+
+    /// Runs the loop against made-up attempts: each takes `took[i]` ms and fails in `how[i]`.
+    fn run(budget_ms: u64, read: bool, took: &[u64], how: &[Phase]) -> (Result<(), String>, usize, Vec<u64>) {
+        let clock = HandClock::new();
+        let policy = Policy { budget: Duration::from_millis(budget_ms), ..Policy::default() };
+        let mut n = 0usize;
+        let r = retry_loop(&policy, read, &clock, &mut |_left| {
+            let i = n;
+            n += 1;
+            clock.pass(Duration::from_millis(took[i.min(took.len() - 1)]));
+            Err(broke(how[i.min(how.len() - 1)]))
+        });
+        (r, n, clock.waits())
+    }
+
+    #[test]
+    fn budget_edge_one_ms_short_equal_and_one_ms_over() {
+        // try 1 fails after 100 ms, waits 200 ms, try 2 fails after 400 ms: 700 ms have passed and
+        // the next wait is 500 ms. Left must be strictly more than the wait to go on.
+        let (r, n, waits) = run(1199, true, &[100, 400], &[Phase::BeforeHead]);
+        assert_eq!((n, waits), (2, vec![200]), "499 ms left < 500 ms wait: stop");
+        assert!(r.unwrap_err().ends_with("（已自动重试 1 次）"));
+        let (_, n, waits) = run(1200, true, &[100, 400], &[Phase::BeforeHead]);
+        assert_eq!((n, waits), (2, vec![200]), "500 ms left = 500 ms wait: stop");
+        let (r, n, waits) = run(1201, true, &[100, 400, 0], &[Phase::BeforeHead]);
+        assert_eq!((n, waits), (3, vec![200, 500]), "501 ms left > 500 ms wait: wait and try a third time");
+        assert!(r.unwrap_err().ends_with("（已自动重试 2 次）"));
+    }
+
+    #[test]
+    fn a_budget_shorter_than_the_first_wait_never_retries() {
+        let (r, n, waits) = run(150, true, &[10], &[Phase::Connect]);
+        assert_eq!((n, waits.len()), (1, 0));
+        assert!(!r.unwrap_err().contains("已自动重试"));
+    }
+
+    #[test]
+    fn the_count_runs_out_before_a_long_budget() {
+        let (r, n, waits) = run(60_000, true, &[1], &[Phase::Connect]);
+        assert_eq!((n, waits), (5, vec![200, 500, 1000, 2000]));
+        assert!(r.unwrap_err().ends_with("（已自动重试 4 次）"));
+    }
+
+    #[test]
+    fn refused_and_cut_off_follow_the_retry_table() {
+        // a write is tried again only when the connection never came up
+        let (_, n, _) = run(30_000, false, &[1], &[Phase::Connect, Phase::BeforeHead]);
+        assert_eq!(n, 2, "write: refused → again; then sent with no answer → stop");
+        let (_, n, _) = run(30_000, false, &[1], &[Phase::InBody]);
+        assert_eq!(n, 1, "write cut off mid-body: never again");
+        let (_, n, _) = run(30_000, true, &[1], &[Phase::InBody]);
+        assert_eq!(n, 5, "read cut off mid-body: again, up to the count");
+    }
+
+    #[test]
+    fn the_virtual_clock_counts_waits_into_the_budget_without_sleeping() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let s2 = seen.clone();
+        let clock = VirtualClock::new(Box::new(move |d| s2.lock().unwrap().push(d.as_millis() as u64)));
+        // 1 s budget: 200 + 500 fit, then 1000 does not (well over 300 ms are already gone)
+        let policy = Policy { budget: Duration::from_secs(1), ..Policy::default() };
+        let t = Instant::now();
+        let mut n = 0;
+        let r: Result<(), String> = retry_loop(&policy, true, &clock, &mut |_| {
+            n += 1;
+            Err(broke(Phase::Connect))
+        });
+        assert!(t.elapsed() < Duration::from_millis(200), "slept: {:?}", t.elapsed());
+        assert_eq!(*seen.lock().unwrap(), vec![200, 500]);
+        assert_eq!(n, 3);
+        assert!(r.unwrap_err().ends_with("（已自动重试 2 次）"));
+    }
+
+    #[test]
+    fn the_application_uses_the_real_clock() {
+        // nothing in this process installed another clock: requests sleep for real
+        let c = retry_clock();
+        let s = c.start();
+        c.wait(Duration::from_millis(30));
+        assert!(c.elapsed(&s) >= Duration::from_millis(30));
     }
 }

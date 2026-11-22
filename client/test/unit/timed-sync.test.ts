@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { FULL_READ_EVERY_MS } from '../../src/data/changeCheck';
 import { headerText, hoverLines, offlineDataText } from '../../src/renderer/syncTimes';
 import { Cache } from '../support/cache';
@@ -135,7 +136,7 @@ async function boot(opts: Opts = {}) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: clock.now, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({
+  const c = await createController({
     backend: harness,
     endpoints,
     now: clock.now,
@@ -325,7 +326,7 @@ describe('two times per source: 整份读取 and 上次检查', () => {
 
     // a restart: the check time is not stored — it is the stored read's time again (older, never newer)
     await c.settled();
-    const again = await Controller.create({ backend: harness, endpoints: { api: fake.api, web: fake.web }, now: clock.now, timers: clock.timers, defaultClientId: '' });
+    const again = await createController({ backend: harness, endpoints: { api: fake.api, web: fake.web }, now: clock.now, timers: clock.timers, defaultClientId: '' });
     controllers.push(again);
     expect(times(again, REPO_KEY)).toEqual({ sourceKey: REPO_KEY, readAt: t0, checkedAt: t0 });
 

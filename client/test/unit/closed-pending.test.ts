@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -79,7 +80,7 @@ async function signedIn(checking = false): Promise<Harness> {
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop, readRetryDelaysMs: [], followUpSyncMs: 3_600_000, ...(checking ? {} : { fullReadEveryMs: 0 }) });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop, readRetryDelaysMs: [], followUpSyncMs: 3_600_000, ...(checking ? {} : { fullReadEveryMs: 0 }) });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();

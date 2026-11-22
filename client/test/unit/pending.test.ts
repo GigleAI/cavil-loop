@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, PREFETCH_PER_ROUND } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -110,7 +111,7 @@ async function signedIn(
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);
   for (const s of opts.sources ?? []) c.addSource(s);
   return {

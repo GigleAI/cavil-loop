@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, IMAGE_FETCHES } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -41,7 +42,7 @@ async function restartSignedInWith(clientId: string) {
   cache.setSetting('grantClientId', clientId);
   const endpoints = { api: fake.api, web: fake.web };
   backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: new FileStore(credentialsFile), now: () => clock.t, sleep: async () => {} });
-  c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   await c.start();
   expect(c.getState().phase).toBe('ready');
 }
@@ -72,7 +73,7 @@ beforeEach(async () => {
   await credentials.set(FAKE_TOKEN);
   const endpoints = { api: fake.api, web: fake.web };
   backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
-  c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   await c.start();
   expect(c.getState().phase).toBe('ready');
 });

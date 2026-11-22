@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { RATE_LIMIT_MESSAGE } from '../../src/data/github';
 import { clockAt, hoverLines, retryText, retryByHand } from '../../src/renderer/syncTimes';
 import { hhmm } from '../../src/shared/readFailure';
@@ -75,7 +76,7 @@ async function boot(opts: { sources?: string[]; retryDelaysMs?: number[] } = {})
     },
   });
   backends.push(harness);
-  const c = await Controller.create({
+  const c = await createController({
     backend: harness,
     endpoints,
     now: () => clock.t,

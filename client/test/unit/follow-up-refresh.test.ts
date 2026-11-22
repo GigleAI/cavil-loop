@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -68,7 +69,7 @@ async function ready(opts: Opts = {}) {
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: opts.followUpSyncMs ?? NEVER });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: opts.followUpSyncMs ?? NEVER });
   controllers.push(c);
   if (opts.project !== false) c.addSource(PROJECT_URL);
   if (opts.repo !== false) c.addSource(REPO);

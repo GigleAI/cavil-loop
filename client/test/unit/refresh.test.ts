@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, REASON_REFRESH_ENDED, REFRESH_MARGIN_MS } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -58,7 +59,7 @@ async function make(store: FileStore, clock: { t: number }) {
     },
   });
   backends.push(backend);
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   return { c, cache, backend };
 }

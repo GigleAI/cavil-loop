@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -63,7 +64,7 @@ async function signInAsApp(store: FileStore, clock: { t: number }) {
     },
   });
   fake.state.nextGrant = { token: 'ghu_fakeapptoken0000000000000000000001', refreshToken: 'ghr_fakeapprefresh00000000000000000000001', expiresIn: 8 * 3600 };
-  const c = await Controller.create({ backend: watched, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend: watched, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import * as documents from '../../src/data/queries';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -49,7 +50,7 @@ async function signedIn(beforeLogin: () => void = () => {}) {
     },
   });
   backends.push(b);
-  const c = await Controller.create({ backend: b, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend: b, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH, expiresIn: 8 * 3600 };
   c.addSource(REPO);

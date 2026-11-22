@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -64,7 +65,7 @@ async function ready(intercept?: (cmd: string, args: any, harness: HarnessBacken
   const backend: Backend = { call: async (cmd, args) => ((await intercept?.(cmd, args, harness)) as any) ?? harness.call(cmd, args) };
   // GitHub#261: no change check — these rounds change GitHub's data behind its back (no update time
   // moves) and count full reads; the check's own interplay with a dropped round is in change-check.test.ts
-  const c = await Controller.create({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
+  const c = await createController({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();

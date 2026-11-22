@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -410,7 +411,7 @@ async function make(script: (cmd: string, args: Record<string, unknown>) => Rena
       return backend.call(cmd, args);
     },
   };
-  const c = await Controller.create({ backend: wrapped, endpoints, now: () => FIXTURE_NOW, defaultClientId: '' });
+  const c = await createController({ backend: wrapped, endpoints, now: () => FIXTURE_NOW, defaultClientId: '' });
   open.push({ c, backend, cache });
   return { c, calls, backend };
 }

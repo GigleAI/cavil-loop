@@ -146,6 +146,8 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
     db: join(env.userData, 'cache.sqlite'),
     endpoints: { api: env.fake.api, web: env.fake.web },
     credentials: new FileStore(env.cred),
+    // GitHub#649: the UI tests keep the back end's real retry waits, as before
+    retryClock: 'real',
     // GitHub#314: the local-daemon switches (fake HOME, PATH, scheduler) for the settings section
     ...(opts.backendEnv ? { env: opts.backendEnv } : {}),
     opened: new Proxy(opened, {

@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -34,7 +35,7 @@ async function make(opts: { seed?: Record<string, unknown>; languages?: () => re
       return backend.call(cmd, args);
     },
   };
-  const c = await Controller.create({ backend: recorded, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', ...(opts.languages ? { languages: opts.languages } : {}) });
+  const c = await createController({ backend: recorded, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', ...(opts.languages ? { languages: opts.languages } : {}) });
   controllers.push(c);
   return { c, cache, calls, backend };
 }

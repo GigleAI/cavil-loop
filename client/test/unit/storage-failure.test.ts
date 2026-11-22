@@ -10,6 +10,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { encodeGrant } from '../support/grant';
@@ -77,7 +78,7 @@ async function app(store: FileStore, clock = { t: FIXTURE_NOW }) {
   const endpoints = { api: fake.api, web: fake.web };
   const backend = new HarnessBackend({ db: db(), endpoints, credentials: store, now: () => clock.t, sleep: async () => {} });
   open.push(backend);
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   return { c, backend };
 }
 

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, REASON_REVOKED } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore, MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -51,7 +52,7 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
     opened,
   });
   backends.push(backend);
-  const c = await Controller.create({
+  const c = await createController({
     // a test may stand between the window and the real back end (hold a command, say)
     backend: opts.wrap ? opts.wrap(backend) : backend,
     endpoints,

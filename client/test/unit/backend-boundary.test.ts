@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
@@ -58,7 +59,7 @@ describe('the credential never crosses into the window', () => {
   it('sign in, sync, change an item, refresh, sign out: no command and no answer carries a token', async () => {
     const clock = { t: FIXTURE_NOW };
     const b = backend(clock);
-    const c = await Controller.create({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+    const c = await createController({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
     c.addSource(REPO);
     await c.start();
     c.setAppKind('github-app');
@@ -95,7 +96,7 @@ describe('the back end only signs requests for the GitHub API', () => {
   async function signedIn() {
     const clock = { t: FIXTURE_NOW };
     const b = backend(clock);
-    const c = await Controller.create({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+    const c = await createController({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
     await c.start();
     const login = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting');

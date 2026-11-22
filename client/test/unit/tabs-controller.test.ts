@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -61,7 +62,7 @@ async function ready(first = true) {
   const backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: new FileStore(join(dir, 'cred')), now: () => clock.t, sleep: async () => {} });
   backends.push(backend);
   // no change check: every round reads the list in full, so "a round ran" is one first page
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
   controllers.push(c);
   if (first) c.addSource(REPO);
   await c.start();

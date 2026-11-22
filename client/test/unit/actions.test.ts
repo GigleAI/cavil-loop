@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -66,7 +67,7 @@ async function ready(opts: { project?: boolean; repo?: boolean; intercept?: (cmd
   const backend: Backend = opts.intercept
     ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) }
     : harness;
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   controllers.push(c);
   for (const n of [137, 138, 139]) pinLabels(n, ['pending/human']);
   if (opts.project !== false) c.addSource(PROJECT_URL);

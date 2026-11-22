@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -59,7 +60,7 @@ async function boot(sources: string[], now: () => number = () => FIXTURE_NOW) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
+  const c = await createController({ backend: harness, endpoints, now, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
   controllers.push(c);
   for (const s of sources) c.addSource(s);
   await c.start();
