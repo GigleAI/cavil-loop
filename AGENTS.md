@@ -331,6 +331,37 @@ way out — and the notice area, sends and unsent-text rules built on them. They
 [client/README.md](client/README.md) (section 「操作：界面先变、主程序去做、结果统一通知」); read them before
 changing any client action.
 
+### Client development builds (GitHub#628 / #665)
+
+How the client's development builds (tag `client/vX.Y.Z-dev.N`, marked Pre-release) are made is internal to this repository, so it is written here only — not in `docs/`, not in two languages (the maintainer's call on PR #673). Code: `.github/workflows/client.yml`; whether a run builds: `client/scripts/dev-plan.mjs`; whether and what the publish step writes: `client/scripts/dev-release.mjs`. Tests: `tests/release-auto.test.sh`, `client/test/unit/dev-plan.test.ts`, `client/test/unit/dev-release.test.ts`.
+
+- **Which runs may publish**: a push to main that changes `client/`, `.github/workflows/client.yml` or `.github/actions/client-setup/` (its quick tests always run, then the plan decides about the builds); the nightly run, 20:30 UTC on main's tip (the plan comes first; when it says no build the whole run stops there, green, without even the quick tests); a manual run on main with `publish` ticked (exactly the nightly run; `force` also skips the "did the client change?" check). `publish` on any other branch fails at the first step. A manual run without `publish` builds and checks with a throw-away key and publishes nothing.
+- **Whether a run builds** is the decision table in `client/scripts/dev-plan.mjs`'s header — the one place it is written; do not restate it elsewhere. In short: it usually builds when the client changed since the newest published development build; a newest build that is incomplete or has its tag on the wrong commit gets a higher version over it from the next commit, client change or not; the same commit never gets a second version number; anything it cannot read means build.
+- **Building is not publishing.** The publish step takes one run at a time, reads the release and tag lists again and writes nothing when a higher version is already out, this version is already out complete, this version's tag already exists (on any commit — so a forced run over a build of this very commit that only has its tag left builds, checks, and then fails here), a public build is incomplete (it is kept as it is), a draft was public once, or anything it needs cannot be read. A draft that never went public is filled in with all six files of this build. So `force`, or a list the plan could not read, means "build and check", not "a release comes out".
+- **What a build runs**: the quick tests, the Apple-silicon Mac build and its real update check, the Windows x64 build and its real update check (`client/scripts/windows-update-check.sh`), and the size gate; only when all pass is it published as a pre-release `client/vX.Y.(Z+1)-dev.N`, signed with the update key; the latest 10 are kept (older ones are removed with their tags). The full tests stay in the Sunday run.
+- **Queues**: pushes to main queue in `client-dev-publish-push`, the nightly and manual publishing runs in `client-dev-publish`; in each a later run waits and never cancels the running one, and a newer one replaces one still waiting. The publish job has its own slot, `client-dev-release-publish`. Each queue runs one at a time, so at most two runs reach that slot together and none is replaced there; what can be replaced is a push still waiting in its queue, by a newer push that carries its changes. A push whose build fails is not reported; the next push or night tries again by the same rule. Pull-request checks are in neither queue.
+- **A red night opens an issue** the same way a failed Release run does (`scripts/release_failure_report.py`, `REPORT_KIND=client-nightly`: only create or comment, re-read before writing, never touch an existing issue's labels), titled `客户端每晚开发版失败（自动报告）`, marker `<!-- cavil-client-nightly-failure -->`, labelled `pending/agent`. Only the nightly run reports. The issue names the version this run tried, whether it failed before or in the publish step, and that version's state by the check below (complete now / not out complete / cannot tell).
+- **Checking whether a build is complete**: it must carry six files, fully uploaded — `-arm64.dmg`, `-arm64.app.tar.gz`, `-arm64.app.tar.gz.sig`, `-windows-x64.exe`, `-windows-x64.exe.sig` and `latest.json` (size 0 on the Releases page = not finished) — and its tag must be on the commit the release recorded. The read-only check, run in `client/` (the same rule as the plan and the publish step):
+
+<!-- client-nightly-check:begin -->
+```bash
+node scripts/dev-release.mjs --check 0.5.3-dev.640 --repo GigleAI/cavil-loop
+```
+<!-- client-nightly-check:end -->
+
+  `COMPLETE` (exit 0): all six files uploaded and the tag on the recorded commit; `INCOMPLETE` (exit 1): lists what is missing or not fully uploaded, or says the tag is on another commit or missing; `UNKNOWN` (exit 2): something could not be read or judged — not "there is none".
+
+<!-- client-nightly-ops:begin -->
+**Turning the nightly report off** (the builds go on, a red night just opens no issue) and **back on**:
+
+```bash
+gh variable set CLIENT_NIGHTLY_REPORT --body off --repo GigleAI/cavil-loop
+gh variable delete CLIENT_NIGHTLY_REPORT --repo GigleAI/cavil-loop
+```
+
+Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `CLIENT_NIGHTLY_REPORT off` while it is off, and nothing of that name once it is on again.
+<!-- client-nightly-ops:end -->
+
 ## Common task flows
 
 ### Edit daemon logic (agent-poll.sh / dispatch-*.sh)

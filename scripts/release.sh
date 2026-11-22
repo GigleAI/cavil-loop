@@ -89,7 +89,7 @@
 # `tests/lib/gha_expr.py`, which evaluates the workflow's own `if:` / `concurrency` expressions
 # (GitHub's semantics: status functions, `needs.*`, case-insensitive equality, coercion; anything
 # outside the subset raises) and simulates which jobs run; add a new condition there, never a `has` on
-# its text — the `client-nightly` report kind next to the other two, and the docs' off / on steps
+# its text — the `client-nightly` report kind next to the other two, and AGENTS.md's off / on steps
 # behind `<!-- client-nightly-ops:begin -->`, run verbatim; the decision itself
 # (`client/scripts/dev-plan.mjs`) → `client/test/unit/dev-plan.test.ts` (real git, fake `gh`; its
 # across-nights case runs the plan with a read-only view — drafts are not listed — and

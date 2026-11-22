@@ -1042,14 +1042,11 @@ check "… the release report's switch still there" "$(has_var RELEASE_FAILURE_R
 check "the variable the steps set is the one the report job reads" \
     "$(grep -c "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$NC_WORKFLOW")" 1
 
-echo "-- docs: turning the client's nightly report off and on again — as written (GitHub#628)"
-for f in operations.md operations.zh.md; do
-    sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/docs/$f" > "$TMP/cn-ops-$f.md"
-    sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-$f.md" | grep -v '^```' > "$TMP/cn-ops-$f.sh"
-    grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-$f.md" | tr -d '`' > "$TMP/cn-ops-$f.check"
-done
-check "both docs carry the same steps" "$(cmp -s "$TMP/cn-ops-operations.md.sh" "$TMP/cn-ops-operations.zh.md.sh" && echo same)" same
-check "both docs name the same check" "$(cmp -s "$TMP/cn-ops-operations.md.check" "$TMP/cn-ops-operations.zh.md.check" && echo same)" same
+echo "-- AGENTS.md: turning the client's nightly report off and on again — as written (GitHub#628; written only in AGENTS.md since PR #673)"
+sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/AGENTS.md" > "$TMP/cn-ops-operations.md.md"
+sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-operations.md.md" | grep -v '^```' > "$TMP/cn-ops-operations.md.sh"
+grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-operations.md.md" | tr -d '`' > "$TMP/cn-ops-operations.md.check"
+check "the steps are no longer in the user docs" "$(grep -c 'client-nightly-ops:begin' "$REPO_DIR/docs/operations.md" "$REPO_DIR/docs/operations.zh.md" | awk -F: '{n+=$2} END {print n}')" 0
 check "two steps: off, then on" "$(wc -l < "$TMP/cn-ops-operations.md.sh")" 2
 check "one check command" "$(wc -l < "$TMP/cn-ops-operations.md.check")" 1
 printf 'NEGATIVE_CONTROLS_REPORT\toff\t2026-11-01T00:00:00Z\n' > "$VAR_STATE"   # another switch, set before
@@ -1671,12 +1668,10 @@ check "… the night on C: skipped before building, no quick tests (unchanged ru
 CBUILD_ROOT="$TMP/client-revert" cbuild "$(devrel 9 "$REV_A")" TAG= PUBLISH=true EVENT=push SHA="$REV_B"
 check "… the push of B itself → build and publish" "$(build_line)" "0:true:true"
 
-echo "-- docs: checking whether a build is complete — the command as written, both languages (review round 2 #6)"
-for f in operations.md operations.zh.md; do
-    sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/docs/$f" \
-        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-$f.sh"
-done
-check "both docs carry the same check command" "$(cmp -s "$TMP/cn-check-operations.md.sh" "$TMP/cn-check-operations.zh.md.sh" && echo same):$(wc -l < "$TMP/cn-check-operations.md.sh")" "same:1"
+echo "-- AGENTS.md: checking whether a build is complete — the command as written (review round 2 #6; only in AGENTS.md since PR #673)"
+sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/AGENTS.md" \
+    | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-operations.md.sh"
+check "one check command" "$(wc -l < "$TMP/cn-check-operations.md.sh")" 1
 DOCV="$(grep -o '0\.[0-9]*\.[0-9]*-dev\.[0-9]*' "$TMP/cn-check-operations.md.sh")"
 doclist() {  # doclist <python expression editing the asset list `a`> → a release list for $DOCV
     node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$DOCV" | python3 -c '

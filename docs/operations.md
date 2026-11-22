@@ -4199,59 +4199,6 @@ Run only the first line to turn it off, only the second to turn it back on. Chec
 
 </details>
 
-### The client's development build: built on a merge, a nightly catch-up
-
-The client's development builds (tag `client/vX.Y.Z-dev.N`, marked Pre-release) come out of `.github/workflows/client.yml`: a merge into main that touches the client starts a run; it runs the quick tests, then decides by the same rule as the nightly run whether to build and publish (the rule is the "How it decides" item below). The nightly run applies the same rule, so when a merge's build did not come out the night tries again:
-
-<details><summary>When it runs, what it builds and publishes, how it decides, a build by hand</summary>
-
-- **On a merge into main** that changes `client/`, `.github/workflows/client.yml` or `.github/actions/client-setup/`: the quick tests always; then, by the same check as the nightly run below, both builds with their update checks, the size gate, and the publish step. When that check says nothing is to be built (most often a revert back to the newest build, which is complete), only the quick tests run — unlike a night with nothing new, which ends before them. A merge that changes none of these starts no client run (the client would be the same).
-- **When the nightly run runs**: every night from 04:30 Beijing time (20:30 UTC), about an hour, on main's tip. GitHub's scheduled runs can start tens of minutes late at busy times and are occasionally skipped; that night's build then moves to the next night.
-- **How it decides**: it goes down this list in order, and the first line that matches is the answer (a public release is never changed, and one commit never gets a second version number):
-  1. The release list or the tag list cannot be read → build and publish.
-  2. There is a development build of a higher version whose tag is there but whose release page is not public: its tag is on this very commit → no build (with `force`, build and publish); otherwise → build and publish (a draft it can tell never went public is filled in by the publish step).
-  3. No development build was published yet, or the newest one recorded no full commit → build and publish.
-  4. The newest one does not carry all six files, fully uploaded, or its tag is not on the commit the release recorded (see "Checking whether a build is complete" below — the nightly decision, the publish step, a rerun and the check command go by one rule): it is of this very commit → no build (with `force` it builds and checks, and the publish step fails and writes nothing); another commit → build and publish a higher version over it, even with no client change, and the incomplete one stays as it is.
-  5. The newest one is complete and of this very commit → no build (with `force` it builds and checks, and the publish step finds that version already out and writes nothing).
-  6. The newest one is complete and of another commit: compare that commit with this one on `client/`, `.github/workflows/client.yml` and `.github/actions/client-setup/` — a difference, or no way to compare → build and publish; no difference → no build (with `force`, build and publish).
-
-  When the answer is no build, a nightly or manual run stops there, builds nothing, publishes nothing, and is green (a merge's run still finishes its quick tests). A draft that never went public (a publish cut off part-way: no publish time recorded, no tag yet) is filled in and published; a draft that was public once (GitHub keeps its publish time and its tag) is left as it is like a public one, and so is one where that cannot be read. Before creating a release page or filling in a draft it reads this version's tag: a tag already there (on any commit — a release page deleted with its tag left, or a tag made by hand) means the version was made before, and it is not changed either; a tag it cannot read means nothing is written. After publishing it reads the tag again, and it must be on the commit that was built, or the run fails and cleans nothing up; a rerun of that commit that finds the version complete checks the tag first as well, and fails the same way, cleaning nothing up. Filling a draft in, all six files of this build go in, since the files depend on each other (`latest.json` carries each package's signature) and replacing just one would not verify. All of this is about filling a build in: old development builds outside the latest 10 are still removed with their tags, as the regular clean-up, not a change to a public build. When a file's upload state cannot be judged (no state, a state word it does not know, a size it cannot read, two files of one name, a file listed without a name, or a file list it cannot read at all), or a release does not say whether it is a draft or a pre-release, it reads the list once more, and if it still cannot tell it changes nothing. If last night failed in the tests or the packaging, those changes have not gone out yet, so the next night tries again; if it failed in the publish step, that build may be out, half out or not out: one still a draft that never went public is filled in the next night, one public but not complete is left as it is until the next commit's higher version, one that went out complete is not published again.
-- **What it runs**: the quick tests, the Apple-silicon Mac build and its real update check, the Windows x64 build and its real update check (a test build one version lower is installed, finds the new one on the development channel, downloads and checks it, and puts it in place on restart; an installer whose bytes were changed must be refused and change nothing), and the size gate. Only when all pass is it published as a pre-release; the latest 10 are kept. The full tests are not part of it; they stay in the Sunday run.
-- **A build by hand**: Actions → Client → Run workflow, on main, tick `publish`. Exactly the nightly run; with `force` ticked as well it skips the "did the client change?" step: if main moved on since the last build, a new build with the same content and a higher version comes out; on the very commit already published it builds and checks once more, and the publish step finds that version already out and writes nothing. `publish` ticked on any other branch fails at the first step: nothing built, nothing signed, no release page. A manual run without `publish` only builds and checks (with a throw-away key) on any branch, and publishes nothing.
-- **One publish at a time**: the nightly runs and the manual runs with `publish` queue in one line, merges into main in another; in each a later one waits for the one before it and never cancels it, and a newer one replaces one still waiting. Both lines may build at the same time; the step that writes the release page takes one run at a time and reads the release list again first: a higher version already out, or this version already out complete, means it writes nothing. Since each line runs one at a time, at most two runs reach that step together, so the one waiting is never replaced. What can be replaced is a merge still waiting in its line, by a newer merge that carries its changes. A merge whose build fails is not reported; the next merge or the next night tries again by the same rule. A merge that changed the client but leaves it as the newest complete published build has it (a revert) runs its quick tests and builds nothing. The checks on a pull request are in neither line.
-
-</details>
-
-<details><summary>A red night opens an issue; checking whether a build is complete</summary>
-
-- **A red night opens an issue** the same way a failed Release run does (the same script, the same rules: only create or comment, re-read before writing, never touch an existing issue's labels) — but its own: titled `客户端每晚开发版失败（自动报告）`, marker `<!-- cavil-client-nightly-failure -->`, labelled `pending/agent` (`RELEASE_FAILURE_LABEL`). Only the nightly run reports; a red manual run does not. The issue names the version this run tried to publish, whether it failed before publishing or in the publish step, and the result of checking that version by the rule below: complete on the Releases page now (this run put it out and a later step did not finish, or an earlier run put it out and this one never reached the publish step), not out complete (installed apps keep the previous build; one not yet public is tried again the next night, one public but incomplete waits for the next commit's higher version), or cannot tell (a person checks with the command below). It checks the version this run tried, never the newest one on the Releases page — when this run created no new release, the newest one is the previous night's.
-- **Checking whether a build is complete**: a development build must carry these six files, fully uploaded — for Apple silicon `-arm64.dmg`, `-arm64.app.tar.gz` and `-arm64.app.tar.gz.sig`, for Windows `-windows-x64.exe` and `-windows-x64.exe.sig`, and `latest.json`. A file listed on the Releases page with size 0 did not finish uploading and does not count. Or run the read-only check in this repository's `client/` directory (the same rule as the publish step and the nightly decision; it writes nothing; put in the version to check):
-
-<!-- client-nightly-check:begin -->
-```bash
-node scripts/dev-release.mjs --check 0.5.3-dev.640 --repo GigleAI/cavil-loop
-```
-<!-- client-nightly-check:end -->
-
-  `COMPLETE` (exit 0) means done: all six files uploaded **and** this version's tag on the commit the release recorded; `INCOMPLETE` lists the files missing or not fully uploaded, or says the files are complete but the tag is on another commit or missing (exit 1); `UNKNOWN` means the release list could not be read, a file's upload state cannot be judged, the release does not say whether it is a draft, or the tag cannot be read (exit 2), not "there is none".
-
-</details>
-
-<details><summary>Turning the nightly report off and on</summary>
-
-<!-- client-nightly-ops:begin -->
-**Turning the nightly report off** (the builds go on, a red night just opens no issue) and **back on**:
-
-```bash
-gh variable set CLIENT_NIGHTLY_REPORT --body off --repo GigleAI/cavil-loop
-gh variable delete CLIENT_NIGHTLY_REPORT --repo GigleAI/cavil-loop
-```
-
-Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `CLIENT_NIGHTLY_REPORT off` while it is off, and nothing of that name once it is on again.
-<!-- client-nightly-ops:end -->
-
-</details>
-
 ## Troubleshooting
 
 Each entry below starts from what you see (a symptom or a question) and gives the first thing to check; the commands are folded under it.
