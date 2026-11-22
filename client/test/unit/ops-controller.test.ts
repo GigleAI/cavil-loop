@@ -28,7 +28,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
+async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void; readRetrySleep?: (ms: number) => Promise<void> } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -43,7 +43,8 @@ async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opSt
     opCheckDelaysMs: opts.opCheckDelaysMs ?? [],
     ...(opts.opAutoMs !== undefined ? { opAutoMs: opts.opAutoMs } : {}),
     ...(opts.followUpSyncMs !== undefined ? { followUpSyncMs: opts.followUpSyncMs } : {}),
-    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}) });
+    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}),
+    ...(opts.readRetrySleep ? { readRetrySleep: opts.readRetrySleep } : {}) });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -1106,7 +1107,12 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
 
   it('re-reads and the sync fail past the wait (stuck); once both work again the notice is settled, no longer stuck, and puts itself away (PR #282 code review round 1)', async () => {
     waitingForHuman();
-    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30 });
+    // GitHub#649: the round's read retry waits until GitHub works again (the test opens it below): the
+    // round is still on when the notice goes stuck, and its next try is the one that succeeds — the
+    // order the 1 s / 3 s real sleeps used to give by chance
+    let healed!: () => void;
+    const healing = new Promise<void>((r) => (healed = r));
+    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30, readRetrySleep: () => healing });
     fake.state.w.failRefresh.add(ITEM);
     fake.state.failProjectPage.set('org/gigleai/11', 0);
     fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
@@ -1117,10 +1123,11 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
     expect(opPhase(opOf(c, s.id!))).toBe('settling');
     expect(opOf(c, s.id!).readProblem).toContain('重读这一条失败');
     expect(opAutoDismissable(opOf(c, s.id!))).toBe(false);
+    const n = refreshes();
     fake.state.w.failRefresh.delete(ITEM);
     fake.state.failProjectPage.clear();
     fake.state.failRepoPage.clear();
-    const n = refreshes();
+    healed();
     await c.syncNow();
     await idle(c);
     expect(refreshes()).toBeGreaterThan(n);
