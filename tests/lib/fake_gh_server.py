@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+
+# ── The resident fake GitHub: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The resident fake GitHub (`tests/lib/fake_gh_server.py` / `fake_gh_client.sh`), splitting files into
+# parts and `-j` (`tests/run.sh`, `tests/lib/parts.sh`), the same-version skip (`tests/lib/compat.sh`)
+# (GitHub#211) → `tests/fake-gh-server.test.sh` (~10 s) and `tests/run.test.sh` (~20 s); after
+# changing a file that uses one of them, compare its assertion list ("name + result", sorted) against
+# the merge-base copy and check its "跳过 N 项" did not move
+#
 """Resident runner for a fake-`gh` script (GitHub#211): one Python per test file instead of one per call.
 
 Started by tests/lib/fake_gh_client.sh (`install`), never by hand. It compiles the fake-GitHub script

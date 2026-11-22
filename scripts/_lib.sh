@@ -901,6 +901,17 @@ case "$DISPATCH_MODE" in
     *) echo "❌ DISPATCH_MODE 只能是 label 或 greedy，实得：$DISPATCH_MODE" >&2; exit 1 ;;
 esac
 
+# ── The parked label: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The parked label (GitHub#463: `LABEL_PENDING_LATER`, its entry in `greedy_skip_label_list`, the
+# label in `setup.sh`) → `tests/later-label.test.sh` (~6 s; real `agent-poll.sh` against the stateful
+# fake GitHub: greedy and autopilot's "label only" pickup skip it while items next to it are queued, a
+# trigger label still dispatches it, and with the line set to an empty value the GitHub calls and
+# `state.json` equal the merge-base scripts'; since GitHub#551 a missing line means on —
+# `${LABEL_PENDING_LATER-pending/later}`, no colon, so only *unset* takes the default and an empty
+# value stays the human's "off"; `setup.sh` (`config_value_or_default`) and the settings dialog
+# (`effective` for `label` rows) read it the same way) plus `tests/setup-label-colors.test.sh` and
+# `tests/config-notice.test.sh`. It only goes into the shared blocking list — never a separate check
+#
 # greedy 模式的挡工 label。挂了其中任何一个就不派工——每一条都有非它不可的理由：
 #   pending/human  用户明确要人接手（这是用户唯一需要记住的那个「停」）
 #   doing/agent    已经有 worker 在跑，再派一次就是同一条活开两个 session
@@ -1627,6 +1638,16 @@ POLL_IDLE_PROBE_MAX_SECS="${POLL_IDLE_PROBE_MAX_SECS:-600}"
 # 11 位 epoch ≈ 公元 5138 年；时长类（间隔 / 门槛）用 9 位 ≈ 31 年。都远超任何真实取值，
 # 超了就只能是坏数据。
 PACE_MAX_DIGITS=11
+# ── Poll pace / idle + failure backoff: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really
+# do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a
+# half-finished run looks like a failure); the idle probe and its cap (GitHub#252) →
+# `tests/poll-probe.test.sh` (~40 s idle box, real `agent-poll.sh` against a fake `gh` that answers
+# conditional requests the way the real one does — 304 exits 1, the 304 ETag drops `W/`; with the
+# probe off it diffs the GitHub calls and pace state against the merge-base copy; `MUTATION=1` adds
+# seven broken copies). `poll-pace.test.sh` runs with the probe off, since its tiers are the ladder's
+# own
+#
 pace_num() {
     local v="$1" max="${2:-$PACE_MAX_DIGITS}"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
@@ -3395,6 +3416,19 @@ closed_done_flow_labels() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# ── `Done` on issues closed by hand as completed: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# `Done` on issues closed by hand as completed (GitHub#159: `closed_done_enqueue` /
+# `closed_done_drain` / `closed_done_label` / `closed_done_flow_labels` in `_lib.sh`, the enqueue +
+# drain in `agent-poll.sh` § 4) → `tests/closed-issue-done.test.sh` (~20 s by default, real
+# `agent-poll.sh` against the stateful fake GitHub with `FAKE_GH_LISTS=1`; `MUTATION=1` adds fourteen
+# broken copies, ~4.5 min). Only `completed` writes; `not_planned` / `duplicate` / reopened write
+# nothing and leave the queue; anything unreadable or unknown stays queued. "Done" means `Done`
+# present **and** every workflow label confirmed gone — a DELETE is a success only on 2xx or 404. A
+# finished or given-up entry is marked `"done"`, never deleted, until the issue is also in
+# `cleaned_issues` — the cleanup re-enqueues every tick it fails, and deleting would restart the retry
+# count forever (code review round 1). The two merge-path `--remove` lists are left as they are; the
+# test diffs their calls against the merge-base copy
+#
 closed_done_enqueue() {
     local issue="$1" state_file="$2" tmp
     # 只收编号：列表接口异常时 § 4 读到的可能是别的字符串，进了队也永远清不掉
@@ -3479,6 +3513,52 @@ closed_done_label_run() {
     return 1
 }
 
+# ── Autopilot merge closes the issue and keeps `pending/human` as a reminder: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Autopilot merge closes the issue and keeps `pending/human` as a reminder (GitHub#461: the `closes`
+# flag of `.autopilot.handoff` set at merge time — body has a closing keyword **and** the base is the
+# default branch — the closes-mode branch of `autopilot_handoff_judge` with
+# `autopilot_handoff_cmp_after`, `closed_reminder_facts`, the step loop `closed_done_label` +
+# `closed_done_judge` / `closed_done_cmp_after`, the `closes` todo in `autopilot_merged_comment`,
+# `@@LABEL_DONE@@` in the autopilot prompts; the fake GitHub's `merge_closes` / `default_branch`
+# files) → `tests/autopilot-merge-close.test.sh` (~45 s; real `agent-poll.sh` against the stateful
+# fake GitHub) plus `tests/closed-issue-done.test.sh`, `tests/autopilot.test.sh`,
+# `tests/autopilot-split.test.sh`. "Is this `pending/human` a post-close reminder" is decided by
+# **position in the event history** (last "labeled `pending/human`" after the last "closed"), never by
+# timestamp — the merge's close and the daemon's label often share a second. The sweep reads the event
+# history for **every** issue closed as completed, reminder or not (PR #478 review round 1: skipping
+# it when no reminder was on let an unreadable history still write). Events unreadable, an event
+# without an id, or history contradicting the labels (no "closed" event; label on, no "labeled" event)
+# = undecidable, nothing written. `closed_reminder_facts` is the one reader for both: it returns the
+# last close, whether the last "labeled" comes after it, the reminder state the history implies (last
+# reminder event labeled = on / unlabeled = off / none) and the whole list of close / reopen /
+# reminder events; the state must match the labels (`closed_reminder_consistent`), anything else is
+# undecidable (review round 2: a contradicting answer was treated as "a human removed it"). "Added
+# after the close, history says off, label absent" means a human has seen it — the hand-over never
+# adds it back; never decide that from the local "daemon added it" flag (round 1). After each write
+# the event list must be the old one plus exactly the daemon's own event for that step
+# (`closed_reminder_ev_after`: none for another label; one `labeled` / `unlabeled` by the write
+# account for `pending/human`) — never a wildcard (round 2: a human adding and removing the reminder
+# between two writes slipped through). The history also yields the open / closed state (last closed /
+# reopened event) and it must match the issue's state (round 3: an old "closed" event was taken as
+# proof the issue is still closed). **Any** round that does not finish — unreadable, contradicting,
+# changed by someone, a failed write — is a stop **for the whole poll round** (`issue_halt_round` /
+# `issue_halted_round`): the retry queue and the closed-issue sweep later in the same round skip that
+# issue without counting a try, and the next round starts from fresh reads (round 3: the retry queue
+# picked it up again from a new baseline within the same round). The mark is set in exactly two
+# places, the entry wrappers `autopilot_merged_handoff` (only when the hand-over record says `closes`,
+# or cannot be read) and `closed_done_label`, on every non-zero return — never by individual branches
+# (round 4: an "unknown" exit forgot to set it and a same-round retry finished the hand-over). Which
+# kind a record is comes from its own three-way reader, `autopilot_handoff_mode` (closes / refs /
+# unknown), never from `autopilot_state_get`, whose outer `// ""` turns `false` into an empty string
+# (round 5: every old `Refs #N` hand-over was then halted for the round) Both the sweep and the
+# closes-mode hand-over write one label at a time: judge twice from fresh reads before each write, and
+# after each write the next reading must equal "previous reading + the daemon's own step"
+# (`*_cmp_after`), anything else stops the round — a reminder re-added or the issue reopened after the
+# judgement is never overwritten. Sweep fixtures need the real shape (every label has its "labeled"
+# event, a closed issue has its "closed" event). A record without `closes` (a `Refs #N` PR, a
+# non-default base) runs the old hand-over unchanged; the test diffs `Refs`, non-autopilot and
+# plain-closed writes against the merge-base scripts
+#
 # 读 issue 的事件记录，判定「关闭」与 pending/human 提醒的事实（GitHub#461）。清扫和合并即关的交接都只用这一个。
 # 先后按事件在记录里的位置比（GitHub 按发生先后给出，分页拼接后不变），不比时间戳。
 # stdout 一行五段：
@@ -4465,6 +4545,15 @@ requester_bot_done_drain() {   # <state_file>
 # 「查不到」绝不等于「没冲突」：拉取失败、对象不在、merge-tree 报错一律算「还不知道」，
 # 下轮再判，同一对最多判 PENDING_HUMAN_CONFLICT_MAX_TRIES 次。
 
+# ── Re-checking `pending/human` PRs for conflicts with their base: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Re-checking `pending/human` PRs for conflicts with their base (GitHub#86) →
+# `tests/pending-human-conflict.test.sh` (~10 s by default; with `MUTATION=1` it also reruns every
+# scenario on seven deliberately broken copies of the scripts and fails if any of them slips through —
+# ~1 min. Both modes cross-check the daemon's verdict against the worker's hand-off conflict-check
+# snippet on the same PRs). It counts every GitHub call — the whole point of the design is that an
+# unchanged base costs zero extra calls. If you change the hand-off snippet's verdict rules, change
+# `pr_conflict_verdict` in `_lib.sh` the same way
+#
 # 输出 clean / conflict / unknown。$1 = PR 编号，$2 = 目标分支名，$3 = 目标分支当前提交，
 # $4 = 快照里看到的 PR 提交。
 pr_conflict_verdict() {
@@ -7340,6 +7429,35 @@ worker_alive() {   # <tmux_session>
     esac
 }
 
+# ── Switching the program inside a live worker session: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Switching the program inside a live worker session (GitHub#197: `worker_session_launch` in
+# `_lib.sh`, used by the issue-comment and PR-comment dispatchers instead of kill-session +
+# new-session) → `tests/session-switch-keeps-client.test.sh` (real tmux on a private socket, the real
+# dispatch scripts; an attached terminal is a `tmux -C` control-mode client under `timeout` — never a
+# background `script` pseudo-terminal, which grows without bound and once took down the whole
+# machine). The session must survive the switch, the old program must be gone even though it ignores
+# SIGHUP, and a program that exits must still take the session with it. `pipe-pane -o` is a toggle,
+# not idempotent: `start_session_logging` checks `pane_pipe` first. The worker pane is identified by
+# the pane id recorded in the session option `@worker_pane` when the daemon creates it — never by list
+# order or "the current pane": `split-window -b` puts a human's pane first, and picking it killed the
+# human's program and left the old worker running (PR #219 review round 1). A session with several
+# panes and no record is not guessed at: everything in it is stopped and the session rebuilt. Every
+# pane decision goes through one lookup, `worker_pane_lookup` (found / single / gone / multi /
+# unknown); any failed or malformed tmux read is `unknown`, and on `unknown` nothing is killed,
+# started or re-recorded — the dispatch fails before flipping the label and the next round retries (PR
+# #219 review round 2: a failed read had been taken for "pane gone" and started a second worker, or
+# for "no record" and rebuilt the whole session). The same lookup carries the log-pipe state (one
+# `list-panes` read), and `start_session_logging` never uses `pipe-pane -o` — `-o` is a toggle, so one
+# misread closed a live log (review round 3); without `-o` an open pipe is just replaced. Every other
+# read that drives an action is three-way too: `tmux_session_matches_worker` (0 same / 1 different / 2
+# unreadable → the dispatcher exits before injecting or switching) and `worker_alive` (0 / 1 / 2,
+# session existence from a successful `list-sessions`, never `has-session`, whose "error" and "absent"
+# look the same; only 1 retires the conversation and restarts). The test injects those failures
+# through a thin wrapper in front of the real tmux, holds each for two rounds and checks the state
+# after every round (a toggle can cancel itself over two rounds), then requires a clean switch once
+# reads recover. tmux option commands need `-t "=name:"` (with the colon) for an exact match;
+# `"=name"` is rejected
+#
 # 在 worker session 里起一条命令（GitHub#197）。
 #
 # - session 不在：照旧 `tmux new-session -d`，记下新窗格。
@@ -7800,6 +7918,26 @@ config_notice_log_line() {   # <KEY>
     log "⚠️ 配置提示：本项目配置里没有 ${key}，这个新功能现在是关着的（$(config_notice_field "$key" 3)）。要开就在 $CONFIG_FILE 里加 ${line:-$key=...}；不开就写 $key=$(config_notice_field "$key" 4)"
 }
 
+# ── Telling an existing project about new settings its config lacks: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Telling an existing project about new settings its config lacks (GitHub#289; log only since
+# GitHub#428: `scripts/config-notices.txt`, `CONFIG_NOTICE_UNSET` recorded right after `source
+# "$CONFIG_FILE"` in `_lib.sh`, `config_notice_tick`, `$STATE_DIR/config-notice.json`) →
+# `tests/config-notice.test.sh` (~35 s; real `agent-poll.sh` started the way `poll-entry.sh` starts
+# it, plus one run through the real `poll-entry.sh`, against the stateful fake GitHub). Every key
+# assigned in `cavil-loop.config.example` must be registered there as `notice` (off when missing, on
+# in the template) or `quiet` with a reason — the test fails on an unregistered key. "Missing" means
+# unset right after the config is sourced; an empty value is "decided: off". A missing key gets one
+# `poll.log` line, nothing else: **no GitHub call at all** — no issue opened, an old notice issue
+# neither read, commented on nor closed, an old `CONFIG_NOTICE_ISSUE` line ignored; the test asserts
+# zero calls next to the log line that proves the tick ran, and diffs the calls against the merge-base
+# copy run with `CONFIG_NOTICE_ISSUE=false`. The state file keeps only `logged`; fields an earlier
+# version wrote (`issue`, `issued`) are dropped on the next scheduled poll even when nothing new is
+# logged. The tick only runs in a poll the scheduler started: `poll-entry.sh` hands
+# `CAVIL_SCHEDULED_POLL=1` to `agent-poll.sh` alone, which stores it as `POLL_SCHEDULED` and unsets it
+# before anything else runs — never gate on `CODING_AGENT_RELEASE_ROOT`, worker sessions inherit it.
+# The look-up steps in `docs/operations{,.zh}.md` (behind `<!-- config-notice-ops:begin -->`) are run
+# verbatim in an empty environment by the test; keep the two copies identical
+#
 config_notice_tick() {
     [ "${POLL_SCHEDULED:-}" = 1 ] || return 0
     local f missing st logged new_log k changed=0
@@ -9077,6 +9215,111 @@ case "$STUCK_WORKER_MAX_RESTARTS" in ''|*[!0-9]*) STUCK_WORKER_MAX_RESTARTS=1 ;;
 case "$STUCK_WORKER_MAX_GAP_SECS" in ''|*[!0-9]*) STUCK_WORKER_MAX_GAP_SECS=900 ;; esac
 STUCK_ACTED=0
 
+# ── An item stuck on `doing/agent` with a live session and nobody working: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# An item stuck on `doing/agent` with a live session and nobody working (GitHub#339:
+# `STUCK_WORKER_QUIET_SECS` / `STUCK_WORKER_STEP_GAP_SECS` / `STUCK_WORKER_MAX_RESTARTS`, the
+# `stuck_*` block in `_lib.sh` — `stuck_sample` / `stuck_doc` / `stuck_verdict` / `stuck_tick` /
+# `stuck_step_run` / `stuck_freeze` / `stuck_frozen` / `stuck_release_*` — step 0d and the three
+# dispatch call sites in `agent-poll.sh`, `scripts/stuck-release.sh`, `agent_screen_state` /
+# `agent_screen_rules_reset` in `drivers/_common.sh`, `prompts/stuck-nudge.md`) →
+# `tests/stuck-worker.test.sh` (six parts, ~22 min in all on CI; real `agent-poll.sh` and dispatch
+# scripts, the stateful fake GitHub, real tmux on a private socket with a fake agent whose screen is
+# set from a control file, clock moved with `POLL_FAKE_NOW`; no negative controls; `STUCK_ONLY=9,13`
+# runs only those groups). All detection is script comparison — never add a model call here. "Busy" is
+# sampled in one place, `stuck_sample`: the agent and role recorded on the session, the recorded
+# worker pane (by pane id, never the session's current pane), the screen judged in a subshell that
+# loads **that** agent's driver after `agent_screen_rules_reset` (a driver only overrides what it
+# cares about, so without the reset codex inherits claude's 20-line window); the four-state screen
+# rule is `agent_screen_state`, shared with prompt injection. Every per-round check, the nudge and the
+# pre-action re-read use it; any failed or unrecognised read is "unknown" and neither advances nor
+# resets. Before ending a session or writing to GitHub, `stuck_doc` re-reads the target, the bound
+# items and the local session and the whole identity string must equal the one stored when the idle
+# clock started, with the verdict judged again by the same `stuck_verdict` — add any new condition to
+# that document, never as a separate re-read. Protecting labels are one list per place
+# (`stuck_labels_protect target|bound`); `pending/PR` on the issue behind a PR does not protect. A
+# restart / hand-over is a fixed sequence of writes (restart: add the trigger label → remove
+# `doing/agent` → end the session; hand-over: comment → add `pending/human` → remove `doing/agent`),
+# **all done within one round**. Before the first write the record gets `.inflight` (a restart also
+# takes its budget then, `.restarts` + 1); it is cleared only when the whole sequence is done, and a
+# record still carrying it at the start of the next round (the poller was killed mid-way) is stopped
+# there as "outcome unknown" — `stuck_frozen_scan` already counts it as stopped, so the trigger label
+# the daemon itself added is never consumed as an ordinary dispatch (code review round 7). The stored
+# identity (`.id`) is changed only on evidence that the daemon's own write landed (the comment id from
+# the POST response; for a label, the item's label events after the write show exactly one new event
+# with that action and label by the write account); "the label the daemon meant to add is on the item"
+# is never evidence. Before every side effect, one gate, `stuck_step_gate` (`stuck_doc` equals `.id`
+# whole). Failing it before the first write restarts the clock; **anything wrong after the first write
+# (a write not confirmed on the spot, a change between two writes, an unreadable state) stops the item
+# right there** (`stuck_freeze`): no rollback, no retry, nothing continued next round. All six rounds
+# of code review found their bugs in "half-finished state continued / rolled back across rounds" — do
+# not bring back cross-round continuation, rollback of the daemon's own label, or a give-up counter. A
+# stopped item covers the target plus the bound items checked at that moment; **every pass that writes
+# to an item or touches its session asks `stuck_frozen` first** (the three queue collectors through
+# `stuck_dispatch_hold`, self-heal, session reaping, autopilot takeover / label mirror / merge /
+# off-sweep, the waiting-on-prerequisite check, relabeling the issue after a PR closed unmerged,
+# post-merge cleanup and issue label, the parent roll-up, the conflict check on `pending/human` PRs,
+# the hand-over after a usage limit, the CI failure report — a child process that gets the stopped
+# items from `stuck_frozen_items` as `none` / `all` / a list of numbers, never empty, and treats a
+# write to one as a failed write; a set but empty or malformed value is `all`) — any new pass of that
+# kind must ask too; `stuck_frozen`, `stuck_frozen_items` and `stuck_frozen_work` take their answer
+# from one reader, `stuck_frozen_scan` (the state file must be exactly one JSON object with an object
+# `stuck_workers`, anything else is `all`) — never a separate jq query: on an empty file jq succeeds
+# with no output, which one place read as "stopped" and another as "empty list", and the report was
+# written while the state was unknown (code review round 6); a queue entry held back this way is
+# neither counted as a retry nor recorded as done. Passes that only write to an already closed item do
+# not ask. Closing an item keeps the record (still stopped when reopened); only a merged PR drops it.
+# There are exactly two ways back. ① Resume by a human: the stop note carries a unique marker, is
+# posted only when two `stuck_gather` reads are identical, is recorded as "outcome unknown" before the
+# request, and an unknown outcome is settled by reading all comments for the one by the write account
+# with that marker (an incomplete read = do not repost), at most `STUCK_NOTE_MAX_TRIES` posts; the
+# resume baseline (the latest label-event id at that moment) is recorded only **after the note is
+# confirmed posted**; `stuck_release_doc` + `stuck_release_ok` judge three conditions (the last
+# flow-label event after the baseline is a human adding dispatch label X and is not the one already
+# used, X is the only flow label on the target now, open bound items carry no protecting label and no
+# `doing/agent`), called in three places from one implementation: the per-round screen (records the
+# candidate), enqueueing (picks the candidate only, never authorizes), and **`stuck_release_gate`
+# before the dispatch script's first outward action** (fresh read, must equal the candidate whole;
+# before letting it through it writes "instruction used + this dispatch's token" to
+# `$STATE_DIR/stuck-release/<work number>.used`, otherwise exits 76). The gate sits in `flip_to_doing`
+# / `inject_prompt_logged` / `worker_session_launch` and before `tmux new-session` on the new-issue
+# path, not once per dispatch script; in a resume dispatch `gh_write` lets through only the
+# `flip_to_doing` write (the ordinary failure comment and the flip to `pending/human` are not made).
+# `DISPATCH_STUCK_RELEASE` is moved into the unexported `STUCK_REL_CTX` and removed from the
+# environment as soon as `_lib.sh` loads — left there it leaks into the worker's tmux session and
+# blocks writes of any script of this tool the worker runs. The parent uses one pair,
+# `stuck_release_begin` / `stuck_release_finish`, at all three dispatch call sites: a resume dispatch
+# is closed **only** by finish — no `dispatch_failed`, the failure counter untouched, the comment
+# cursor not advanced; success = exit code 0 + `doing/agent` on the item and no dispatch label + the
+# flow-label events after the instruction are exactly the write account's "remove X" and "add
+# `doing/agent`" + the session's `@dispatch_token` is this dispatch's token, anything else stops the
+# item again (new marker, new note, new baseline, `.frozen.used` carried over — the same instruction
+# never dispatches twice); the evidence file is deleted only after "used" is in `state.json`;
+# `stuck_release_recover` at the start of every round settles a file left by a round that never
+# reached finish (parent killed: instruction used, item stopped again), and `stuck_release_begin` does
+# not dispatch while one is still there (code review round 2: the next dispatch deleted the file and
+# the same instruction dispatched again); there is one way to read a local record, `stuck_entry`: it
+# fails when it cannot read, and **there is no "unreadable = empty record" variant**; fields that
+# decide "delete / let through / write" are taken in one go with `stuck_fields` and an extraction that
+# fails stops the caller — never write `[ "$(… | jq …)" = true ]`, which silently takes the other
+# branch when jq fails (code review round 4: one failed read in the per-round loop was taken for "not
+# stopped, no progress", the stop record was deleted and the item went out as an ordinary dispatch);
+# every write to a record goes through `stuck_entry_set`, which refuses a result whose item type is
+# not issue / pr or whose number is not digits, a stopped record missing either, or a stopped record
+# whose type / number changed — so a field that failed to extract can never overwrite a valid record
+# (code review round 5: an item type that failed to extract while settling a leftover receipt was
+# written as empty, and neither way back worked any more); when the scope of a stop cannot be
+# extracted it is recorded as `scope_unknown` and `stuck_frozen` answers "stopped" for every item;
+# `stuck_frozen` counts an unreadable state as stopped, and `stuck_release_begin` does not dispatch
+# when it cannot read the state or the item is stopped without being a resume dispatch (code review
+# round 3: one failed read was taken for "the record is gone"); exiting before the gate is not a
+# dispatch, and only `STUCK_RELEASE_MISS_MAX` of those in a row use the instruction up and stop again.
+# ② Release on the machine, `scripts/stuck-release.sh`: holds the poll lock, reads the whole identity
+# with the same `stuck_release_doc`, reads again after the confirmation and deletes the record only
+# when both are identical; incomplete or changed = not released. The command block in
+# `docs/operations{,.zh}.md` behind `<!-- stuck-release-ops:begin -->` is run verbatim by the test in
+# an environment with only HOME and PATH; keep the two copies identical. With the setting absent the
+# poller's GitHub calls, tmux calls and `state.json` equal the merge-base copy's (the test diffs them)
+#
 stuck_enabled() {
     case "$STUCK_WORKER_QUIET_SECS" in ''|*[!0-9]*) return 1 ;; esac
     [ "$STUCK_WORKER_QUIET_SECS" -gt 0 ]
@@ -11202,6 +11445,24 @@ agent_prompt_argv_used() {   # <prompt_file> → 这次实际当参数传的那�
     if [ -n "$f" ] && [ -f "$f.argv.md" ]; then printf '%s' "$f.argv.md"; else printf '%s' "$f"; fi
 }
 
+# ── A dispatch prompt larger than one command-line argument may be: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# A dispatch prompt larger than one command-line argument may be (`agent_prompt_argv_file` /
+# `agent_prompt_argv_used` / `dispatch_prompt_refused` in `_lib.sh`, called through
+# `agent_launch_command` and at its six call sites in the three dispatch scripts) →
+# `tests/prompt-argv-limit.test.sh` (~10 s; real claude / codex drivers, the command really run, and
+# the real `dispatch-pr-comment.sh`). Every driver hands the whole prompt to its CLI as one argument;
+# Linux caps one argument at 131072 bytes including the NUL, and past that the CLI never starts (exit
+# 126) — GigleTutor-Web's PR-comment prompts reached 136 KB on 2026-11-20 and three PRs were handed to
+# a human as "corrupted session" after three self-heal rounds. Above the limit the argument becomes a
+# short instruction naming a per-launch copy of the prompt (`<prompt>.full-<uuid>.md`, never the fixed
+# per-item file the next dispatch overwrites) and its line count; the instruction itself is
+# `<prompt>.argv.md`, removed again on a launch under the limit, and it is what the codex read-back
+# compares (the launch tag is copied into it). At or under the limit the command is byte-identical to
+# before. A prompt that cannot be read, or cannot be handed over that way, is never launched: the
+# dispatch comments, moves the item to `pending/human` and exits 0 — never launch with an empty or
+# truncated prompt, and never let the label reach `doing/agent` for a session that cannot start. A
+# test that calls `agent_launch_command` must give it a prompt file that exists
+#
 agent_prompt_argv_file() {   # <prompt_file> → stdout：要 cat 进参数的文件；失败返回 1（原因已 log）
     local f="${1:-}" size max lines tag id full ptr
     if [ -z "$f" ] || [ ! -r "$f" ]; then

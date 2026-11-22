@@ -1,4 +1,42 @@
 #!/usr/bin/env python3
+
+# ── GitHub token redaction: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# GitHub token redaction (GitHub#342: `scripts/redact_tokens.py` — the only place with the matching
+# rules — `scripts/_redact.sh`, `log()`, the pane-history pipe in `start_session_logging` /
+# `session_log_pipe_ensure`, `redact_scan_tick`, `codex_no_snapshot_flag` in `drivers/codex.sh`,
+# `scripts/redact-snapshots.sh`, `REDACT_AGENT_RECORDS` / `CODEX_SHELL_SNAPSHOT`) →
+# `tests/token-redaction.test.sh` (~35 s; real tmux on a private socket, a real cleanup hook, the real
+# `collect.py` and codex usage driver) plus the stray-log case in `tests/migrate-legacy.test.sh`.
+# **Anything the daemon appends to `poll.log` or a pane log that is not its own fixed text goes
+# through `redact_pipe` / `redact_stream` first** — the test's guard group fails on a new direct `>>
+# "$LOG_FILE"` / `tee -a "$LOG_FILE"` (a line that only writes fixed text carries a `# redact-ok`
+# comment). A failed redaction never falls back to the original text: the entry writes one `令牌替换失败`
+# line, the pane pipe stops writing. One function (`analyze`) decides matches and the held-back tail
+# for both the stream filter and the file scan, so any split of the input gives the same bytes as one
+# write; only a real end of input ends a token (stream closed; for a pane log, a successful tmux
+# session list that does not show its session) — never a timeout or "the file has been quiet". Session
+# records are edited in place with an equal-length replacement (`REDACTED-<12 hex of sha256>` padded
+# with `-`): never rename-replace them, the CLI holds the file open and its later writes would land in
+# the replaced file and vanish from the weekly report. Strings inside the fields readers claim records
+# by (`PROTECTED_KEYS`: cwd, session / request ids, timestamp, model, …) are left alone even when they
+# look like a token — judged by the match's own byte range inside that field's value
+# (`_protected_spans`), never by "the same text appears in a protected field of this line": the same
+# string elsewhere on the line is still replaced (code review round 1). The test puts a token-shaped
+# directory name in a codex `cwd` and diffs the usage driver's output. Which records belong to the
+# project is read from the opened file every time it is opened — a cached verdict keyed on the path
+# alone rewrote another project's record (code review round 1). When a file may be skipped and when
+# the last scan position may be resumed are each decided in exactly one place: `_untouched` (same
+# device + inode, same size **and** same modification time — the only case a file is not opened) and
+# `_resume_offset` (same file, grown, head and the bytes before the position unchanged; same size with
+# a different modification time is an in-place rewrite and rescans from the start). Never add a second
+# shortcut next to them: "same inode, same size, already at the end" skipped an equal-length in-place
+# rewrite forever (code review round 2). A round that replaced something records no modification time,
+# so the next round opens the file again. Codex environment snapshots are not rewritten by the daemon
+# at all (no way to prove no running codex still reads one — three design-review rounds); new workers
+# are started with `--disable shell_snapshot` (measured on 0.167.1: no snapshot written, commands
+# still run) and old ones are cleaned by hand. The commands in `docs/operations{,.zh}.md` (behind
+# `<!-- redact-ops:begin -->`) are run verbatim by the test; keep the two copies identical
+#
 """GitHub 令牌脱敏：匹配规则只在这一个文件里（GitHub#342）。
 
 三种用法，共用同一套匹配与边界规则（analyze）：

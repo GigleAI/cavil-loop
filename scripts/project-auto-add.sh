@@ -34,6 +34,17 @@
 # 写走 gh_write（写身份：WRITE_GH_TOKEN，没配就是轮询账号）。读身份看不见某个 Project 时，
 # 它的卡片在条目上也看不见——每个条目都会被误判成「不在里面」、每轮写一遍。所以核对不过
 # 的 Project 本轮不发任何写请求。
+
+# ── Auto-adding the repo's issues / PRs to GitHub Projects: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Auto-adding the repo's issues / PRs to GitHub Projects (GitHub#116: `AUTO_ADD_PROJECTS`,
+# `scripts/project-auto-add.sh`, `project_auto_add_tick`, `$STATE_DIR/project-auto-add.json`) →
+# `tests/project-auto-add.test.sh` (~1 min by default, real `agent-poll.sh` against a stateful fake
+# GitHub; ~2.5 min with `MUTATION=1`, sixteen broken copies). Each project is judged only on the reads
+# *it* needs — a failure on a page another project needs must not hold it back — and its candidates
+# stay within its own range (a synced board does not pick up old items just because a new board
+# triggered a full scan). Reads go through `project_gh_graphql`, the add through `gh_write`; a project
+# the read identity cannot see gets no write
+#
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec 8>&2

@@ -39,6 +39,81 @@
 #                                      # points at <sha> (its page may still be missing);
 #                                      # <tag> on another commit → exit 1. --page: the plan
 #                                      # said "create the missing page" — never tags.
+
+# ── Releases: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Releases (the per-iteration scheduled run, `scripts/release.sh`, `.github/workflows/release.yml`) →
+# `tests/release-auto.test.sh` (the workflow steps are read out of the yml and actually run). Since
+# GitHub#195 the run is plan → release gate → release, and since GitHub#416 the gate is the shell
+# regression suite (the same shards and exactly-once check as `Tests`), not the negative controls: the
+# plan step fixes one commit, the gate tests it, and the cut step tags exactly that commit even if
+# `main` moved on meanwhile. Since GitHub#309 the schedule is daily and the plan step is `release.sh
+# --plan`: it fixes the week that just ended (Beijing Monday–Sunday), the tested commit, the tag name
+# and the action (new / page / none) once, and the cut step (`release.sh --cut <tag> --at <sha>
+# [--page]`) only uses those — it never reads the clock. A tag without its Release page is always
+# finished first (on its own commit), before "this week is already released" can skip a run; a
+# gate-only run skips the decision and always gates main's tip. The test pins the clock with
+# `CAVIL_RELEASE_NOW` and walks each rule of the table plus a whole fail-then-repair lifecycle. "Did
+# the gate pass" is checked twice from the `needs` context — in `gate-summary` (every gate job) and
+# again as the release job's first step — so a gate job dropped from `needs` fails, never skips. The
+# test runs the plan / summary / release-check / cut steps out of the yml with each gate job's result
+# injected (failed, skipped, cancelled, missing, gate-only → zero tags, zero pages); `MUTATION=1`
+# reruns the whole file against seven broken copies of the yml. The client's release rides on the
+# week's release (GitHub#576: jobs `client-plan` → `client`, which calls `client.yml` through
+# `workflow_call`; versions in `client/scripts/release-version.mjs`): only runs whose plan action is
+# `new` / `page`, only when `client/` changed since the highest `client/vX.Y.Z` tag that has a Release
+# page; next version = that highest tag + 1 in the last place, or `package.json`'s when higher —
+# nothing is committed for a release, the build writes the tag's version into the three files, and a
+# development build counts from the higher of `package.json` and the highest release tag (else
+# development builds would fall behind the releases). Whether a `client.yml` run is a release build is
+# decided once, by its `mode` job (a pushed `client/v*` tag, or the tag the caller passed) — never
+# from `github.ref`, which in a call is the caller's — and every job checks out the commit `mode`
+# names. Publishing is serialized for every version and trigger (job-level `concurrency:
+# client-release-publish`), and both the tag step and the page step re-run `release-version.mjs check`
+# against the remote's tags right before writing, so an older build that finishes after a newer
+# release writes nothing (PR #580 review round 1). The daemon's `release` job never waits for the
+# client and the client never waits for the gate; a red client run is reported like any other job.
+# Since GitHub#577 every client run that builds the Macs also builds the Windows x64 installer (job
+# `package-windows`: Windows-only back end tests, NSIS build, signature check, size gate, silent
+# install, the installed app's start-up check), and both the release page and the development build
+# need its `-windows-x64.exe` + `.sig`; `latest.json` carries `windows-x86_64` (stable and dev) The
+# test runs `client-plan`'s step, `client.yml`'s mode / version / tag / page steps against a bare
+# remote, and the report's client lines; `client/test/unit/release-version.test.ts` covers the rules.
+# The nightly development build (GitHub#628) is tested in the same file: the mode job's two steps run
+# out of `client.yml` for every trigger (who publishes and signs, `publish` refused off main before a
+# tag is even looked at, what gets built against a fake release list — same commit, daemon-only
+# commits, a client change, a last build missing a file, a higher build left tagged but not public,
+# `force`, an unreadable release or tag list — and the one development version: counted once by the
+# mode job, stamped as given by both builds, published and reported as given, a tag added mid-run
+# changing nothing), the wiring — which jobs run, the concurrency group, the report's trigger —
+# **evaluated, never matched as text**: each trigger's real mode outputs go into
+# `tests/lib/gha_expr.py`, which evaluates the workflow's own `if:` / `concurrency` expressions
+# (GitHub's semantics: status functions, `needs.*`, case-insensitive equality, coercion; anything
+# outside the subset raises) and simulates which jobs run; add a new condition there, never a `has` on
+# its text — the `client-nightly` report kind next to the other two, and the docs' off / on steps
+# behind `<!-- client-nightly-ops:begin -->`, run verbatim; the decision itself
+# (`client/scripts/dev-plan.mjs`) → `client/test/unit/dev-plan.test.ts` (real git, fake `gh`; its
+# across-nights case runs the plan with a read-only view — drafts are not listed — and
+# `dev-release.mjs` with a write view against one stateful fake,
+# `client/test/unit/fake-gh-releases.ts`). The Windows real update check
+# (`client/scripts/windows-update-check.sh`) only runs on the Windows CI machine. The nightly
+# negative-controls workflow (`.github/workflows/negative-controls.yml`) is tested in the same file:
+# its plan step (main only; a scheduled run skips only a commit whose last run was green, and a lookup
+# that fails means "run"), its jobs' own steps run against stand-ins for the test runners (they really
+# start the shell shards, autopilot's parts and both client sets with `MUTATION=1`), its summary, and
+# — for `tests.yml` and `client.yml` — that no input, job or step turns negative controls on there;
+# the release kind of the failure report is diffed against the merge-base script. Its client job and
+# `client.yml` share one setup, `.github/actions/client-setup` (Playwright's WebKit is installed
+# there, before the first UI baseline). That job starts from a clean checkout, so each consumer
+# prepares what it reads: `client/test/tauri/mutations.sh` builds the window (`dist/`) and the app's
+# icons before its first entry, only with the switch on → `tests/client-tauri-mutation-prep.test.sh`
+# (~1 s; the real script with a fake `node`, nothing is built or broken) A failed run's report
+# (GitHub#285: the `report failure` job, `scripts/release_failure_report.py`) is tested in the same
+# file against a stateful fake GitHub (`tests/fixtures/release-failure-fake-gh.py`) over several runs
+# on one repo: it only ever creates (with the dispatch label in the one create request) or comments,
+# never writes a label on an existing issue; a list page or item it cannot read whole, or a target
+# that changed before the write, means no write and a red job; the docs' recovery / off-switch steps
+# are run as written.
+#
 set -euo pipefail
 
 # Iterations run Monday–Sunday (GitHub Project "cavil project", 7 days, start
