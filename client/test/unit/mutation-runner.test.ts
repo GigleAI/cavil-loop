@@ -3,12 +3,12 @@
 // runner as a child process (they are positive tests of the runner, so they
 // stay in the default run). Skipped inside the runner's own child runs.
 
-import { describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { writeFileSync, chmodSync, readFileSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tempDir } from './helpers';
+import { owned, prewarmBackend, runRunner } from '../support/owned-run';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const runner = join(root, 'test/mutation/run.mjs');
@@ -20,9 +20,9 @@ const OFFLINE_ENTRY = {
   expect: ['offline → disabled; online → enabled'],
 };
 
-function run(args: string[], env: Record<string, string> = {}) {
-  const r = spawnSync(process.execPath, [runner, ...args], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 120_000 });
-  return { status: r.status, out: `${r.stdout}${r.stderr}` };
+/** GitHub#649: the worker, owned by this test (one group, cleaned up however it ends), within the case's time */
+function run(args: string[], env: Record<string, string> = {}, ownMs = 120_000) {
+  return runRunner(runner, args, env, ownMs);
 }
 
 const STORE_ENTRY = {
@@ -56,70 +56,87 @@ function listFile(entries: unknown[]) {
 }
 
 describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner', () => {
-  it('a test runner that cannot start is a failure, for the baseline and for an entry', () => {
+  // GitHub#649: the runner's build cache, warmed once for the file under its own limit (from an empty
+  // folder ~7 s idle), so a case that builds a mutated copy recompiles only what it changed
+  beforeAll(async () => {
+    await prewarmBackend(root, { timeoutMs: 300_000 });
+  }, 330_000);
+
+  it('a test runner that cannot start is a failure, for the baseline and for an entry', async () => {
     const env = { CLIENT_MUT_VITEST: '/nonexistent/vitest.mjs' };
-    const one = run(['--one', '0'], env);
+    const one = await run(['--one', '0'], env);
     expect(one.status).toBe(1);
     expect(one.out).toContain('执行异常');
     expect(one.out).not.toContain('✅');
-    const base = run(['--baseline'], env);
+    const base = await run(['--baseline'], env);
     expect(base.status).toBe(1);
     expect(base.out).toContain('基线没跑成');
-  });
+    // GitHub#649: two calls, each keeping its own cleanup time free
+  }, 60_000);
 
-  it('a run killed by the timeout is a failure', () => {
-    const r = run(['--one', '0'], { CLIENT_MUT_TIMEOUT_MS: '1' });
+  it('a run killed by the timeout is a failure', async () => {
+    const r = await run(['--one', '0'], { CLIENT_MUT_TIMEOUT_MS: '1' });
     expect(r.status).toBe(1);
     expect(r.out).toContain('超时');
   });
 
-  it('the entry script without node on PATH fails instead of reporting success', () => {
-    const r = spawnSync('/bin/bash', [join(root, 'test/mutation/run.sh')], {
-      encoding: 'utf8',
-      env: { ...process.env, PATH: '/nonexistent', MUTATION: '1' },
-    });
-    expect(r.status).not.toBe(0);
+  it('the entry script without node on PATH fails instead of reporting success', async () => {
+    // GitHub#649: through the owned group like every other process here; judged by its exit code
+    const r = await owned(['/bin/bash', join(root, 'test/mutation/run.sh')], { settle: 'command', env: { PATH: '/nonexistent', MUTATION: '1' }, cwd: root, ownMs: 30_000 });
+    expect(r.status).toBe('exited');
+    expect(r.exitCode).not.toBe(0);
+    // the expected branch: finding node fails at once (exit 1, set -e), before the list is read
+    expect(r.exitCode).toBe(1);
     expect(`${r.stdout}${r.stderr}`).not.toContain('按预期变红');
+    expect(`${r.stdout}${r.stderr}`).not.toContain('读不到负对照清单');
+    // nothing but the script itself ever ran in its group
+    expect(r.events.filter((e) => e.what === 'signal')).toEqual([]);
   });
 
-  it('a mutation that changes nothing is "did not go red"; red on the wrong assertion is a failure too', () => {
-    // with the baseline's map each run is one small test file, not a second whole suite (a whole
-    // nested suite under load made unrelated timing tests flake and this case read them as red)
-    const state = baselineState();
-    const noop = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, to: OFFLINE_ENTRY.from }]), CLIENT_MUT_STATE: state });
+  // with the baseline's map each run is one small test file, not a second whole suite (a whole
+  // nested suite under load made unrelated timing tests flake and this case read them as red).
+  // GitHub#649: one call per case, so no case holds three runner runs under one time limit
+  it('a mutation that changes nothing is "did not go red"', async () => {
+    const noop = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, to: OFFLINE_ENTRY.from }]), CLIENT_MUT_STATE: baselineState() });
     expect(noop.status).toBe(1);
     expect(noop.out).toContain('没变红');
-    const wrong = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, expect: ['reads both pages'] }]), CLIENT_MUT_STATE: state });
+  }, 120_000);
+
+  it('red on the wrong assertion is a failure too', async () => {
+    const wrong = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, expect: ['reads both pages'] }]), CLIENT_MUT_STATE: baselineState() });
     expect(wrong.status).toBe(1);
     expect(wrong.out).toContain('不是预期的断言');
-    const gone = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, from: 'text that is not there' }]), CLIENT_MUT_STATE: state });
+  }, 120_000);
+
+  it('the text an entry breaks is gone: a failed preparation', async () => {
+    const gone = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([{ ...OFFLINE_ENTRY, from: 'text that is not there' }]), CLIENT_MUT_STATE: baselineState() });
     expect(gone.status).toBe(1);
     expect(gone.out).toContain('准备失败');
   }, 120_000);
 
-  it('a real mutation caught by its named assertion is accepted (the runner can say yes)', () => {
-    const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: baselineState() });
+  it('a real mutation caught by its named assertion is accepted (the runner can say yes)', async () => {
+    const r = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: baselineState() });
     expect(r.out).toContain('✅ 变红');
     expect(r.status).toBe(0);
   }, 120_000);
 
   // GitHub#178: an entry runs only the test files holding the tests it names, on the back end the
   // baseline built — unless it breaks the back end itself, then it builds its own
-  it('with the baseline\'s map: only the named tests\' files; the baseline\'s back end unless the entry breaks it', () => {
+  it('with the baseline\'s map: only the named tests\' files; the baseline\'s back end unless the entry breaks it', async () => {
     const state = baselineState();
-    const ts = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: state });
+    const ts = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]), CLIENT_MUT_STATE: state });
     expect(ts.out).toContain('✅ 变红');
     expect(ts.out).toContain('跑的测试文件：test/unit/board.test.ts；');
     expect(ts.out).toContain('后台：用基线编好的');
     expect(ts.status).toBe(0);
-    const rust = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([STORE_ENTRY]), CLIENT_MUT_STATE: state });
+    const rust = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([STORE_ENTRY]), CLIENT_MUT_STATE: state });
     expect(rust.out).toContain('✅ 变红');
     expect(rust.out).toContain('跑的测试文件：test/unit/controller.test.ts；');
     expect(rust.out).toContain('后台：本项重编');
     expect(rust.status).toBe(0);
   }, 240_000);
 
-  it('a weakened assertion is reported, not passed: the test no longer catches the break', () => {
+  it('a weakened assertion is reported, not passed: the test no longer catches the break', async () => {
     const weakened = {
       what: '断言被删弱：离线时修改入口不变灰也没人发现',
       edits: [
@@ -128,7 +145,7 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
       ],
       expect: OFFLINE_ENTRY.expect,
     };
-    const r = run(['--one', '0'], { CLIENT_MUT_LIST: listFile([weakened]), CLIENT_MUT_STATE: baselineState() });
+    const r = await run(['--one', '0'], { CLIENT_MUT_LIST: listFile([weakened]), CLIENT_MUT_STATE: baselineState() });
     expect(r.status).toBe(1);
     expect(r.out).toContain('没变红');
   }, 120_000);
@@ -140,13 +157,13 @@ describe.skipIf(process.env.CLIENT_MUT_BASELINE === '1')('negative-control runne
   // GitHub#178 review round 1: #171 renamed a test and its entry kept naming the old title. The
   // baseline stops on that (for the real list it does so at the start of every real run). Here the
   // baseline runs one small file only, so the default run does not carry a second whole suite.
-  it('the baseline names every entry whose named test no longer exists', () => {
+  it('the baseline names every entry whose named test no longer exists', async () => {
     const env = { CLIENT_MUT_STATE: tempDir(), CLIENT_MUT_BASELINE_FILES: 'test/unit/board.test.ts' };
-    const ok = run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]) });
+    const ok = await run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY]) });
     expect(ok.out).toContain('✅ 基线');
     expect(ok.status).toBe(0);
     const stale = { ...OFFLINE_ENTRY, what: '点名的测试已改名', expect: ['a test title nobody has any more'] };
-    const base = run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY, stale]) });
+    const base = await run(['--baseline'], { ...env, CLIENT_MUT_LIST: listFile([OFFLINE_ENTRY, stale]) });
     expect(base.out).toContain('a test title nobody has any more');
     expect(base.out).not.toContain('✅ 基线');
     expect(base.status).toBe(1);
@@ -171,8 +188,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner: 
   }
   const names = (dir: string, entries: unknown[] = [entry]) => run(['--names'], { CLIENT_MUT_COLLECT_ROOT: dir, CLIENT_MUT_LIST: listFile(entries) });
 
-  it('a named test that is there passes; renamed, deleted, or left only in a comment and a string, it is named with its entry', () => {
-    const ok = names(suite({ 'a.test.mjs': `describe('pending', () => { it('${NAMED} once the label is off', () => expect(1).toBe(1)); });` }));
+  it('a named test that is there passes; renamed, deleted, or left only in a comment and a string, it is named with its entry', async () => {
+    const ok = await names(suite({ 'a.test.mjs': `describe('pending', () => { it('${NAMED} once the label is off', () => expect(1).toBe(1)); });` }));
     expect(ok.out).toContain('✅ 清单 1 项点名的测试都在');
     expect(ok.status).toBe(0);
     const cases = {
@@ -182,16 +199,16 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner: 
       leftInText: `// ${NAMED}\nconst why = '${NAMED}';\ndescribe('pending', () => { it('another test', () => expect(why).toBeTruthy()); });`,
     };
     for (const [kind, text] of Object.entries(cases)) {
-      const r = names(suite({ 'a.test.mjs': text }));
+      const r = await names(suite({ 'a.test.mjs': text }));
       expect(r.out, kind).toContain(`第 0 项「点名一条测试的项」点名「${NAMED}」`);
       expect(r.out, kind).not.toContain('✅');
       expect(r.status, kind).toBe(1);
     }
   }, 120_000);
 
-  it('a test file that cannot be loaded is "cannot tell", never "every named test is there"', () => {
-    const dir = suite({ 'a.test.mjs': `it('${NAMED}', () => {});`, 'b.test.mjs': "import './not-there.mjs';" });
-    const r = names(dir);
+  it('a test file that cannot be loaded is "cannot tell", never "every named test is there"', async () => {
+    const dir = suite({ 'a.test.mjs': `it('${NAMED}', async () => {});`, 'b.test.mjs': "import './not-there.mjs';" });
+    const r = await names(dir);
     expect(r.out).toContain('核对不了清单点名');
     expect(r.out).toContain('b.test.mjs');
     expect(r.out).not.toContain('✅');
@@ -199,7 +216,7 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner: 
   }, 120_000);
 
   // the names collected must be the names the baseline gets from vitest's report after a real run
-  it('the collected names equal the names of a real run, test for test', () => {
+  it('the collected names equal the names of a real run, test for test', async () => {
     const dir = suite({
       'a.test.mjs': [
         `describe('labels: only "add this one" \\\\ is sent', () => {`,
@@ -207,27 +224,31 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner: 
         `  it.each([1, 2])('case %i of $0', (n) => expect(n).toBeGreaterThan(0));`,
         `  it.each([{ a: 'x' }])('object $a', () => {});`,
         `});`,
-        `it('top level', () => {});`,
+        `it('top level', async () => {});`,
         `it.skip('skipped one', () => {});`,
-        `describe.skipIf(true)('skipped suite', () => { it('inside it', () => {}); });`,
-        `describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('only outside the runner', () => { it('runner self-test', () => {}); });`,
-        `if (process.env.CLIENT_MUT_BASELINE === '1') it('registered in the baseline only', () => {});`,
+        `describe.skipIf(true)('skipped suite', () => { it('inside it', async () => {}); });`,
+        `describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('only outside the runner', () => { it('runner self-test', async () => {}); });`,
+        `if (process.env.CLIENT_MUT_BASELINE === '1') it('registered in the baseline only', async () => {});`,
       ].join('\n'),
-      'b.test.mjs': `describe('', () => { it('under an empty suite name', () => {}); });\ndescribe('only a suite', () => { it('', () => {}); });`,
+      'b.test.mjs': `describe('', () => { it('under an empty suite name', async () => {}); });\ndescribe('only a suite', () => { it('', async () => {}); });`,
     });
-    const collected = run(['--unit-names'], { CLIENT_MUT_COLLECT_ROOT: dir });
+    const collected = await run(['--unit-names'], { CLIENT_MUT_COLLECT_ROOT: dir });
     expect(collected.status).toBe(0);
     const got = (JSON.parse(collected.out.trim().split('\n').pop()!) as { name: string; file: string }[]).map((t) => `${t.file} ${t.name}`).sort();
     // the baseline's run: same environment as run.mjs gives it, JSON report
-    const out = join(tempDir(), 'report.json');
-    const real = spawnSync(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--reporter=json', `--outputFile=${out}`], {
+    // GitHub#649: run directly (not through the runner), but owned like every process here: the
+    // report is written into the call's own folder and read back before that folder is removed
+    const real = await owned((work) => [process.execPath, join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--reporter=json', `--outputFile=${join(work, 'report.json')}`], {
+      settle: 'command',
       cwd: dir,
-      encoding: 'utf8',
-      env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_BASELINE: '1' },
-      timeout: 120_000,
+      env: { CLIENT_MUT_CHILD: '1', CLIENT_MUT_BASELINE: '1' },
+      keep: ['report.json'],
+      ownMs: 120_000,
     });
-    expect(real.status, real.stderr).toBe(0);
-    const report = JSON.parse(readFileSync(out, 'utf8')) as { testResults: { name: string; assertionResults: { fullName: string }[] }[] };
+    expect(real.status).toBe('exited');
+    expect(real.exitCode, real.stderr).toBe(0);
+    expect(real.products['report.json'], 'the report was read before the folder went').not.toBeNull();
+    const report = JSON.parse(String(real.products['report.json'])) as { testResults: { name: string; assertionResults: { fullName: string }[] }[] };
     const want = report.testResults.flatMap((f) => f.assertionResults.map((a) => `${f.name.slice(dir.length + 1)} ${a.fullName}`)).sort();
     // "did happen": the expanded, skipped and conditional tests are all there
     expect(want).toHaveLength(11);

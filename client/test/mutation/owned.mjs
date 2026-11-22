@@ -74,9 +74,11 @@ export async function runOwned(argv, opts = {}) {
   const resultFile = join(root, 'result.json');
   const env = { ...process.env, ...(opts.env ?? {}), CLIENT_MUT_OWNED_ROOT: root, CLIENT_MUT_OWNED_WORK: work, CLIENT_MUT_OWNED_RESULT: resultFile };
 
+  // argv may depend on the call's own folder (e.g. a report written into it)
+  const cmd = typeof argv === 'function' ? argv(work) : argv;
   let child;
   try {
-    child = spawn(argv[0], argv.slice(1), { cwd: opts.cwd ?? work, env, stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true });
+    child = spawn(cmd[0], cmd.slice(1), { cwd: opts.cwd ?? work, env, stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true });
   } catch (e) {
     rmSync(root, { recursive: true, force: true });
     return { status: 'start-failed', diag: String(e.message ?? e), events, stdout: '', stderr: '', exitCode: null, signal: null, products: {}, result: null, root: null };
@@ -239,6 +241,37 @@ export async function runOwned(argv, opts = {}) {
   if (exitInfo?.signal || exitInfo?.code !== result.exitCode) return { ...base, status: 'bad-exit', diag: `执行器退出状态异常（结果写 ${result.exitCode}，实际 ${how}）` };
   if (result.outcome === 'step-timeout') return { ...base, status: 'step-timeout', diag: `超时：${result.step}` };
   return { ...base, status: 'ok', diag: '' };
+}
+
+/**
+ * GitHub#649: what the runner's command-line entry exits with, and the line it says, for one call's
+ * outcome — the same for the entry and for the tests that drive the worker directly.
+ */
+export function runnerExit(r) {
+  if (r.status === 'cleanup-failed') return { code: CLEANUP_FAILED, said: `❌ 收尾失败：${r.diag}` };
+  if (r.status === 'ok') return { code: r.result.exitCode, said: '' };
+  // a step's own time limit: the worker already said which step
+  if (r.status === 'step-timeout') return { code: 1, said: '' };
+  if (r.status === 'timeout' || r.status === 'cancelled') return { code: 1, said: `❌ 执行异常（${r.diag}）` };
+  return { code: 1, said: `❌ ${r.diag}` };
+}
+
+/**
+ * GitHub#649: after a cleanup that could not be confirmed, processes may still hold the shared build
+ * cache: nothing later in the same run may use it. One guard per run (a test file, or run.sh's night).
+ */
+export class CacheGuard {
+  constructor() {
+    this.why = null;
+  }
+  /** note a call's outcome */
+  note(r) {
+    if (r.status === 'cleanup-failed') this.why ??= r.diag;
+  }
+  /** throws when an earlier cleanup was not confirmed */
+  check() {
+    if (this.why !== null) throw new Error(`上一场景收尾未确认，不复用编译缓存（${this.why}）`);
+  }
 }
 
 /**

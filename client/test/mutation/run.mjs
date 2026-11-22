@@ -35,20 +35,34 @@
 // test bridge) instead (`expect` names test titles); --baseline-e2e first runs
 // those tests on an unmodified copy.
 //
+// GitHub#649: how it runs. `node run.mjs <step>` is the owner: it starts the same file again as the
+// worker (CLIENT_MUT_WORKER=1) through owned.mjs, as the head of a new process group with a folder of
+// its own, and cleans that group up however the worker ends (done, a step's time limit, a stop
+// signal to the owner, a crash). The worker keeps everything it starts in its own group (nothing is
+// `detached`), never removes its folder, and on a step's time limit writes its result and exits at
+// once instead of killing anything. The worker's stdout is passed on only once read to the end; a
+// cleanup that cannot be confirmed exits with CLEANUP_FAILED (75), so run.sh stops the whole run.
+// CLIENT_MUT_WORKER_CMD (tests only): a JSON argv that replaces the worker.
+//
 // Env for the runner's own tests: CLIENT_MUT_VITEST (vitest entry to run),
 // CLIENT_MUT_TIMEOUT_MS, CLIENT_MUT_LIST (JSON file replacing MUTATIONS), CLIENT_MUT_BASELINE_FILES
 // (comma-separated test files the baseline runs instead of the whole suite), CLIENT_MUT_COLLECT_ROOT
 // (folder whose vitest config --names / --unit-names collect instead of client/'s).
 
-import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, symlinkSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync, writeSync, symlinkSync, existsSync } from 'node:fs';
 import { join, dirname, isAbsolute, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { changedFiles, baseEntries, selectEntries, editedFiles, unmappedNames } from './select.mjs';
+import { runOwned, runnerExit } from './owned.mjs';
 import { MUTATIONS } from './mutations.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SELF = fileURLToPath(import.meta.url);
+/** the worker: started by the owner, inside its group, with a folder of its own (owned.mjs) */
+const WORKER = process.env.CLIENT_MUT_WORKER === '1';
+const OWNED_WORK = process.env.CLIENT_MUT_OWNED_WORK;
+const OWNED_RESULT = process.env.CLIENT_MUT_OWNED_RESULT;
 
 const list = process.env.CLIENT_MUT_LIST ? JSON.parse(readFileSync(process.env.CLIENT_MUT_LIST, 'utf8')) : MUTATIONS;
 const VITEST = process.env.CLIENT_MUT_VITEST ?? join(root, 'node_modules', 'vitest', 'vitest.mjs');
@@ -61,9 +75,11 @@ const readState = (f) => (STATE && existsSync(join(STATE, f)) ? JSON.parse(readF
 // The copy sits at <tmp>/client, with every other top-level entry of the repository linked
 // beside it (not .git: the copy is not a checkout), so tests that read the repository through
 // "client/.." — docs/logo, tests/fixtures, setup.sh — see the real files, as they do outside
-// the gate (GitHub#309: the gate's baseline went red on exactly those). rmSync(dirname(work)).
+// the gate (GitHub#309: the gate's baseline went red on exactly those). The owner removes it (GitHub#649).
 function sandbox() {
-  const top = mkdtempSync(join(tmpdir(), 'cavil-client-mut-'));
+  // GitHub#649: the owner made the folder and removes it once the whole group is gone
+  if (!OWNED_WORK) throw new Error('sandbox() outside an owned worker');
+  const top = OWNED_WORK;
   const repo = join(root, '..');
   for (const e of readdirSync(repo)) if (e !== 'client' && e !== '.git') symlinkSync(join(repo, e), join(top, e));
   const work = join(top, 'client');
@@ -77,6 +93,25 @@ function sandbox() {
   return work;
 }
 
+/** GitHub#649: what this worker is doing now, for the step log and a time limit's verdict */
+let currentEntry = null;
+function step(name) {
+  console.error(`… 开始：${name}`);
+}
+/** the worker's verdict for the owner (owned.mjs reads it once the group is gone) */
+function writeResult(r) {
+  writeFileSync(OWNED_RESULT, JSON.stringify(r));
+}
+/**
+ * GitHub#649: a step ran out of time. Say so, leave the result, and exit now — not waiting for the
+ * step's process (its descendants may hold its pipes open); the owner stops the whole group.
+ */
+function stepTimeout(what) {
+  writeSync(1, `❌ 执行异常（超时（${TIMEOUT_MS} ms）被终止（${what}））${currentEntry ? `：${currentEntry}` : ''}\n`);
+  writeResult({ outcome: 'step-timeout', step: what, exitCode: 1 });
+  process.exit(1);
+}
+
 /** One cargo target dir for every mutated copy: dependencies are compiled once, only the mutated crates again. */
 const MUT_TARGET = process.env.CLIENT_MUT_CARGO_TARGET ?? join(root, 'src-tauri', 'target', 'mutation');
 
@@ -85,6 +120,7 @@ const MUT_TARGET = process.env.CLIENT_MUT_CARGO_TARGET ?? join(root, 'src-tauri'
  * Resolves to the harness binary, or { broken } when it does not compile.
  */
 function buildBackend(work) {
+  step('编译后台');
   return new Promise((resolve) => {
     const child = spawn('cargo', ['build', '-q', '-p', 'cavil-harness'], {
       cwd: join(work, 'src-tauri'),
@@ -94,18 +130,13 @@ function buildBackend(work) {
     let stderr = '';
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
     // the time limit covers the build too: a slow or stuck build is a failed run, not a long wait
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, TIMEOUT_MS);
+    const timer = setTimeout(() => stepTimeout('编译后台'), TIMEOUT_MS);
     child.on('error', (e) => {
       clearTimeout(timer);
       resolve({ broken: `后台编译启动失败：${e.message}` });
     });
     child.on('close', (status) => {
       clearTimeout(timer);
-      if (timedOut) return resolve({ broken: `超时（${TIMEOUT_MS} ms）被终止（编译后台时）` });
       const bin = join(MUT_TARGET, 'debug', 'cavil-harness');
       if (status !== 0 || !existsSync(bin)) return resolve({ broken: `后台编译失败：${stderr.trim().split('\n').slice(-6).join(' / ')}` });
       resolve({ bin });
@@ -136,6 +167,7 @@ async function runVitest(work, m = null, files = []) {
 }
 
 function runVitestWith(work, harness, files = [], extraEnv = {}) {
+  step('跑测试');
   const out = join(work, 'vitest-report.json');
   return new Promise((resolve) => {
     let child;
@@ -144,29 +176,20 @@ function runVitestWith(work, harness, files = [], extraEnv = {}) {
         cwd: work,
         env: { ...process.env, CLIENT_MUT_CHILD: '1', CLIENT_MUT_REPO: process.env.CLIENT_MUT_REPO ?? root, CAVIL_HARNESS: harness, ...extraEnv },
         stdio: ['ignore', 'ignore', 'pipe'],
-        detached: true, // own process group: a timeout kills vitest's workers too
+        // GitHub#649: in the worker's group, not a group of its own: the owner stops them all
       });
     } catch (e) {
       return resolve({ kind: 'broken', why: `启动失败：${e.message}` });
     }
     let stderr = '';
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        /* already gone */
-      }
-    }, TIMEOUT_MS);
+    const timer = setTimeout(() => stepTimeout('跑测试'), TIMEOUT_MS);
     child.on('error', (e) => {
       clearTimeout(timer);
       resolve({ kind: 'broken', why: `启动失败：${e.message}` });
     });
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      if (timedOut) return resolve({ kind: 'broken', why: `超时（${TIMEOUT_MS} ms）被终止` });
       if (signal) return resolve({ kind: 'broken', why: `被信号 ${signal} 终止` });
       if (!existsSync(out)) return resolve({ kind: 'broken', why: `没有产出测试报告（退出码 ${status}）：${stderr.trim().split('\n').slice(-3).join(' / ')}` });
       let report;
@@ -184,6 +207,7 @@ function runVitestWith(work, harness, files = [], extraEnv = {}) {
 async function runE2e(work, grep, m = null) {
   const be = await backendFor(work, m);
   if (be.broken) return { kind: 'broken', why: be.broken };
+  step('跑界面测试');
   const out = join(work, 'e2e-report.json');
   return new Promise((resolve) => {
     let child;
@@ -193,25 +217,16 @@ async function runE2e(work, grep, m = null) {
         cwd: work,
         env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: out, CLIENT_MUT_REPO: process.env.CLIENT_MUT_REPO ?? root, CAVIL_HARNESS: be.bin },
         stdio: ['ignore', 'ignore', 'pipe'],
-        detached: true,
+        // GitHub#649: in the worker's group (the browser Playwright starts may make a group of its own; see owned.mjs)
       });
     } catch (e) {
       return resolve({ kind: 'broken', why: `启动失败：${e.message}` });
     }
     let stderr = '';
     child.stderr.on('data', (d) => (stderr = (stderr + d).slice(-4000)));
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        /* already gone */
-      }
-    }, TIMEOUT_MS);
+    const timer = setTimeout(() => stepTimeout('跑界面测试'), TIMEOUT_MS);
     child.on('close', (status, signal) => {
       clearTimeout(timer);
-      if (timedOut) return resolve({ kind: 'broken', why: `超时（${TIMEOUT_MS} ms）被终止` });
       if (signal) return resolve({ kind: 'broken', why: `被信号 ${signal} 终止` });
       if (!existsSync(out)) return resolve({ kind: 'broken', why: `没有产出界面测试报告（退出码 ${status}）：${stderr.trim().split('\n').slice(-3).join(' / ')}` });
       let report;
@@ -290,7 +305,7 @@ async function baseline() {
     console.log(`✅ 基线：未改动的副本 ${passed} 条全过（另 ${all.length - passed} 条是负对照执行器的自检，子进程里不跑）`);
     return 0;
   } finally {
-    rmSync(dirname(work), { recursive: true, force: true });
+    // GitHub#649: the folder is the owner's to remove, once the whole group is confirmed gone
   }
 }
 
@@ -380,7 +395,7 @@ async function baselineE2e(indices) {
     console.log(`✅ 界面基线：未改动的副本 ${got.length} 条界面测试全过`);
     return 0;
   } finally {
-    rmSync(dirname(work), { recursive: true, force: true });
+    // GitHub#649: the folder is the owner's to remove, once the whole group is confirmed gone
   }
 }
 
@@ -446,6 +461,8 @@ const outside = (work, file) => isAbsolute(file) || relative(work, join(work, fi
 async function one(i) {
   const m = list[i];
   if (!m) return fail(`没有第 ${i} 项`);
+  currentEntry = m.what;
+  step('复制副本');
   const work = sandbox();
   try {
     if (m.fromGit) {
@@ -470,6 +487,7 @@ async function one(i) {
     }
     const e2e = m.runner === 'e2e';
     const files = e2e ? [] : testFilesOf(m);
+    step('判定');
     const r = e2e ? await runE2e(work, grepOf(m.expect), m) : await runVitest(work, m, files);
     if (r.kind === 'broken') return fail(`执行异常（${r.why}）：${m.what}`);
     if (r.status === 0) return fail(`没变红：${m.what}`);
@@ -483,7 +501,7 @@ async function one(i) {
     console.log(`✅ 变红（${m.expect.length} 条预期断言失败${how}）：${m.what}`);
     return 0;
   } finally {
-    rmSync(dirname(work), { recursive: true, force: true });
+    // GitHub#649: the folder is the owner's to remove, once the whole group is confirmed gone
   }
 }
 
@@ -511,17 +529,65 @@ function check() {
 
 const [cmd, ...args] = process.argv.slice(2);
 const arg = args[0];
-if (cmd === '--count') console.log(list.length);
-else if (cmd === '--check') process.exitCode = check();
-else if (cmd === '--name') console.log(list[Number(arg)]?.what ?? '');
-else if (cmd === '--names') process.exitCode = await names();
-else if (cmd === '--unit-names') console.log(JSON.stringify(await unitTests()));
-else if (cmd === '--changes') process.exitCode = changes();
-else if (cmd === '--baseline') process.exitCode = await baseline();
-else if (cmd === '--select') process.exitCode = await select(arg);
-else if (cmd === '--baseline-e2e') process.exitCode = await baselineE2e(args.map(Number));
-else if (cmd === '--one') process.exitCode = await one(Number(arg));
-else {
-  console.error('用法：由 test/mutation/run.sh 调用（--count | --name I | --changes | --baseline | --select [--all] | --baseline-e2e I… | --one I）');
-  process.exitCode = 2;
+
+/** One step, run by the worker. Its exit code is the verdict; a thrown error is a failure, said once. */
+async function dispatch() {
+  if (cmd === '--count') console.log(list.length);
+  else if (cmd === '--check') return check();
+  else if (cmd === '--name') console.log(list[Number(arg)]?.what ?? '');
+  else if (cmd === '--names') return names();
+  else if (cmd === '--unit-names') console.log(JSON.stringify(await unitTests()));
+  else if (cmd === '--changes') return changes();
+  else if (cmd === '--baseline') return baseline();
+  else if (cmd === '--select') return select(arg);
+  else if (cmd === '--baseline-e2e') return baselineE2e(args.map(Number));
+  else if (cmd === '--one') return one(Number(arg));
+  else {
+    console.error('用法：由 test/mutation/run.sh 调用（--count | --name I | --changes | --baseline | --select [--all] | --baseline-e2e I… | --one I）');
+    return 2;
+  }
+  return 0;
+}
+
+/** GitHub#649: a whole call may use every step's limit once over, plus room to start and copy */
+const OUTER_MS = 2 * TIMEOUT_MS + 60_000;
+
+/**
+ * GitHub#649: the command-line entry owns the worker: one group, cleaned up however it ends, stdout
+ * passed on only when read to the end. A stop signal to this process ends the worker the same way.
+ */
+async function own() {
+  const ac = new AbortController();
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => ac.abort());
+  const worker = process.env.CLIENT_MUT_WORKER_CMD ? JSON.parse(process.env.CLIENT_MUT_WORKER_CMD) : [process.execPath, SELF];
+  const r = await runOwned([...worker, cmd, ...args], {
+    settle: 'runner',
+    env: { CLIENT_MUT_WORKER: '1' },
+    cwd: process.cwd(),
+    timeoutMs: OUTER_MS,
+    signal: ac.signal,
+    onStderr: (d) => process.stderr.write(d),
+  });
+  const { code, said } = runnerExit(r);
+  if (r.status === 'cleanup-failed') {
+    process.stderr.write(`${said}\n`);
+    return code;
+  }
+  process.stdout.write(r.stdout);
+  if (said) console.log(said);
+  return code;
+}
+
+if (WORKER) {
+  let code;
+  try {
+    code = await dispatch();
+  } catch (e) {
+    console.error(String(e?.stack ?? e));
+    code = 1;
+  }
+  process.exitCode = code;
+  writeResult({ outcome: 'done', exitCode: code });
+} else {
+  process.exitCode = await own();
 }
