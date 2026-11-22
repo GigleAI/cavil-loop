@@ -296,7 +296,8 @@ for mode in label greedy; do
     done
     A="$SANDBOX/off-old-$mode/gh"; B="$SANDBOX/off-new-$mode/gh"
     if [ "$OFF_SAME" = 0 ]; then
-    chk "关闭 · $mode 模式：GitHub 调用逐条相同" "$(cmp -s "$A/calls.log" "$B/calls.log" && echo same || echo diff)" same
+    # 合并清理那一段见 compat_merge_calls（写调用另记一行 WRITE …，和列表无关，原样比）
+    chk "关闭 · $mode 模式：GitHub 调用逐条相同" "$(cmp -s <(compat_merge_calls < "$A/calls.log") <(compat_merge_calls < "$B/calls.log") && echo same || echo diff)" same
     chk "关闭 · $mode 模式：派工记录相同" "$(cmp -s "$A/dispatch.log" "$B/dispatch.log" && echo same || echo diff)" same
     chk "关闭 · $mode 模式：最终标签相同" "$(cmp -s <(jq -S '.items|map_values(.labels)' "$A/state.json") <(jq -S '.items|map_values(.labels)' "$B/state.json") && echo same || echo diff)" same
     fi
@@ -1259,7 +1260,7 @@ done_env() {   # <on|off>
 done_tick() { tick "$1" "$DW"; }
 my_marks() {   # <issue> → 本身份（worker-bot）发的结果评论标记，空格分隔
     jq -r --arg n "$1" '[(.items[$n].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body
-        | capture("<!-- requester-bot-done (?<m>pr=[0-9]+ kind=[a-z]+) -->").m] | join(" ")' "$DW/gh/state.json"
+        | capture("<!-- requester-bot-done (?<m>pr=[0-9]+ kind=[a-z]+)(?: v=[0-9]+)? -->").m] | join(" ")' "$DW/gh/state.json"
 }
 queue_len() { jq -r '(.requester_bot_done_queue // {}) | length' "$DW/state/state.json"; }
 has_wait() { labels_of "$DW" "$1" | tr ',' '\n' | grep -cx 'waiting/bot'; }
@@ -1317,7 +1318,8 @@ done_retry_suite() {   # <scripts 副本>：加标签失败 → 下轮只补标�
     set_field "$DW" 75 drop_pull_fields '["merged","merged_at"]'
     done_tick "$S"
     chk "现读核对 · PR 合并状态字段缺失：不评论" "$(my_marks 54)" ""
-    chk "现读核对 · PR 合并状态字段缺失：留队待下轮" "$(jq -r '.requester_bot_done_queue["75"].tries // "none"' "$DW/state/state.json")" 1
+    # GitHub#656 起合并后的交接写前就现读 PR 身份：缺字段时交接本身不收敛，通知也就还没入队，下轮再判
+    chk "现读核对 · PR 合并状态字段缺失：交接没收敛、通知没入队" "$(jq -r '(.merge_followup.prs["75"].handed // "none")' "$DW/state/state.json")/$(jq -r '.requester_bot_done_queue["75"] // "none"' "$DW/state/state.json")" "none/none"
     # 入队后 PR 被重新打开（现状和入队时不符）→ 不写、出队
     done_env on
     jq '.requester_bot_done_queue = {"74": {"kind": "merged", "tries": 0}}' "$DW/state/state.json" > "$DW/state/s.tmp" && mv "$DW/state/s.tmp" "$DW/state/state.json"
@@ -1383,7 +1385,33 @@ actor_suite() {   # <scripts 副本>
         fi
     done <<< "$ACTOR_CASES"
 }
-done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"
+# 升级前在途的「已合并」通知（GitHub#656）：旧队列条目只有 kind / tries，看不出评论发没发。接管后先按旧标记辨认：
+# 旧评论已发、现在的结论不是「完成」→ 只发一条「更正」，再补等待标签；没有旧评论 → 照常发一条结果。
+# 两种都走真实轮询，交接收敛时再入队一次也不能把接管时记下的 legacy 冲掉（复审第 1 轮问题 2）
+done_legacy_suite() {   # <scripts 副本>
+    local S="$1" old_mark='<!-- requester-bot-done pr=60 kind=merged -->' sent
+    for sent in yes no; do
+        done_env on
+        printf '{"cleaned_prs":[60,71,75,76],"cleaned_issues":[],"unmerged_prs_handled":[],"requester_bot_done_queue":{"60":{"kind":"merged","tries":0}}}' > "$DW/state/state.json"
+        if [ "$sent" = yes ]; then
+            set_field "$DW" 50 comments "$(jq -cn --arg b "## 需求已完成：PR #60 已合并
+
+$old_mark" '[{"user":"worker-bot","body":$b}]')"
+        fi
+        done_tick "$S"; done_tick "$S"
+        local mine
+        mine=$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body] | length' "$DW/gh/state.json")
+        if [ "$sent" = yes ]; then
+            chk "旧通知接管 · 旧评论已发：只多一条「更正」结果评论" \
+                "$mine/$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body | select(startswith("## 更正："))] | length' "$DW/gh/state.json")" "2/1"
+        else
+            chk "旧通知接管 · 没有旧评论：发一条结果评论，不是更正" \
+                "$mine/$(jq -r '[(.items["50"].comments // [])[] | select(type == "object" and .user == "worker-bot") | .body | select(startswith("## 更正："))] | length' "$DW/gh/state.json")" "1/0"
+        fi
+        chk "旧通知接管（旧评论 $sent）· 等待标签挂上、唤醒一次（#52 是夹具里关闭未合并那条）、出队" "$(has_wait 50)/$(hook_numbers)/$(queue_len)" "1/50:issue 52:issue/0"
+    done
+}
+done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"; done_legacy_suite "$NEW"
 # 地址里带 [1-2] / {a,b}（复审 #101 第 1 轮）：curl 默认把它们展开成多个请求。叫醒和结果通知
 # 两条真实路径各跑一遍：恰好 1 次、路径和查询原样、记 HTTP 200
 GLOB_QS='?filter[1-2]=x&pick={a,b}'
@@ -1405,9 +1433,17 @@ done_env on; done_tick "$NEW"   # 上面最后一条用例不发通知；这里�
 chk "结果通知 · daemon 的 poll.log / 调用记录里没有 webhook 地址和密钥" \
     "$(cat "$DW/state/poll.log" "$DW/gh/calls.log" 2>/dev/null | grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL")" 0
 chk "结果通知 · poll.log 里确实记了 webhook 结果（对照：上一条不是空日志）" "$(grep -c 'webhook' "$DW/state/poll.log" | awk '{print ($1 > 0) ? "yes" : "no"}')" yes
-# 功能关闭：和改动前逐字节一致（GitHub 调用、标签、state.json），也确实走到了合并后清理
+# 功能关闭：和改动前一样，不留任何机器人相关的东西（结果评论、等待标签、webhook、state.json 里的队列），也确实走到了
+# 合并后清理。合并后的交接本身 GitHub#656 起按新规则做（issue 上的清单评论等），不再整体和改动前逐字节比，
+# 见 tests/merge-followup.test.sh；这里只比机器人相关的那部分
 DONE_SAME=0
-compat_skip "关闭 · 合并后清理的 GitHub 调用、GitHub 状态、state.json 与改动前" "$OLD" "$NEW" scripts prompts && DONE_SAME=1
+compat_skip "关闭 · 合并后清理里机器人相关的写入、标签、state.json 与改动前" "$OLD" "$NEW" scripts prompts && DONE_SAME=1
+bot_digest() {   # <沙盒副本>：机器人相关的结果评论标记、等待标签、state.json 里的机器人队列
+    jq -r '[.items | to_entries[] | .key as $k | (.value.comments // [])[] | select(type == "object") | .body
+            | select(contains("requester-bot-done")) | "\($k)"] | join(",")' "$1/gh/state.json"
+    jq -r '[.items | to_entries[] | select((.value.labels // []) | index("waiting/bot")) | .key] | join(",")' "$1/gh/state.json"
+    jq -c '.requester_bot_done_queue // "none"' "$1/state/state.json"
+}
 for v in old new; do
     [ "$v" = new ] || [ "$DONE_SAME" = 0 ] || continue
     rm -rf "$SANDBOX/done-off-$v"
@@ -1417,15 +1453,15 @@ for v in old new; do
 done
 A="$SANDBOX/done-off-old"; B="$SANDBOX/done-off-new"
 if [ "$DONE_SAME" = 0 ]; then
-chk "关闭 · 合并后清理：GitHub 调用逐条相同" "$(cmp -s "$A/gh/calls.log" "$B/gh/calls.log" && echo same || echo diff)" same
-chk "关闭 · 合并后清理：GitHub 状态相同" "$(cmp -s <(jq -S . "$A/gh/state.json") <(jq -S . "$B/gh/state.json") && echo same || echo diff)" same
-chk "关闭 · 合并后清理：state.json 相同" "$(cmp -s <(jq -S . "$A/state/state.json") <(jq -S . "$B/state/state.json") && echo same || echo diff)" same
+chk "关闭 · 合并后清理：机器人相关的评论、等待标签、队列与改动前相同" "$( [ "$(bot_digest "$A")" = "$(bot_digest "$B")" ] && echo same || echo diff)" same
+# 夹具本来就有的：#55 上别人伪造的标记评论、#54 上的等待标签；此外不多任何东西
+chk "关闭 · 合并后清理：没有新的结果评论、等待标签、机器人队列" "$(bot_digest "$B" | paste -sd'|')" '55|54|"none"'
 fi
 chk "关闭 · 对拍不是两边都空（确实处理了合并的 PR）" "$(jq -r '.cleaned_prs | length' "$B/state/state.json")" 4
 echo "── 3e 负对照 ──"
-D=$(mutate no-merged-enqueue scripts/agent-poll.sh \
-    '                requester_bot_done_enqueue "$prnum" merged "$STATE_FILE"' \
-    '                :') && neg "合并路径不入队" done_suite "$D"
+D=$(mutate no-merged-enqueue scripts/_merge_followup.sh \
+    '            requester_bot_done_enqueue "$pr" merged "${STATE_FILE:-$STATE_DIR/state.json}"' \
+    '            :') && neg "合并路径不入队" done_suite "$D"
 D=$(mutate no-closed-enqueue scripts/agent-poll.sh \
     '            requester_bot_done_enqueue "$prnum" closed "$STATE_FILE"' \
     '            :') && neg "关闭未合并路径不入队" done_suite "$D"
@@ -1455,8 +1491,8 @@ D=$(mutate done-no-origin-check scripts/_lib.sh \
     '    rc=0; requester_bot_item_origin "$pr" "$item" || { REQUESTER_BOT_ORIGIN=$(pr_to_issue_num "$pr" "$(printf %s "$REQUESTER_BOT_PR_JSON" | jq -r .head.ref)"); rc=0; }') \
     && neg "合并后通知不核对是不是机器人的需求" done_suite "$D"
 D=$(mutate done-no-dedupe scripts/_lib.sh \
-    '    if ! printf '"'"'%s\n'"'"' "$marks" | grep -qxF "$mark"; then' \
-    '    if true; then') && neg "重试时不看评论发过没有（会重复评论）" done_retry_suite "$D"
+    '        if printf '"'"'%s\n'"'"' "$marks" | grep -qE "^<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=merged v=[0-9]+ -->\$"; then' \
+    '        if false; then') && neg "重试时不看评论发过没有（会重复评论）" done_retry_suite "$D"
 D=$(mutate done-any-author scripts/_lib.sh \
     '--jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body' \
     '--jq ".[] | (.body') && neg "认任何人发的标记评论（会被伪造挡掉）" done_suite "$D"

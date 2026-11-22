@@ -136,7 +136,7 @@ log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
 
 # 提示 issue 的那几种动作：开、在某条上读 / 评论 / 关
 notice_calls() { n_calls "^gh api( -X [A-Z]+)? $R/issues( |/[0-9]+( |/comments))"; }
-calls_norm() { sed 's/[0-9]\{10,\}//g' "$CALLS"; }
+calls_norm() { sed 's/[0-9]\{10,\}//g' "$CALLS" | compat_merge_calls; }   # 合并清理那一段见 compat_merge_calls
 ticks_calls() { tick "$1"; calls_norm; tick "$1"; calls_norm; }   # 两轮的调用合在一起
 # 早先版本开的提示 issue：开着、带标记、挂 pending/human
 legacy_issue() {
@@ -282,7 +282,7 @@ same_calls() {   # <描述> <改动前那份的配置行> <当前这份的配置
     if ! compat_skip "$what" "$OLD" "$NEW" scripts; then
         fresh "$old_line"; ticks_calls "$OLD" > "$SANDBOX/old.calls"
         fresh "$new_line"; ticks_calls "$NEW" > "$SANDBOX/new.calls"
-        chk "$what：两轮合计 GitHub 调用逐条一致" "$(diff "$SANDBOX/old.calls" "$SANDBOX/new.calls" >/dev/null && echo same || echo diff)" same
+        chk "$what：两轮合计 GitHub 调用逐条一致" "$(diff "$SANDBOX/old.calls" "$SANDBOX/new.calls" >/dev/null && echo same || { diff "$SANDBOX/old.calls" "$SANDBOX/new.calls" | head -6 | tr "\n" " "; })" same
         chk "$what：确实发过调用（不是早退）" "$([ -s "$SANDBOX/new.calls" ] && echo yes || echo no)" yes
     fi
 }

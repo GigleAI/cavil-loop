@@ -13,7 +13,8 @@
 #   · 判定之后不重读 / 写完一步不核对 → 人刚重新挂的提醒、刚重开的 issue 被按旧结论接着写
 #   · 读不到事件记录当成「没有提醒」→ 照摘不误
 #   · 人摘掉提醒后又被加回
-# `Refs #N` 写法、非托管 PR 的收尾、人在 pending/human 状态下直接关 issue 的清扫：写入与改动前（merge-base）逐字一致。
+# 人在 pending/human 状态下直接关 issue 的清扫：写入与改动前（merge-base）逐字一致（合并路径 GitHub#656 起按新规则交接，
+# 见 tests/merge-followup.test.sh）。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -201,8 +202,9 @@ comments_with() { jq -r --arg n "$1" '(.[$n] // [])[].body' "$GD/comments.json" 
 label_writes() { n_calls "^gh api -X (POST|DELETE) $R/issues/$1/labels"; }
 issue_state() { jq -r --arg n "$1" '.[$n].state // ""' "$GD/items.json"; }
 queued() { jq -r --arg i "$1" '(.closed_done_queue // {}) | if has($i) then .[$i] | tostring else "无" end' "$STATE" 2>/dev/null; }
-mqueued() { jq -r --arg i "$1" '(.merged_label_queue // {}) | has($i)' "$STATE" 2>/dev/null; }
-handoff() { jq -r --arg p "$1" '.autopilot.handoff[$p] // "none" | if type == "object" then "rec" else . end' "$STATE"; }
+# 合并后的交接（GitHub#656）：目标还没收敛 = 留在重试里；PR 记录还没被已收敛的版本覆盖 = 交接记录还在
+mqueued() { jq -r --arg i "$1" '(.merge_followup.targets[$i] // null) | if . == null then false else ((.converged // "") != (.fp // "")) end' "$STATE" 2>/dev/null; }
+handoff() { jq -r --arg p "$1" '(.merge_followup.prs[$p] // null) | if . != null and (.found // false) and .handed == null then "rec" else "none" end' "$STATE"; }
 event_reads() { n_calls "^gh api --paginate --slurp $R/issues/$1/events"; }
 
 # ── 【1】主路径 ──
@@ -550,7 +552,8 @@ chk "合并了、交接没记「合并即关」" "$(merged 8)/$(handoff 8)" "1/n
 chk "issue 开着、pending/human、摘 pending/PR" "$(issue_state 7)/$(labels_of 7)" "open/autopilot,pending/human"
 chk "说明是「满意就关闭」那一版" "$(comments_with 7 '要人做的：看过之后满意就关闭本 issue')" 1
 
-section "【7b】老的 Refs 交接：发说明之后第一次读到的 issue 状态词不认识、下一次恢复（同一轮里）→ 和改动前一样，同一轮重试就收尾"
+section "【7b】老的 Refs 交接：发说明之后读到的 issue 状态词不认识 → 这一轮零标签写入、留在重试里；下一轮恢复就收尾"
+# GitHub#656 起合并后的交接读不到就停在这一轮、下一轮从头现读（以前的标签重试队列会在同一轮再试一次）
 fresh
 ready "Refs #7
 
@@ -558,15 +561,16 @@ $SUMMARY"
 cat > "$GD/hook_after_POST_issues_7_comments_1" <<'HOOK'
 set -e
 cd "$(dirname "$0")"
-c=$(cat count_issues_7)
 printf '%s' '.state = "weird"' > jq_issues_7
-printf 'rm -f "%s/jq_issues_7"\n' "$PWD" > "hook_issues_7_$((c + 2))"
 HOOK
 tick
-chk "同一轮收尾：issue 开着、pending/human、pending/PR 摘掉，交接记录清掉、出队" \
-    "$(label_writes 7)/$(labels_of 7)/$(handoff 8)/$(mqueued 7)" "2/autopilot,pending/human/none/false"
-chk "  → 到达性：不认识的状态词确实读到过、同一轮里也确实恢复了" \
-    "$(grep -c '状态异常' "$W/state/poll.log" | awk '{print ($1>0)?"seen":"no"}')/$( [ -f "$GD/jq_issues_7" ] && echo still || echo cleared)" "seen/cleared"
+chk "第 1 轮：说明发了、issue 零标签写入、交接还在重试里" \
+    "$(comments_with 7 'autopilot-merged pr=8 ')/$(label_writes 7)/$(handoff 8)/$(mqueued 7)" "1/0/rec/true"
+chk "  → 到达性：不认识的状态词确实读到过" "$(grep -c '状态异常' "$W/state/poll.log" | awk '{print ($1>0)?"seen":"no"}')" "seen"
+rm -f "$GD/jq_issues_7"
+tick
+chk "第 2 轮：issue 开着、pending/human、pending/PR 摘掉，交接完成、说明没重发" \
+    "$(label_writes 7)/$(labels_of 7)/$(handoff 8)/$(mqueued 7)/$(comments_with 7 'autopilot-merged pr=8 ')" "2/autopilot,pending/human/none/false/1"
 
 section "【7c】交接记录是哪一种：缺 closes / false → 老交接；true → 合并即关；形状不对 / 读不出 → 判不了"
 fresh
@@ -582,7 +586,9 @@ chk "记录不是对象" "$(mode_of '{"autopilot":{"handoff":{"8":"x"}}}')" unkn
 chk "状态文件读不出" "$(mode_of '{not json')" unknown
 
 # ── 【7】和改动前一致 ──
-section "【7】Refs 写法、非托管 PR、人在 pending/human 状态下直接关 issue：写入与改动前逐字一致"
+section "【7】Refs 写法、非托管 PR、人在 pending/human 状态下直接关 issue：清扫的写入与改动前逐字一致"
+# 合并路径（#7 / #8 / #30 / #31）GitHub#656 起按新规则交接（Refs 的 issue 上多一条清单评论、托管说明随交接发），
+# 不再和改动前比；那部分在 tests/merge-followup.test.sh 测。这里只比关闭清扫（#32）
 same_scene() {
     fresh 'LABEL_PENDING_AGENT_EXTRA="pending/agent/05"'
     ready "做了 X。
@@ -596,22 +602,22 @@ $SUMMARY"
     jset labels.json '.["31"] = ["pending/review"]'
     mkissue 32 "pending/human,bug" closed
 }
-run_two() {   # <scripts 目录>：跑两轮，输出两轮的写请求、最终标签和评论
+run_two() {   # <scripts 目录>：跑两轮，输出两轮里 #32 的写请求、#32 的最终标签和评论
     local s="$1" out="" r
     for r in 1 2; do
         : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$s/agent-poll.sh" >/dev/null 2>&1
-        out="$out$(grep -E '^gh (api -X (POST|PUT|DELETE|PATCH)|issue comment|pr comment)' "$CALLS")"$'\n'
+        out="$out$(grep -E '^gh (api -X (POST|PUT|DELETE|PATCH)|issue comment|pr comment)' "$CALLS" | grep -E 'issues/32(/|$)')"$'\n'
     done
-    printf '%s\n%s\n%s\n' "$out" "$(jq -cS . "$GD/labels.json")" "$(jq -cS 'map_values(map(.body))' "$GD/comments.json")"
+    printf '%s\n%s\n%s\n' "$out" "$(jq -cS '.["32"]' "$GD/labels.json")" "$(jq -cS '(.["32"] // []) | map(.body)' "$GD/comments.json")"
 }
-if ! compat_skip "Refs 写法 / 非托管 PR / 直接关闭的清扫与改动前" "$SANDBOX/old" "$REPO_DIR" scripts prompts; then
+if ! compat_skip "直接关闭的清扫与改动前" "$SANDBOX/old" "$REPO_DIR" scripts prompts; then
     same_scene; old_out=$(run_two "$SANDBOX/old/scripts")
     same_scene; new_out=$(run_two "$SCRIPTS")
-    chk "两轮的写请求、最终标签、评论逐字一致" "$([ "$old_out" = "$new_out" ] && echo same || diff <(echo "$old_out") <(echo "$new_out") | head -8 | tr '\n' ' ')" same
+    chk "两轮里 #32 的写请求、最终标签、评论逐字一致" "$([ "$old_out" = "$new_out" ] && echo same || diff <(echo "$old_out") <(echo "$new_out") | head -8 | tr '\n' ' ')" same
 fi
 same_scene; tick; tick
 chk "到达性 · Refs 写法照旧：合并、issue 开着、pending/human" "$(merged 8)/$(issue_state 7)/$(labels_of 7)" "0/open/autopilot,pending/human"
-chk "到达性 · 非托管 PR 的 issue → pending/human" "$(labels_of 30)" "pending/human"
+chk "到达性 · 非托管 PR 的 issue → pending/human，并有一条清单评论" "$(labels_of 30)/$(comments_with 30 'cavil-loop:merge-followup target=30 ')" "pending/human/1"
 chk "到达性 · 直接关闭的 issue → Done、pending/human 摘掉" "$(labels_of 32)" "Done,bug"
 chk "到达性 · Refs 写法的 PR 确实合并过（第 1 轮）" "$(comments_with 7 'autopilot-merged pr=8 ')" 1
 

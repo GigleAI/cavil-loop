@@ -164,8 +164,9 @@ for side in $sides; do
     fresh 'LABEL_PENDING_LATER=""'
     mkissue 10 "pending/later"; mkissue 40 ""; mkpr 50 "pending/later"
     tick "$SANDBOX/$side"
-    cp "$CALLS" "$SANDBOX/off-$side.calls"
-    jq -S . "$STATE" > "$SANDBOX/off-$side.state"
+    # 合并后交接（GitHub#656）在合并清理关着时也读已合并列表、写已清理列表：按新规则做，用 compat.sh 里同一套写法去掉
+    compat_merge_calls < "$CALLS" > "$SANDBOX/off-$side.calls"
+    jq -S "$COMPAT_MERGE_STATE_JQ" "$STATE" > "$SANDBOX/off-$side.state"
     printf '%s %s %s\n' "$(queued issue 10)" "$(queued issue 40)" "$(queued pr 50)" > "$SANDBOX/off-$side.q"
 done
 if [ "$csame" = 0 ]; then

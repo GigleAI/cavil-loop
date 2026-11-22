@@ -156,6 +156,15 @@ def list_cmd():
             continue
         out.append({"number": int(n), "title": it.get("title", "t"),
                     "headRefName": it.get("head", {}).get("ref", ""),
+                    # 合并后交接（GitHub#656）读的几项：正文（items 里写 "body": null = 正文字段异常）、合并时间、
+                    # 合并提交、目标分支、分支最新提交
+                    "body": it["body"] if "body" in it else "",
+                    "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
+                    "mergeCommit": {"oid": it.get("merge_commit_sha") or "m" * 40} if merged else None,
+                    "baseRefName": it.get("base", {}).get("ref", "main"),
+                    "headRefOid": it.get("head", {}).get("sha", ""),
+                    "headRepository": {"name": (it.get("head", {}).get("repo", {}).get("full_name") or REPO).split("/")[-1]},
+                    "headRepositoryOwner": {"login": (it.get("head", {}).get("repo", {}).get("full_name") or REPO).split("/")[0]},
                     "labels": [{"name": l} for l in ls],
                     "stateReason": (it.get("state_reason") or "").upper(),
                     "updatedAt": it.get("updated_at", "2026-01-01T00:00:00Z")})
@@ -300,6 +309,10 @@ def view(n):
     if kind == "pr":
         it.setdefault("state", "open")
         it.setdefault("merged", False)
+        # 已合并的 PR 和真接口一样总有合并提交与合并时间（夹具没写就补上；和列表里给的是同一个值）
+        if it["merged"]:
+            it.setdefault("merge_commit_sha", "m" * 40)
+            it.setdefault("merged_at", "2026-01-01T00:00:00Z")
         # GitHub#337：PR 详情自报的改动文件数。夹具没写就按 files.json 算；写成 "__missing__" = 这个字段缺失
         if it.get("changed_files") == "__missing__":
             del it["changed_files"]
@@ -351,6 +364,16 @@ def touch(n):
 
 def append_event(n, ev, name):
     evs = load("events.json", {})
+    # 已合并 PR 上读的时候补出来的「加上」事件（见 GET …/events）只在标签挂着时出现；真 GitHub 摘掉标签后那条事件还在。
+    # 摘之前先把它落进记录（同一个编号、同一个时间），摘完之后读到的事件和真接口一样
+    if ev == "unlabeled":
+        _it = load("items.json", {}).get(str(n), {})
+        _have = any(e.get("event") == "labeled" and e.get("label", {}).get("name") == name for e in evs.get(str(n), []))
+        if _it.get("kind") == "pr" and _it.get("merged") and not os.path.exists(p("nosynth_" + str(n))) and not _have:
+            import zlib as _z
+            evs.setdefault(str(n), []).append(
+                {"id": 100 + _z.crc32(name.encode()) % 4000, "event": "labeled", "label": {"name": name},
+                 "actor": {"login": "maint", "type": "User"}, "created_at": "2026-01-01T00:00:00Z"})
     # 不存 id：读的时候统一按位置补（见 GET …/events），这样夹具手写的记录和 daemon 写出来的记录
     # 编号先后与发生先后一致，和真 GitHub 一样（GitHub#382：交人的写前核对按编号认先后）
     evs.setdefault(str(n), []).append(
@@ -365,6 +388,29 @@ if path == "user":
     if os.path.exists(p("F_user")):
         fail("HTTP 502: injected failure (user)")
     emit({"login": me()})
+
+if path == "graphql" and "ClosedEvent" in fields.get("query", ""):
+    # 关闭事件是谁关的（GitHub#656）：node(id) → ClosedEvent.closer。events.json 里事件的 "closer" 原样给出
+    # （{"__typename": "PullRequest"} / {"__typename": "Commit"} / 没写 = null，即人亲手关）；节点号是 REST 事件的
+    # node_id（没写的按 "CE_<id>" 补，和 GET …/events 补的 id 一致）。F_graphql_closer 让这类读取失败
+    if os.path.exists(p("F_graphql_closer")):
+        fail("HTTP 502: injected failure (graphql closer)")
+    nid = fields.get("id", "")
+    found = None
+    for _n, _evl in load("events.json", {}).items():
+        for _i, _e in enumerate(_evl):
+            _id = _e.get("id", 5000 + _i)
+            if _e.get("node_id", "CE_%s" % _id) == nid and _e.get("event") == "closed":
+                found = _e
+    if found is None:
+        emit({"data": {"node": None}})
+    # "closer_shape": "missing" = 回答里缺 closer 字段；"notype" = closer 是对象却没有类型名（测「回答不完整」）
+    shape = found.get("closer_shape")
+    if shape == "missing":
+        emit({"data": {"node": {"__typename": "ClosedEvent"}}})
+    if shape == "notype":
+        emit({"data": {"node": {"__typename": "ClosedEvent", "closer": {}}}})
+    emit({"data": {"node": {"__typename": "ClosedEvent", "closer": found.get("closer")}}})
 
 if path == "graphql":
     # PR 正文的修改历史（GitHub#142）：edits.json {"<pr>": [ {editedAt, deletedAt, diff}, ... ]}，按时间倒序，
@@ -542,9 +588,34 @@ if method == "GET":
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
         # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
         evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
+        # 和真 GitHub 一样：挂着的每个标签都有一条「加上」它的事件，合并的 PR 有一条 merged 事件（GitHub#656）。夹具没写的
+        # 在这里补：补的「加上」排在最前（时间 2026-01-01），补的 merged 按合并时间插在对应位置。放了 nosynth_<n> 文件的
+        # 条目不补（测「事件缺失」）
+        # 记下的事件先按位置编号（和以前一样），补出来的事件用按标签名算的固定编号：标签集合变了编号也不会挪
         for i, e in enumerate(evl):
             if "id" not in e:
                 e["id"] = 5000 + i
+        _it = items.get(parts[1], {})
+        # 只给已合并的 PR 补（issue 和打开的 PR 照旧：别的测试靠「挂着却没有事件」测判不了）
+        if _it.get("kind") == "pr" and _it.get("merged") and not os.path.exists(p("nosynth_" + parts[1])):
+            _have = {e.get("label", {}).get("name") for e in evl if e.get("event") == "labeled"}
+            import zlib as _z
+            _syn = [{"id": 100 + _z.crc32(l.encode()) % 4000, "event": "labeled", "label": {"name": l},
+                     "actor": {"login": "maint", "type": "User"}, "created_at": "2026-01-01T00:00:00Z"}
+                    for l in labels.get(parts[1], []) if l not in _have]
+            evl = _syn + evl
+            if not any(e.get("event") == "merged" for e in evl):
+                _mt = _it.get("merged_at") or "2026-01-01T00:00:00Z"
+                _k = len(evl)
+                for _j, _e in enumerate(evl):
+                    if (_e.get("created_at") or "") > _mt:
+                        _k = _j; break
+                evl.insert(_k, {"id": 4999, "event": "merged", "actor": {"login": "maint", "type": "User"}, "created_at": _mt})
+        for i, e in enumerate(evl):
+            if "id" not in e:
+                e["id"] = 5000 + i
+            if e.get("event") == "closed" and "node_id" not in e:
+                e["node_id"] = "CE_%s" % e["id"]
         emit(evl, pages=True)
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "comments":
         emit(paged(load("comments.json", {}).get(parts[1], [])), pages=True)
@@ -787,7 +858,12 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
         fail("gh: Head branch was modified. Review and try the merge again. (HTTP 409)")
     it["merged"] = True
     it["state"] = "closed"
+    it.setdefault("merged_at", now_iso())
+    it.setdefault("merge_commit_sha", "m" * 40)
     save("items.json", items)
+    _pe = load("events.json", {})
+    _pe.setdefault(parts[1], []).append({"event": "merged", "actor": {"login": me(), "type": me_type()}, "created_at": now_iso()})
+    save("events.json", _pe)
     # merge_closes 文件存在时（GitHub#461）：和真 GitHub 合进默认分支一样，正文里关闭关键词指向的本仓库 issue
     # 随合并关掉（state_reason = completed），并记一条 closed 事件。没有这个文件时照旧不动 issue
     if os.path.exists(p("merge_closes")):
@@ -799,9 +875,15 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
                 items[_n]["state"] = "closed"
                 items[_n]["state_reason"] = "completed"
                 _evs.setdefault(_n, []).append({"event": "closed", "actor": {"login": me(), "type": me_type()},
+                                                "commit_id": None, "closer": {"__typename": "PullRequest"},
                                                 "created_at": now_iso()})
         save("items.json", items)
         save("events.json", _evs)
+    # hook_after_PUT_pulls_<n>_merge（GitHub#656）：合并成功之后、响应返回之前运行——测试用它在「合并」和「同一轮里
+    # 接着做的合并后交接」之间插一步（例如让交接这一轮读不到 issue）
+    _mh = p("hook_after_PUT_pulls_%s_merge" % parts[1])
+    if os.path.exists(_mh):
+        subprocess.run(["bash", _mh], check=False, stdin=subprocess.DEVNULL, timeout=30)
     emit({"merged": True, "sha": "m" * 40})
 
 emit({})

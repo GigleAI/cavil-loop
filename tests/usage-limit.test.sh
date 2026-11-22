@@ -719,10 +719,10 @@ off_run() {   # <根目录> <输出前缀> [额外配置行…]
     for i in 1 2 3; do
         : > "$CALLS"
         env POLL_FAKE_NOW="$NOW" CODING_AGENT_CONFIG="$CONF" bash "$root/scripts/agent-poll.sh" > /dev/null 2>&1
-        cat "$CALLS" >> "$out.gh"
+        compat_merge_calls < "$CALLS" >> "$out.gh"   # 合并清理那一段见 compat_merge_calls
     done
     sed -E 's/%[0-9]+/%N/g' "$CTL/tmux.log" > "$out.tmux"
-    jq -S . "$STATE" > "$out.state"
+    jq -S "$COMPAT_MERGE_STATE_JQ" "$STATE" > "$out.state"
     ls "$W/state" | grep -v '^poll' | sort > "$out.files"
 }
 for variant in "" 'ENABLE_USAGE_LIMIT_PAUSE=""' 'ENABLE_USAGE_LIMIT_PAUSE="false"'; do

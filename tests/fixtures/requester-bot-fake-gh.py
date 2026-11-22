@@ -80,7 +80,12 @@ while i < len(args):
     if a in ("-X", "--method"):
         method = args[i + 1]; i += 2; continue
     if a in ("-f", "-F"):
-        fields.append(args[i + 1]); i += 2; continue
+        kv = args[i + 1]
+        k, _, v = kv.partition("=")
+        if a == "-F" and v.startswith("@"):   # 真 gh：-F key=@文件 读文件内容当值（大正文经文件传，GitHub#426 / #656）
+            with open(v[1:], encoding="utf-8") as fh:
+                kv = k + "=" + fh.read()
+        fields.append(kv); i += 2; continue
     if a == "--paginate":
         paginate = True
     elif a == "--slurp":
@@ -126,7 +131,8 @@ def issue_view(it):
 def pull_view(it):
     o = issue_view(it)
     o.pop("pull_request", None)
-    o["head"] = {"ref": it.get("head_ref", f"feature/issue-{it['number']}"), "sha": "abc"}
+    o["head"] = {"ref": it.get("head_ref", f"feature/issue-{it['number']}"), "sha": it.get("head_sha", "abc"),
+                 "repo": {"full_name": it.get("head_repo", REPO)}}
     o["base"] = {"ref": "main"}
     o["merged"] = bool(it.get("merged", False))
     o["merged_at"] = "2026-10-01T00:00:00Z" if it.get("merged") else None
@@ -171,7 +177,14 @@ if args[:2] == ["pr", "list"] and "--label" not in args:
         merged = bool(it.get("merged"))
         if (state == "merged" and merged) or (state == "open" and st_ == "open") \
                 or ("is:unmerged" in search and st_ == "closed" and not merged):
-            rows.append({"number": it["number"], "headRefName": it.get("head_ref", f"feature/issue-{it['number']}")})
+            rows.append({"number": it["number"], "headRefName": it.get("head_ref", f"feature/issue-{it['number']}"),
+                         # 合并后交接（GitHub#656）读的几项
+                         "title": it.get("title", ""), "body": it.get("body", ""),
+                         "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
+                         "mergeCommit": {"oid": "0123456789abcdef0123"} if merged else None,
+                         "baseRefName": it.get("base_ref", "main"), "headRefOid": it.get("head_sha", "abc"),
+                         "headRepository": {"name": it.get("head_repo", REPO).split("/")[-1]},
+                         "headRepositoryOwner": {"login": it.get("head_repo", REPO).split("/")[0]}})
     emit(rows)
 if args and args[0] in ("pr", "issue"):
     emit([])
@@ -281,6 +294,17 @@ if args and args[0] == "api":
                     "actor": ({"login": e["actor"]} if e.get("actor") else None),
                     "label": {"name": e.get("label", "")}, "created_at": "2026-10-01T00:00:00Z"}
                    for k, e in enumerate(it.get("events", []))]
+            # 已合并的 PR 和真 GitHub 一样：挂着的每个标签都有「加上」它的事件、有一条 merged 事件（GitHub#656）。
+            # 夹具没写的补在最前面（编号按标签名固定，标签变了也不挪）
+            if it.get("is_pr") and it.get("merged"):
+                import zlib as _z
+                have = {e["label"]["name"] for e in evs if e["event"] == "labeled"}
+                syn = [{"id": 100 + _z.crc32(l.encode()) % 800, "event": "labeled", "actor": {"login": "maintainer"},
+                        "label": {"name": l}, "created_at": "2026-01-01T00:00:00Z"} for l in it.get("labels", []) if l not in have]
+                if not any(e["event"] == "merged" for e in evs):
+                    syn.append({"id": 999, "event": "merged", "actor": {"login": "maintainer"}, "label": {"name": ""},
+                                "created_at": "2026-01-01T00:00:00Z"})
+                evs = syn + evs
             if HIDENEW:
                 evs = [e for e in evs if not (isinstance(e["id"], int) and e["id"] >= 5000)]
             size = it.get("events_page")
@@ -292,6 +316,9 @@ if args and args[0] == "api":
                     sys.stdout.write(r.stdout)
                     rc = rc or r.returncode
                 sys.exit(rc)
+            # 真 gh：--paginate --slurp 把各页包进一个外层数组（GitHub#656 起合并后交接这样读 PR 的事件）
+            if paginate and slurp:
+                emit([evs[k:k + size] for k in range(0, max(len(evs), 1), size)] if size else [evs])
             emit(evs)
         if rest == "/labels" and method == "POST":
             for kv in fields:
@@ -309,6 +336,12 @@ if args and args[0] == "api":
                 sys.stderr.write("HTTP 404 Label does not exist\n")
                 sys.exit(1)
             labels_of().remove(name)
+            # 读事件时补出来的「加上」事件只在标签挂着时出现；真 GitHub 摘掉后那条还在：摘之前落进记录（同一个编号）
+            if it.get("is_pr") and it.get("merged") and not any(
+                    e.get("event") == "labeled" and e.get("label") == name for e in it.get("events", [])):
+                import zlib as _z
+                it.setdefault("events", []).append({"id": 100 + _z.crc32(name.encode()) % 800, "event": "labeled",
+                                                    "actor": "maintainer", "label": name})
             add_event(it, {"event": "unlabeled", "actor": st.get("me"), "label": name})
             save("state.json", st)
             emit([{"name": x} for x in labels_of()])

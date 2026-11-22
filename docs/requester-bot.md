@@ -127,7 +127,7 @@ Have grokbot file a test request, then check in order:
 
 1. Once the agent posts its proposal, the issue shows `pending/requester-bot`; `poll.log` contains `notify-requester-bot #<number>: ✅ 已叫醒 grokbot` followed by `已通知 webhook（HTTP 200）`
 2. grokbot comments on the item carrying the waiting label saying whom it sent it to, **and `pending/requester-bot` is still there afterwards**; grokbot's next scan does not send it a second time. Later it pastes the answer back verbatim on that same item, removes `pending/requester-bot` and adds `pending/agent`; on the next tick the agent carries on
-3. After the PR merges, the issue gets a "request done" comment and carries `pending/requester-bot` again, with `issue #<number>：已通知 webhook（HTTP 200）` in `poll.log`
+3. After the PR merges, the issue gets a merge result comment and carries `pending/requester-bot` again, with `issue #<number>：已通知 webhook（HTTP 200）` in `poll.log`
 
 If any step does not match, see [Troubleshooting](#troubleshooting).
 
@@ -157,16 +157,16 @@ cavil-loop only handles its own side; grokbot implements the eight rules below. 
    ```
    <!-- requester-bot-reply-ops:end -->
 
-5. **On a comment headed "request done" / "closed without merging"** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`; the request is finished
+5. **On a merge result comment / a "closed without merging" comment** (the daemon posts it on the source issue): tell the requester, then remove `pending/requester-bot`. Only a comment headed "需求已完成" means the request is finished; "需求还有待办" carries the list of what is left (a maintainer handles it), and "是否还有后续由维护者确认" means a maintainer still has to confirm
 6. **Leave items carrying `pending/human` alone**: those are for the maintainer
 7. **Attachments**: images etc. from the requester can be pasted into the issue and the agent downloads them itself; the other direction (agent sending attachments to grokbot) is not supported
-8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; do not forward twice and do not remove the waiting label after forwarding (rule 3); bring the answer back on the same item as in item 4. Such items get no "request done" comment after the merge
+8. **A maintainer's own items** (only when the project turned on `REQUESTER_BOT_WAKE_ANY_ITEM`): first decide whether the item is grokbot's own request per [the routing step of the handoff protocol](#handoff-protocol) — **never by whether the current item's body carries the origin marker**: a PR's body usually has none and is judged by its linked issue, and an ordinary author quoting the marker does not count. If it is not grokbot's request, whom to forward to is written in the handoff comment. Find the wake record and the handoff comment it points at per [A maintainer's own items → Handoff protocol](#handoff-protocol), forward only when it is "ready", and do nothing at all this round while it is "preparing"; do not forward twice and do not remove the waiting label after forwarding (rule 3); bring the answer back on the same item as in item 4. Such items get no merge result comment
 
 </details>
 
 ## One request end to end: what you see on the issue
 
-A request goes issue → proposal → answer → PR → (report and approval) → maintainer merges → "request done". The table below shows labels and comments at each step.
+A request goes issue → proposal → answer → PR → (report and approval) → maintainer merges → merge result comment. The table below shows labels and comments at each step.
 
 <details><summary>Step by step, with <code>REQUESTER_BOT_REPORT_FIRST=true</code></summary>
 
@@ -181,7 +181,7 @@ A request goes issue → proposal → answer → PR → (report and approval) �
 | 7. Report the result | agent / reviewer | PR `pending/requester-bot` | result report (names the commit) |
 | 8. Pass on, requester approves | grokbot | PR still `pending/requester-bot` after passing on, `pending/agent` when bringing the approval back | on the PR (not the source issue): "sent to X"; the verbatim approval |
 | 9. Hand to the maintainer | agent | PR `pending/human` | merge note (one screen: a line of context + what changed / how / why + what to do after merging) + handoff comment |
-| 10. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts "request done" |
+| 10. Merge | maintainer | PR `Done`; issue gets `pending/requester-bot` | daemon posts the merge result comment |
 | 11. Wrap up | grokbot | removes `pending/requester-bot` from the issue | — |
 
 With `REQUESTER_BOT_REPORT_FIRST=false` steps 7 and 8 do not happen: finished work goes straight to the maintainer, and steps 10 and 11 still follow the merge.
@@ -204,7 +204,7 @@ Start from `poll.log` and the comments on the item; the table maps what you see 
 | `找不到 curl，webhook 跳过` | Install curl |
 | Right after grokbot's "sent to X" comment the waiting label is gone and the item carries no flow label | grokbot removed the waiting label itself after passing the message on, against [rule 3](#what-grokbot-has-to-do-on-its-side). The daemon does not dispatch because of it (next row); the board just cannot show that it is waiting for an answer. The fix is on grokbot's side: keep the label after passing on, remove it only when bringing the answer back |
 | The item carries no flow label and nobody picks it up; `poll.log` has `不续工——#<number> 最近一次挂上等待标签 … 之后，没人打过派工标签` | The waiting label was removed early and nobody added `pending/agent`. If the answer is already posted: add `pending/agent` and it continues. If not: leave it; when the answer comes back grokbot adds `pending/agent` per rule 4 and it continues. Remind grokbot's side not to remove the label after passing the message on ([rules 3 and 4](#what-grokbot-has-to-do-on-its-side)). **Do not put the waiting label back by hand**: on a maintainer's own item a hand-added label has no matching wake record, and grokbot marks it "error" and hands it to the maintainer after 30 minutes (see [Handoff protocol](#handoff-protocol)); on grokbot's own request it may be taken as a new wake-up and sent again |
-| grokbot never got "request done" after a merge | Post-merge cleanup is off (`AUTO_CLEANUP_ON_MERGE`); or, for a PR closed unmerged, the same request still has another PR open (no notice then); or the write identity is not in `REQUESTER_BOT_ALLOWED_ACTORS` — `poll.log` says which |
+| grokbot never got a merge result comment | Post-merge cleanup is off (`AUTO_CLEANUP_ON_MERGE`); or, for a PR closed unmerged, the same request still has another PR open (no notice then); or the write identity is not in `REQUESTER_BOT_ALLOWED_ACTORS` — `poll.log` says which |
 
 </details>
 
@@ -339,7 +339,7 @@ A maintainer adding the autopilot label by hand on the issue, on a PR bound to i
 | Code review passes (`REQUESTER_BOT_REPORT_FIRST=true`) | wake grokbot to report the current commit | same |
 | Requester approves the current commit | hand to the maintainer to merge (`pending/human`) | hand to review (`pending/review`) → the reviewer checks the approval names the PR's head commit and reruns the tests → `pending/merge` → the daemon merges under the usual autopilot conditions |
 | Code review passes (`REQUESTER_BOT_REPORT_FIRST=false`) | hand to the maintainer | `pending/merge` → the daemon merges |
-| After the merge | the daemon posts "request done" | same |
+| After the merge | the daemon posts the merge result comment | same |
 
 A new commit after the approval (say the maintainer asked for a change on the PR) voids it: review again, report again. The daemon does not read comment content: which commit was approved is checked by the reviewer under the [evidence rules](#what-grokbot-has-to-do-on-its-side), and none of the daemon's pre-merge checks is dropped. Workers and reviewers get these rules from the "requests filed by the bot + autopilot" section of the dispatch prompt, which appears only when both features are on and the item is on autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).
 
@@ -458,11 +458,11 @@ When a PR is merged, or closed without merging, the daemon tells the bot on its 
 <details><summary>What it does, and when it does not</summary>
 
 - **Only requests filed by the bot**: the PR's linked issue must pass the same author + marker check as the wake-up script (one shared implementation)
-- **What it does**: posts a result comment on that issue ("request done: PR #N merged" with the merge commit, or "PR #N closed without merging") → adds the waiting label to that issue and reads it back → calls the webhook once (`kind` is `issue`, the number is the source issue). It does this even when `Closes #N` has already closed the issue. The bot is not assigned
+- **What it does**: posts a result comment on that issue (for a merge, one of three, from the same conclusion as the checklist comment the daemon posts on the issue — see [architecture](architecture.md#after-a-merge-what-is-left-to-do-and-who-does-it): "需求还有待办" with the list; "需求已完成" only when the PR said there is nothing left, or its list has ended, and a maintainer closed the request by hand; otherwise "是否还有后续由维护者确认"; with the merge commit. Or "PR #N closed without merging"). A merge notice waits until the checklist comment and labels on the issue are confirmed → adds the waiting label to that issue and reads it back → calls the webhook once (`kind` is `issue`, the number is the source issue). It does this even when `Closes #N` has already closed the issue. The bot is not assigned
 - **The bot's side must agree**: it pulls closed items carrying the waiting label too, and removes the label itself once it has passed the result on
 - **Closed unmerged while the same request still has another PR open**: no notice (the work goes on). This is re-checked on every attempt — if the first try failed and a new PR was opened before the retry, nothing is sent; if the open-PR list cannot be read, that counts as unknown and waits for the next tick, never as "none". Once the request has been reported as merged, an old PR being closed is not reported
 - **The write identity must be on the allowed list** — the same check as the wake-up script; if it is not, or cannot be read, nothing is written, the notice waits for the next tick and `poll.log` says why
-- **Once only**: the comment carries a hidden marker; a retry first checks whether this account already posted it and, if so, only redoes the label. A failure to add or read back the label retries on the next tick, up to 30 ticks per PR; giving up logs a ⚠️ line to `poll.log`. A webhook failure is one log line and is not retried
+- **Once only**: the comment carries a hidden marker; a retry first checks whether this account already posted it and, if so, only redoes the label. A failure to add or read back the label retries on the next tick, up to 30 ticks per PR; ticks spent waiting for the checklist comment and labels on the issue to be confirmed do not count. After 30 failed ticks a "closed without merging" notice is given up (a ⚠️ line in `poll.log`); a merge notice is kept and tried again every 30 polls (also a ⚠️ line), and you can always tell the bot by hand on the source issue. A webhook failure is one log line and is not retried
 - **Re-reads the PR before writing**: it must be closed, merged-or-not as first seen; if the fields cannot be read, nothing is written this tick
 - Runs inside the post-merge cleanup pass (`AUTO_CLEANUP_ON_MERGE`, on by default): with that off, no merge / close notice is sent
 

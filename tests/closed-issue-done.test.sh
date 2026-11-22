@@ -14,7 +14,7 @@
 #   · 写之前不重读 → 刚被重新打开的 issue 也打上 Done
 #   · 出队放在写之前 / 摘除失败当成功 → 一次接口抖动就永久漏标
 #   · 清单漏了自定义派工标签 → 关掉的 issue 下一轮又被派工
-# 合并路径（PR 合并后给 PR 和被带关的 issue 打 Done）的调用与改动前（merge-base）逐条一致。
+# 合并路径（PR 合并后给 PR 和被带关的 issue 打 Done）GitHub#656 起由合并后的交接做，见 tests/merge-followup.test.sh。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -345,38 +345,21 @@ HOOK
         chk "$variant：清理恢复后记为已处理、记录删掉、标签不再碰" "$(cleaned 23)/$(queued 23)/$(reread 23)/$(writes_on 23)" "true/无/0/0"
     done
 
-    # ── 【11】合并路径不变 ──
-    section "【11】PR 合并带关 issue：合并路径的调用与改动前逐条一致（只多出新队列的重读和事件记录读取）"
-    local old_calls new_calls
-    merged_scene() {
-        fresh 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_AGENT_EXTRA="pending/agent/05"'
-        mkissue 30 "pending/PR,autopilot" closed completed
-        mkmerged 31 feature/issue-30 "做了。
+    # ── 【11】合并路径：GitHub#656 起由合并后的交接做（细节在 tests/merge-followup.test.sh），这里只看和关闭清扫的配合 ──
+    section "【11】PR 合并带关 issue：合并后的交接打 Done，关闭清扫重读一次后零写入出队"
+    fresh 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_AGENT_EXTRA="pending/agent/05"'
+    mkissue 30 "pending/PR,autopilot" closed completed
+    mkmerged 31 feature/issue-30 "做了。
 
 Closes #30" "pending/human,pending/merge"
-        mkissue 32 "pending/PR" open
-        mkmerged 33 feature/issue-32 "Refs #32" "pending/review"
-    }
-    local old_labels old_state csame=0
-    compat_skip "合并路径的调用、最终标签、state.json 与改动前" "$SANDBOX/old" "$(dirname "$SCRIPTS")" scripts prompts && csame=1
-    if [ "$csame" = 0 ]; then
-    merged_scene
-    : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$SANDBOX/old/scripts/agent-poll.sh" >/dev/null 2>&1
-    old_calls=$(grep -v -e '--jq .*state_reason' -e '^gh api --paginate --slurp repos/example/cd/issues/3[0-3]/events$' "$CALLS")
-    old_labels=$(jq -cS . "$GD/labels.json")
-    old_state=$(jq -cS 'del(.closed_done_queue)' "$STATE")
-    fi
-    merged_scene
+    mkissue 32 "pending/PR" open
+    mkmerged 33 feature/issue-32 "Refs #32" "pending/review"
     tick
-    new_calls=$(grep -v -e '--jq .*state_reason' -e '^gh api --paginate --slurp repos/example/cd/issues/3[0-3]/events$' "$CALLS")
-    if [ "$csame" = 0 ]; then
-    chk "调用记录（去掉新队列的重读、事件记录读取）逐条一致" "$([ "$old_calls" = "$new_calls" ] && echo same || diff <(echo "$old_calls") <(echo "$new_calls") | head -5 | tr '\n' ' ')" same
-    chk "最终标签一致" "$(jq -cS . "$GD/labels.json")" "$old_labels"
-    chk "state.json（去掉新队列字段）一致" "$(jq -cS 'del(.closed_done_queue)' "$STATE")" "$old_state"
-    fi
-    chk "到达性 · 合并路径真的给 PR 打了 Done" "$(labels_of 31)" "Done"
-    chk "到达性 · 被带关的 issue 打了 Done、autopilot 保留" "$(labels_of 30)" "Done,autopilot"
+    chk "合并的 PR 打了 Done、流程标签摘掉" "$(labels_of 31)/$(labels_of 33)" "Done/Done"
+    chk "被带关的 issue 打了 Done、autopilot 保留" "$(labels_of 30)" "Done,autopilot"
+    chk "Refs 的 issue 翻 pending/human" "$(labels_of 32)" "pending/human"
     chk "带关的 issue 也进了新队列、重读一次后零写入出队" "$(reread 30)/$(queued 30)" "1/无"
+    chk "记为已清理" "$(jq -c '.cleaned_prs | sort' "$STATE")" "[31,33]"
 }
 
 run_scenarios "$REPO_DIR/scripts"

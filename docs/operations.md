@@ -1545,7 +1545,7 @@ still go to the bot's own requests only.
 - Items carrying the waiting label are left alone by the greedy pass and self-heal; adding a trigger label dispatches them through the normal flow and removes the waiting label
 - There is no waiting timeout. If the bot never answers, nothing shows up in `poll.log`; watch the board for items stuck on the waiting label
 - The wake-up script runs through the durable entry `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh` (survives release switches; the early `notify-relay.sh` entry forwards to it) and logs one `notify-requester-bot #<number>: …` line to `poll.log` per run, followed by one webhook result line when configured (`已通知 webhook（HTTP 200）` / `webhook 通知失败（…）` / `… 跳过`) — never the URL or key
-- Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks. They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
+- Merge / close notices: pending ones sit in `state.json` under `requester_bot_done_queue`; each one logs `✅ 已把 PR #N 的结果…` when sent, or a ⚠️ line after 30 failed ticks — a "closed without merging" notice is then dropped, a merge notice is kept and tried again every 30 polls (ticks spent waiting for the issue's checklist comment and labels are not counted). They run inside the post-merge cleanup pass, so `AUTO_CLEANUP_ON_MERGE=false` turns them off too
 - Exit codes, evidence rules and a worked example: [Hooking up an external requester bot](requester-bot.md)
 
 </details>

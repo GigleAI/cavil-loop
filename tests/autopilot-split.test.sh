@@ -208,7 +208,7 @@ $SUMMARY" "$H1" "pending/merge"
     chk "下一轮清理：子项 51 仍打开" "$(issue_state 51)" open
     chk "  → 子项翻 pending/human、摘 pending/PR" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/no"
     chk "  → PR 52 打 Done" "$(has_label 52 Done)" yes
-    chk "  → 交接记录已清" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    chk "  → 交接记录已清" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" none
     chk "  → 合并说明只有一条" "$(comments_with 51 'autopilot-merged pr=52 ')" 1
 
     section "【1L】总结段很长（合并说明约 135 KB，超过单个命令行参数 128 KB 的上限）：照样发出全文；发不出时交接记录存下全文、下一轮补发（GitHub#426）"
@@ -234,11 +234,11 @@ PY2
     : > "$GD/F_post_comment"
     tick
     chk "评论发不出：照常合并、说明没发出去" "$(merged 52)/$(merged_note 51 | wc -l | tr -d ' ')" "1/0"
-    chk "  → 交接记录存下了说明全文" "$(jq -r '.autopilot.handoff["52"].body // "" | select(contains("SUMMARYMARK")) | utf8bytelength > 130000' "$STATE")" true
+    chk "  → 交接记录存下了说明全文" "$(jq -r '.merge_followup.prs["52"].ap.desc // "" | select(contains("SUMMARYMARK")) | utf8bytelength > 130000' "$STATE")" true
     rm -f "$GD/F_post_comment"
     tick
     chk "  → 下一轮补发全文，只有一条" "$(merged_note 51 | awk '$1>130000' | wc -l | tr -d ' ')" 1
-    chk "  → 交接完成：子项翻 pending/human，记录已清" "$(has_label 51 pending/human)/$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" "yes/none"
+    chk "  → 交接完成：子项翻 pending/human，记录已清" "$(has_label 51 pending/human)/$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" "yes/none"
 
     section "【1b】同一轮里的无关 PR（issue 不是拆分子项、也没有托管标签）不被补标签、不被合并"
     fresh; split_ready
@@ -362,8 +362,13 @@ PY2
     chk "别的仓库的父 issue 摘了托管标签 → 不合并" "$(merged 52)" 0
 
     # ── 【7】合并后的交接 ──
-    # 合并和合并后的清理在同一轮里先后跑；要在两者之间插一步人的操作，第一轮先关掉清理
-    merge_only_tick() { printf 'AUTO_CLEANUP_ON_MERGE=false\n' >> "$CONF"; tick; sed -i '/^AUTO_CLEANUP_ON_MERGE=false$/d' "$CONF"; }
+    # 合并和合并后的交接在同一轮里先后跑；要在两者之间插一步人的操作，第一轮合并之后让交接读不到子项 #51
+    # （假 GitHub 的合并后钩子），这一轮交接什么都不写，下一轮照常
+    merge_only_tick() {
+        printf 'touch "%s/F_issues_51"\n' "$GD" > "$GD/hook_after_PUT_pulls_52_merge"
+        tick
+        rm -f "$GD/F_issues_51" "$GD/hook_after_PUT_pulls_52_merge"
+    }
     section "【7】合并后交接：人已经打回返工 → 标签一个不动；读不到 → 下轮再试；说明只发一条"
     fresh; split_ready
     merge_only_tick
@@ -372,7 +377,7 @@ PY2
     tick
     chk "已打 pending/agent → 不加 pending/human" "$(has_label 51 pending/human)" no
     chk "  → pending/agent、pending/PR 都还在" "$(has_label 51 pending/agent)/$(has_label 51 pending/PR)" "yes/yes"
-    chk "  → 交接作废" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    chk "  → 交接作废" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" none
     fresh; split_ready
     merge_only_tick
     # 交接先读一遍 issue 判定，翻标签前再读一遍：第二遍之前维护者打了 pending/agent（hook 在第 2 次读 issue 51 前改状态）
@@ -382,13 +387,13 @@ PY2
     chk "判定之后、翻标签之前打了 pending/agent → 不加 pending/human" "$(has_label 51 pending/human)/$(has_label 51 pending/agent)" "no/yes"
     chk "  → 到达性：翻标签前确实又读了一遍 issue" "$([ "$(n_calls "^gh api $R/issues/51\$")" -ge 2 ] && echo yes || echo no)" yes
     tick
-    chk "  → 下一轮看到新流程，交接作废、标签仍不动" "$(has_label 51 pending/human)/$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" "no/none"
+    chk "  → 下一轮看到新流程，交接作废、标签仍不动" "$(has_label 51 pending/human)/$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" "no/none"
     fresh; split_ready
     merge_only_tick
     touch "$GD/F_issues_51"
     tick
     chk "交接时读不到 issue → 子项上零标签写入" "$(label_writes 51)" 0
-    chk "  → 交接记录还在" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
+    chk "  → 交接记录还在" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" 51
     rm -f "$GD/F_issues_51"
     tick
     chk "恢复后 → 翻 pending/human" "$(has_label 51 pending/human)" yes
@@ -412,19 +417,22 @@ PY2
     rm -f "$GD/count_issues_51_comments"
     tick
     chk "交接中途 issue 被重开、新一轮在跑 → 标签一个不动（只有 doing/agent）" "$(labels_of 51)" "doing/agent"
-    chk "  → 到达性：hook 确实跑了、说明补发了" "$(issue_state 51)/$(comments_with 51 'autopilot-merged pr=52 ')" "open/1"
+    # 读评论那一刻发现 issue 变了：这一轮不发说明，下一轮按现状（开着、新一轮在跑）补发，标签照样不动
+    tick
+    # （假 tmux 里没有会话，doing/agent 会被派工的自愈翻回触发标签，那是派工那一段的事；这里只看交接没加 pending/human）
+    chk "  → 到达性：hook 确实跑了；下一轮补发了说明，交接没加 pending/human" "$(issue_state 51)/$(comments_with 51 'autopilot-merged pr=52 ')/$(has_label 51 pending/human)" "open/1/no"
     fresh; split_ready
     merge_only_tick
     touch "$GD/F_delete_labels"
     tick
-    chk "摘 pending/PR 失败 → 交接记录留着" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
+    chk "摘 pending/PR 失败 → 交接记录留着" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" 51
     chk "  → 这一轮 pending/human 已加上、pending/PR 还在" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/yes"
     # 交接一次只摘一次，失败就停手；同一轮里合并后标签的重试队列会再调一次，所以最多 2 次
     chk "  → 摘失败就停手，不在一轮里反复打 GitHub（最多 2 次）" "$([ "$(n_calls "^gh api -X DELETE $R/issues/51/labels/")" -le 2 ] && echo yes || echo no)" yes
     rm -f "$GD/F_delete_labels"
     tick
     chk "恢复后 → 摘掉 pending/PR，只剩 pending/human" "$(has_label 51 pending/human)/$(has_label 51 pending/PR)" "yes/no"
-    chk "  → 交接记录已清" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    chk "  → 交接记录已清" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" none
     # 复审第 2 轮：第一个写请求（加 Done）已经完成、第二个（摘 pending/PR）发出之前，维护者重开 issue、新一轮在跑
     fresh; split_ready
     merge_only_tick
@@ -434,7 +442,7 @@ PY2
     tick
     chk "加 Done 之后、摘标签之前被重开 → 不再摘任何标签（只剩 doing/agent）" "$(labels_of 51)" "doing/agent"
     chk "  → 到达性：Done 确实先加过、摘标签的 hook 确实跑了" "$(n_calls "^gh api -X POST $R/issues/51/labels -f labels\[\]=Done")/$(issue_state 51)" "1/open"
-    chk "  → 交接作废、下一轮也不再动" "$(jq -r '.autopilot.handoff["52"] // "none"' "$STATE")" none
+    chk "  → 交接作废、下一轮也不再动" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" none
     fresh; split_ready
     merge_only_tick
     printf 'cd %q && jq %q labels.json > l.tmp && mv l.tmp labels.json\n' "$GD" '.["51"] += ["pending/agent"]' > "$GD/hook_after_POST_issues_51_labels_1"
@@ -446,7 +454,7 @@ PY2
     jset items.json '.["51"].state = "closed" | .["51"].state_reason = "completed"'
     touch "$GD/F_delete_labels"
     tick
-    chk "人先关了 issue、摘标签失败 → 交接记录留着" "$(jq -r '.autopilot.handoff["52"].issue // "none"' "$STATE")" 51
+    chk "人先关了 issue、摘标签失败 → 交接记录留着" "$(jq -r '(.merge_followup.prs["52"] // null) | if . != null and (.found // false) and .handed == null then .target else "none" end' "$STATE")" 51
     rm -f "$GD/F_delete_labels"
     tick
     chk "  → 恢复后 Done、pending/PR 已摘" "$(has_label 51 Done)/$(has_label 51 pending/PR)" "yes/no"

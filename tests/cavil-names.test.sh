@@ -26,6 +26,8 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 # shellcheck source=lib/mutation.sh
 source "$TEST_DIR/lib/mutation.sh"
+# shellcheck source=lib/compat.sh
+source "$TEST_DIR/lib/compat.sh"
 BASE_COMMIT="d1946f2"   # 改名前的 main，用作「行为与改动前一致」的对照
 
 TMP="$(mktemp -d)" || exit 1
@@ -417,7 +419,8 @@ CONF
         # runlog：运行记录（GitHub#344），改名前的代码同样没有
         (cd "$home" && find . -type f -o -type d | grep -vE 'tick|\.lock$|/sessions|/redact-scan\.(json|stamp)$|/runlog(/|$)' | sort) > "$w/files.txt"
         jq -S . "$home/.local/state/coding-agent-poll/legacy/state.json" > "$w/state.json" 2>/dev/null || echo none > "$w/state.json"
-        sort "$w/gh.log" 2>/dev/null > "$w/gh.sorted" || : > "$w/gh.sorted"
+        # 合并后交接（GitHub#656）读已合并列表的字段按新规则变了：用 compat.sh 里同一套写法去掉，其余调用照旧逐条比
+        { compat_merge_calls < "$w/gh.log" | sort; } 2>/dev/null > "$w/gh.sorted" || : > "$w/gh.sorted"
         # 同一个工作区，派工时会拼出的指令里有没有项目自带的那段
         ( cd "$host" && env -u CODING_AGENT_RELEASE_ROOT HOME="$home" \
               CODING_AGENT_CONFIG="$host/coding-agent.config" bash -c '

@@ -83,3 +83,22 @@ compat_feedback_fp_patch() {
         grep -q 'FEEDBACK_FP_CMD' "$f" || { echo "compat_feedback_fp_patch: 没能给 $f 补上 \${FEEDBACK_FP_CMD}" >&2; return 1; }
     done
 }
+
+# ── 和改动前比轮询调用时，合并清理那一段的统一写法（GitHub#656）──
+# ① 已合并列表的读取去掉：多读了几项（正文、合并时间…），而且 AUTO_CLEANUP_ON_MERGE=false 时现在也每轮读（合并后的
+# 交接不随清理关掉），改动前那时不读；② 假 GitHub 没开列表时（不带 FAKE_GH_LISTS）
+# 对列表一律原样答 `[]`，改动前的脚本按行读、把它当成编号为「[]」的 PR（读它的正文、给它打标签、记进已清理），
+# 现在按 JSON 读、没有这个 PR——这些对「[]」的调用和记录与要比的功能无关，去掉。
+compat_merge_calls() {   # stdin：调用记录；stdout：统一后的调用记录
+    # 记录里命令名可以写也可以不写（有的假 gh 只记参数）
+    grep -vE '^(gh )?pr list --repo [^ ]+ --state merged |^(gh )?pr view \[\] |/issues/\[\]( |/|$)' || true
+}
+# state.json 一侧：去掉「[]」那条假 PR（已清理列表里的、各重试队列里以「[]」为键的）；已清理列表是空的（只是首轮
+# bootstrap 写下的）就整项去掉
+COMPAT_MERGE_STATE_JQ='walk(if type == "object" then del(.["[]"]) else . end)
+    | if has("cleaned_prs") then (.cleaned_prs |= map(select(type == "number")) | if .cleaned_prs == [] then del(.cleaned_prs) else . end) else . end'
+# 托管合并之后的那一段（合并说明、合并后的交接）GitHub#656 起按新规则做，不再和改动前逐字节比（在
+# tests/merge-followup.test.sh 测）。这几行之前的判定、合并请求本身照旧逐字节比：读到合并请求那一行就停
+compat_cut_after_merge() {   # stdin：调用记录（可以是几轮拼在一起的）；stdout：到合并请求那一行为止
+    awk '{ print } / -X PUT [^ ]*\/pulls\/[0-9]+\/merge( |$)/ { exit }'
+}

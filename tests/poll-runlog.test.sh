@@ -526,9 +526,9 @@ scenario() {   # <被测根目录> <名字> [多出来的配置行...]
     env CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$root/scripts/agent-poll.sh" >/dev/null 2>&1; r3=$?
     {
         echo "rc=$r1/$r2/$r3"
-        echo "--calls"; sed "s#$W#<W>#g" "$CALLS"
+        echo "--calls"; sed "s#$W#<W>#g" "$CALLS" | compat_merge_calls   # 合并清理那一段见 compat_merge_calls
         echo "--labels"; jq -S -c . "$GD/labels.json"
-        echo "--state"; jq -S -c . "$W/state/state.json"
+        echo "--state"; jq -S -c "$COMPAT_MERGE_STATE_JQ" "$W/state/state.json"
         echo "--tmux"; cat "$W/tmux.log" 2>/dev/null
     } > "$SANDBOX/$name.digest"
 }

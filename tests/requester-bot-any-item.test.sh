@@ -557,10 +557,11 @@ done_suite() {   # <scripts 副本>
     chk "合并后 · 非机器人 PR 合并：有定论（出队）" "$rc" 0
     chk "合并后 · 非机器人 PR 合并：零写请求" "$(writes)" 0
     chk "合并后 · 非机器人 PR 合并：webhook 0 次" "$(hook_count)" 0
-    # 到达性：机器人提的需求照常通知
-    add_item 60 pr "" worker-bot "" feature/issue-50; set_field 60 state '"closed"'; set_field 60 merged true
+    # 到达性：机器人提的需求照常通知。用「关闭未合并」那条：「已合并」那条 GitHub#656 起要等合并后的交接收敛
+    # 才发（单独调这个函数时没有交接记录，下轮再判），在 tests/requester-bot.test.sh 里走真实轮询测
+    add_item 60 pr "" worker-bot "" feature/issue-50; set_field 60 state '"closed"'
     : > "$RW/gh/calls.log"; hook_reset
-    rc=0; done_call "$S" 60 merged || rc=$?
+    rc=0; done_call "$S" 60 closed || rc=$?
     chk "合并后 · 到达性：机器人提的需求照常通知（发了评论、挂了等待标签）" \
         "$rc|$(jq -r '.items["50"].comments | length' "$(ST)")|$(labels_of 50 | tr ',' '\n' | grep -cx waiting/bot)" "0|1|1"
 }

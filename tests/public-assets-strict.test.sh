@@ -475,7 +475,8 @@ wr() { ( cd "$WR" && env CLAUDE_PROJECTS_DIR="$TMP/nc" CODEX_SESSIONS_DIR="$TMP/
     bash "$REPO_DIR/scripts/weekly-report/run.sh" acme --dry-run --week-of 2025-02-03 ) > "$WR/out" 2>&1; }
 mkdir -p "$TMP/nc" "$TMP/nx" "$TMP/xc"
 wr; rc=$?
-rev="$(ls "$ROOT/acme/weekly-report" 2>/dev/null | sed -nE 's/^delivery-(wk-[0-9]+-[0-9]+)\.png$/\1/p' | head -1)"
+# 只认这次报告出的图：⑤ 里手放的固定名夹具（delivery-wk-20261123-1234567.png）也在这个目录，按名字排序可能排在前面
+rev="$(ls "$ROOT/acme/weekly-report" 2>/dev/null | grep -v -- '-1234567\.png$' | sed -nE 's/^delivery-(wk-[0-9]+-[0-9]+)\.png$/\1/p' | head -1)"
 chk "发布模式：run.sh 成功，四张图经发布命令落在 acme/weekly-report/" "$rc/$(for n in delivery effort cost token; do [ -s "$ROOT/acme/weekly-report/$n-$rev.png" ] && printf y; done)" "0/yyyy"
 chk "报告里的图链就是发布命令返回的地址" "$(grep -oE "$B/acme/weekly-report/(delivery|effort|cost|token)-$rev\.png" "$HOME/weekly-report-dryrun.md" 2>/dev/null | sort -u | wc -l | tr -d ' ')" "4"
 chk "矢量版同名同戳留在本机矢量版目录（PDF 按图链文件名找得到）" "$(for n in delivery effort cost token; do [ -s "$WR/vector/$n-$rev.chart.html" ] && printf y; done)" "yyyy"

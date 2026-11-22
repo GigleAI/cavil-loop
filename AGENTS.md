@@ -68,7 +68,8 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 │   ├── pr-feedback.sh             ← Every comment / inline comment / review on a PR, all pages (pr-comment template)
 │   ├── pr-body-lint.sh            ← Read-only layout check of a PR body file before the worker sends it (GitHub#644)
 │   ├── _concurrent_work_defs.sh   ← The one-line text rules and the PR body first-sentence rule (jq), shared by _lib.sh and pr-body-lint.sh
-│   ├── _autopilot_summary.sh      ← The autopilot summary markers and how the daemon cuts the summary out of a PR body, shared by _lib.sh and pr-body-lint.sh
+│   ├── _autopilot_summary.sh      ← The one reader for "the lines between two markers in a PR body" (autopilot summary, merge follow-ups), shared by _lib.sh and pr-body-lint.sh
+│   ├── _merge_followup.sh / merge_followup.py ← After a merge: the registered follow-ups, one checklist comment per issue, labels, the bot's result notice (GitHub#656)
 │   ├── review-scope.sh            ← Read-only: what a re-check review round covers — the fix since the last reviewed commit / proposal, or `full <reason>` (GitHub#621)
 │   ├── _sha256.sh                 ← sha256sum / macOS shasum compatibility, shared by _lib.sh's config fingerprints and review-scope.sh
 │   ├── _human_paths.sh            ← The "files a human must look at" list: built-in `default`, entry and test-file rules; used by the merge check and the command below (GitHub#337 / #548 / #560)

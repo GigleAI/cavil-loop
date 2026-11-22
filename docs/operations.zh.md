@@ -1311,7 +1311,7 @@ agent 跑叫醒脚本：挂 `LABEL_PENDING_REQUESTER_BOT`，确认挂上后调�
 - 没有等待超时。机器人一直没回音，`poll.log` 里不会有任何动静，要人自己看看板上挂着等待标签的条目
 - 叫醒脚本走长期入口 `~/.agents/releases/cavil-loop/entrypoints/notify-requester-bot.sh`（发版切换时路径不失效；早期入口 `notify-relay.sh` 转发到它），
   每次叫醒在 `poll.log` 留一行 `notify-requester-bot #<编号>: …`；配了 webhook 时紧跟一行结果（`已通知 webhook（HTTP 200）` / `webhook 通知失败（…）` / `… 跳过`），不含地址和密钥
-- 合并 / 关闭通知：没发成的记在 `state.json` 的 `requester_bot_done_queue`；发成一条 `poll.log` 有一行 `✅ 已把 PR #N 的结果…`，连续 30 轮失败放弃时有一行 ⚠️。它跑在合并后清理那一段里，`AUTO_CLEANUP_ON_MERGE=false` 时也一并不发
+- 合并 / 关闭通知：没发成的记在 `state.json` 的 `requester_bot_done_queue`；发成一条 `poll.log` 有一行 `✅ 已把 PR #N 的结果…`，连续 30 轮失败时有一行 ⚠️——「已关闭，没有合并」的通知就此放弃，合并的通知留着、之后每 30 轮再试一次（等 issue 上清单评论和标签确认的轮次不算）。它跑在合并后清理那一段里，`AUTO_CLEANUP_ON_MERGE=false` 时也一并不发
 - 退出码、证据规则和接入示例：[对接外部需求机器人](requester-bot.zh.md)
 
 </details>

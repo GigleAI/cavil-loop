@@ -910,88 +910,85 @@ autopilot_off_sweep "$STATE_FILE" || true
 if [ "$AUTOPILOT_ACTED" = 1 ]; then pace_mark_acted; fi
 
 runlog_step cleanup
-# ── 3. 自动 cleanup merged PRs ──
-# 配 AUTO_CLEANUP_ON_MERGE=false 可关闭整段
-if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
-    # Bootstrap：state.json 第一次出现这字段 = 把当前所有 merged PR 标已清，
-    # 避免历史 PR 被乱清
-    if [ "$(jq -r '.cleaned_prs // "MISSING"' "$STATE_FILE")" = "MISSING" ]; then
-        initial=$(gh pr list --repo "$REPO" --state merged --limit 200 \
-            --json number --jq '[.[].number]' 2>/dev/null || echo '[]')
-        [ -z "$initial" ] && initial='[]'
-        tmp=$(mktemp)
-        jq ".cleaned_prs = $initial" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-        log "auto-cleanup bootstrap: 标记 $(echo "$initial" | jq length) 个历史 merged PR 为已清"
-    fi
+# ── 3. 合并后的交接（GitHub#656）与本机清理 ──
+# 合并发现和交接（清单评论、标签、机器人通知）每轮都做；AUTO_CLEANUP_ON_MERGE=false 只关掉本机清理那一步
+# （清理状态记「已终止」，交接照常），以及 3 后面那几段（子项汇总、最新站、关闭未合并的收尾）
+# Bootstrap：state.json 第一次出现这字段 = 把当前所有 merged PR 标已清，
+# 避免历史 PR 被乱清
+if [ "$(jq -r '.cleaned_prs // "MISSING"' "$STATE_FILE")" = "MISSING" ]; then
+    initial=$(gh pr list --repo "$REPO" --state merged --limit 200 \
+        --json number --jq '[.[].number]' 2>/dev/null || echo '[]')
+    [ -z "$initial" ] && initial='[]'
+    tmp=$(mktemp)
+    jq ".cleaned_prs = $initial" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+    log "auto-cleanup bootstrap: 标记 $(echo "$initial" | jq length) 个历史 merged PR 为已清"
+fi
 
-    recent_merged=$(gh pr list --repo "$REPO" --state merged --limit 30 \
-        --json number,headRefName --jq '.[] | "\(.number)\t\(.headRefName)"' 2>/dev/null || true)
-
-    if [ -n "$recent_merged" ]; then
+# 托管合并预存了依据、结果还没确认的 PR：先现读确认（方案 T3；确认已合并就是合并发现）
+mf_ap_confirm_tick
+# 合并发现（T4）：一次读最近 30 个已合并 PR（带正文、合并时间、合并提交、分支），新发现的一次落盘。
+# 列表整个读失败 → 本轮不发现、不清理（现状）；落盘失败 → 整段停下，下轮重来
+MF_LIST=$(mktemp); MF_DISCOVERED=0   # 机器人通知只认这一轮列表发现成功（上面托管确认用的同一个函数也会置 1）
+if gh pr list --repo "$REPO" --state merged --limit 30 \
+    --json number,headRefName,body,mergedAt,mergeCommit,baseRefName,headRefOid,headRepository,headRepositoryOwner,title > "$MF_LIST" 2>/dev/null \
+   && jq -e 'type == "array"' "$MF_LIST" >/dev/null 2>&1 && mf_discover "$MF_LIST"; then
+    if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
         while IFS=$'\t' read -r prnum branch; do
+            [[ "$prnum" =~ ^[0-9]+$ ]] || continue
             if jq -e ".cleaned_prs | index($prnum)" "$STATE_FILE" >/dev/null 2>&1; then
+                continue
+            fi
+            # 逐条看合并发现已落盘、清理还在「待重试」的记录（列表发现的，和托管合并后现读确认的）；
+            # 清理已终止的（归属未知、或被挤出窗口）、已清理的不在这里
+            issue_n=$(mf_get '.prs[$p].work // .prs[$p].target // ""' --arg p "$prnum" | jq -r .)
+            if [ -z "$issue_n" ]; then
+                # 正文读不到、分支名也认不出属于哪个 issue（GitHub#656）：不回落到 PR 编号去清理，留给维护者
+                log "auto-cleanup: PR #$prnum 认不出属于哪个 issue，不做本机清理（本机还剩什么由维护者确认）"
+                mf_cleanup_mark "$prnum" ended skipped || true
                 continue
             fi
             # 卡住检测停住的条目（GitHub#339）：这个 PR 自己（合并后下一轮清掉停住记录）或它背后的
             # issue 停住时，清理和收尾先不做、不记已清理，解除后的那一轮再做。
             if stuck_enabled; then
-                _stuck_n=$(pr_to_issue_num "$prnum" "$branch")
-                if stuck_frozen "$prnum" || { [ -n "$_stuck_n" ] && stuck_frozen "$_stuck_n"; }; then
+                if stuck_frozen "$prnum" || stuck_frozen "$issue_n"; then
                     stuck_skip_note "合并后的清理和收尾" "$prnum"
                     continue
                 fi
             fi
             NEW_MERGE_SEEN=1
             pace_mark_acted
-            issue_n=$(pr_to_issue_num "$prnum" "$branch")
-            # pr_to_issue_num fallback 链兜底到 PR 编号本身，理论上永不空
-            if [ -z "$issue_n" ]; then
-                log "auto-cleanup: PR #$prnum 无法 derive 工作编号（异常），标记为已清不再扫"
-                tmp=$(mktemp)
-                jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-                continue
-            fi
             log "auto-cleanup PR #$prnum (issue #$issue_n) → cleanup-issue.sh --force"
             # PR 已合并，worktree 残留文件（构建产物、QR 码等）不需要保留，--force 强删。
             # 默认不删本地分支（保留 commit 历史可 checkout / git log）；
             # 远端分支 daemon 从来不动（GitHub auto-delete-branch-on-merge 由仓库设置控制）。
             # 想顺手删本地，用户手动 `cleanup-issue.sh <N> --delete-branch`。
+            # 清理不写任何 GitHub 标签（GitHub#656）：PR 的 Done、issue 的标签和评论都由合并后的交接做，
+            # 交接等这里成功（或判定不再重试）之后才发
             if bash "$SCRIPT_DIR/cleanup-issue.sh" "$issue_n" --force 2>&1; then
                 tmp=$(mktemp)
                 jq ".cleaned_prs += [$prnum]" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
                 remember_worker_model "$issue_n" ""
                 remember_trigger_label "$issue_n" ""
+                mf_cleanup_mark "$prnum" done || true
+                MF_CLEANED_THIS_ROUND="${MF_CLEANED_THIS_ROUND}${issue_n} "
                 log "  auto-cleanup PR #$prnum done"
-
-                # PR：merge 完，PR 这件事真结束 → Done
-                run_gh "auto-cleanup label PR #$prnum → Done" \
-                    gh_label_flip "$prnum" \
-                    --add "$LABEL_DONE" \
-                    --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "$LABEL_PENDING_AGENT_FABLE" "$LABEL_PENDING_REVIEW" "$LABEL_PENDING_MERGE" "$LABEL_AGENT_DOING" || true
-
-                # Issue：看实际状态决定怎么标（merged_issue_label：CLOSED → Done；OPEN → pending/human；
-                # 状态读不到 → 一个标签都不写，进 merged_label_queue 下轮再判，#43 review）。
-                # 以前读不到就兜底成 OPEN：已被 Closes 关掉的 issue 会被打成 pending/human，
-                # 而这个 PR 已记入 cleaned_prs，再也没人纠正。
-                if ! merged_issue_label "$issue_n" "$prnum"; then
-                    merged_label_enqueue "$issue_n" "$prnum" "$STATE_FILE"
-                fi
-                # 它若是拆出来的 sub-issue：父下子项全关 → 父 issue 翻 pending/human 汇总（#43）。
-                # **无条件**入队、下面统一清队，子项是否已关由 sub_issue_rollup 自己读——
-                # 同样是因为 PR 已记入 cleaned_prs，任何一次读失败都不能丢掉这件事。
-                # 普通 issue（没有父）清队时一次 /parent 404 就出队。
-                sub_issue_rollup_enqueue "$issue_n" "$STATE_FILE"
-                # 来自外部需求机器人提的需求 → 把「已合并」告诉它（GitHub#97；功能关闭时不入队）。
-                # 和 cleaned_prs 同一时刻入队：这个 PR 之后不会再被扫到，不会重复入队。
-                requester_bot_done_enqueue "$prnum" merged "$STATE_FILE"
             else
+                mf_cleanup_mark "$prnum" retry || true
                 log "  auto-cleanup PR #$prnum 失败（busy/dirty/hook 报错），下轮重试"
             fi
-        done <<< "$recent_merged"
+        done < <(jq -r '(.merge_followup.prs // {}) | to_entries[] | select((.value.found // false) and .value.cleanup == "retry")
+                         | "\(.key)\t\(.value.head_ref // "")"' "$STATE_FILE" 2>/dev/null)
+        mf_cleanup_settle "$MF_LIST"
     fi
+fi
+rm -f "$MF_LIST"
+# 合并清理关着：清理不做，「待重试」的一律记「已终止」，交接不等它
+if [ "${AUTO_CLEANUP_ON_MERGE:-true}" = "false" ]; then mf_cleanup_off || true; fi
+# 交接：每个目标一条清单评论 + 标签，机器人通知随后入队
+mf_handover_tick || true
 
-    # 重试队列：合并后 issue 标签没定下来的 + 父 issue 汇总没做成的（#43）
-    merged_label_drain "$STATE_FILE" || true
+if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
+    # 重试队列：父 issue 汇总没做成的（#43）
     sub_issue_rollup_drain "$STATE_FILE" || true
     # 子项留给人关 / 子项在别的仓库时，由父 issue 这一侧发现「子项全部完成」（GitHub#233）
     sub_issue_rollup_discover "$STATE_FILE" || true

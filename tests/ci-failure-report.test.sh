@@ -167,7 +167,8 @@ as() {   # <账号> <账号类型> <命令…>：以另一个账号对假 GitHub
 ghx() { env FAKE_GH_DIR="$GD" "$SANDBOX/bin/gh" "$@"; }
 labels_of() { jq -r --arg n "$1" '(.[$n] // []) | sort | join(",")' "$GD/labels.json"; }
 n_issues() { jq -r '[.[] | select(.kind == "issue")] | length' "$GD/items.json"; }
-n_comments() { jq -r --arg n "$1" '(.[$n] // []) | length' "$GD/comments.json"; }
+# 合并后交接的清单评论（GitHub#656：修复 PR 写了 Refs #N，合并后 daemon 在报告上列待办）不是本功能写的，不算
+n_comments() { jq -r --arg n "$1" '[(.[$n] // [])[] | select((.body // "") | contains("cavil-loop:merge-followup") | not)] | length' "$GD/comments.json"; }
 body_of() { jq -r --arg n "$1" '.[$n].body // ""' "$GD/items.json"; }
 title_of() { jq -r --arg n "$1" '.[$n].title // ""' "$GD/items.json"; }
 state_of() { jq -r --arg n "$1" '.[$n].state // ""' "$GD/items.json"; }
@@ -1026,8 +1027,9 @@ off_run() {   # <根目录> <输出名>：功能关闭跑一轮 → 调用记录
     fresh 'CI_FAILURE_REPORT_WORKFLOWS=""'
     mkissue 55 "pending/agent"; mkissue 56 "pending/human"
     env CODING_AGENT_CONFIG="$CONF" timeout 180 bash "$1/scripts/agent-poll.sh" >/dev/null 2>&1
-    { sed "s|$W|W|g" "$CALLS"; echo ---; jq -S . "$GD/labels.json"; echo ---
-      jq -S 'del(.worker_hosts)' "$W/state/state.json"; echo ---; ls "$W/state" | grep -c ci-failure-report; session_of 55; } > "$SANDBOX/$2.out" 2>&1
+    # 合并后交接（GitHub#656）在合并清理关着时也读已合并列表、写已清理列表：这两处按新规则做，用 compat.sh 里同一套写法去掉
+    { sed "s|$W|W|g" "$CALLS" | compat_merge_calls; echo ---; jq -S . "$GD/labels.json"; echo ---
+      jq -S 'del(.worker_hosts) | '"$COMPAT_MERGE_STATE_JQ" "$W/state/state.json"; echo ---; ls "$W/state" | grep -c ci-failure-report; session_of 55; } > "$SANDBOX/$2.out" 2>&1
     rm -f /tmp/cavil-loop-issue-55-* 2>/dev/null
 }
 if ! compat_skip "功能关闭时主轮询的调用、标签、state.json 与改动前" "$SANDBOX/old" "$NEW" scripts prompts; then

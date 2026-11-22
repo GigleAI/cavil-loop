@@ -51,7 +51,39 @@ worker 的设计提案在两种形态里选一种，你确认之后才写代码�
 
 1. 你确认 B 后，worker（`issue-comment.template.md` § A-split）逐个建子 issue、用 sub-issue 接口挂到父 issue 下、从父 issue 继承优先级 / Project iteration。没有前置的子项直接打 `pending/agent`；有前置的打 `pending/human`，前置合并后由你打 `pending/agent`。等前置标签开着时（默认开，除非 `LABEL_PENDING_BLOCKED` 写成空值）改挂 `pending/blocked` 并登记前置，前置合并后 daemon 自己把它翻成 `pending/agent`
 2. 子项跳过设计轮：`dispatch-new-issue.sh` 渲染开发阶段 prompt（`issue-comment` + `sub-issue.template.md`）而不是设计 prompt，**前提是三条同时成立**——GitHub 上它确实有本仓库的父 issue、正文带指向该父 issue 的 `<!-- agent-split-from: #父号 -->`、由写身份（bot）创建。任一不成立（或查询出错）就照常走设计轮
-3. merge 钩子把合并 PR 对应的 issue **无条件入队**（`state.json` 的 `split_rollup_queue`）——它关没关由汇总自己去读，因为钩子自己读状态失败时会兜底成 OPEN；每轮 poll 统一清队、逐个调 `sub_issue_rollup`。要队列是因为这个 PR 已记入 `cleaned_prs`、下轮不会再扫到——最后一个子项汇总时碰上一次接口抖动，父 issue 就永远等不到汇总。任何读写失败都留在队里下轮再试（上限 `SUB_ISSUE_ROLLUP_MAX_TRIES`，默认 30 轮）。评论和翻 label 分开记进度（`split_rollup_commented` / `split_rollups`），翻 label 失败后重试不会重复发评论。「全部关闭」只从确认完整的列表得出：列表必须包含刚关闭的这个子项，且条数等于父 issue 自己记的 `sub_issues_summary.total`——否则视为接口未刷新，下轮再试。合并 PR 对应 issue 自己的标签（关了打 `Done`、还开着打 `pending/human`）同理：状态读不到就一个标签都不写，进 `merged_label_queue` 下轮再判——绝不猜成 OPEN
+3. merge 钩子把合并 PR 对应的 issue **无条件入队**（`state.json` 的 `split_rollup_queue`）——它关没关由汇总自己去读，因为钩子自己读状态失败时会兜底成 OPEN；每轮 poll 统一清队、逐个调 `sub_issue_rollup`。要队列是因为这个 PR 已记入 `cleaned_prs`、下轮不会再扫到——最后一个子项汇总时碰上一次接口抖动，父 issue 就永远等不到汇总。任何读写失败都留在队里下轮再试（上限 `SUB_ISSUE_ROLLUP_MAX_TRIES`，默认 30 轮）。评论和翻 label 分开记进度（`split_rollup_commented` / `split_rollups`），翻 label 失败后重试不会重复发评论。「全部关闭」只从确认完整的列表得出：列表必须包含刚关闭的这个子项，且条数等于父 issue 自己记的 `sub_issues_summary.total`——否则视为接口未刷新，下轮再试。合并 PR 对应 issue 自己的评论和标签由合并后的交接来做（见下一节），同样绝不猜一个读不到的状态
+
+</details>
+
+### 合并之后：还剩什么、谁来做
+
+PR 正文在两行标记之间写明合并之后还要做的事——部署后要跑的数据变更、人工验收、上线后要开的开关——每项一行，写全谁做、做什么、怎么触发：
+
+```text
+<!-- merge-followup:begin -->
+- 谁做：维护者 ｜ 做什么：在生产库执行 `scripts/migrate-x.sql` ｜ 怎么触发：本 PR 部署完成后手动执行
+<!-- merge-followup:end -->
+```
+
+没有待办就单独一行 `<!-- merge-followup:none -->`。worker 每个 PR 都要写，复审会核对。合并后 daemon 在 PR 所属的 issue 上发**一条**评论（PR 不属于任何 issue 时发在 PR 上），列出这个 issue 上还没结束的全部待办，并交人（`pending/human`；issue 已关闭时打 `Done` 并挂 `pending/human` 提醒）。只有维护者在那个 PR 合并之后亲手关闭 issue，那份待办才算结束——被合并带关不算。外部需求机器人只在证据表明确实没有待办时才收到「需求已完成」，否则收到「需求还有待办」或「是否还有后续由维护者确认」。
+
+| 合并的 PR 正文写的是 | issue 还开着 | issue 已关闭 |
+|---|---|---|
+| 列了待办（或标记写法不对——原文照搬给人核实） | 清单评论，`pending/human` | 清单评论，`Done` + `pending/human` |
+| `merge-followup:none` | 「已合并，PR 写明没有待办；是否关闭由人决定」，`pending/human` | `Done`，不发评论 |
+| 什么都没写 | 「已合并，PR 没写」，`pending/human` | `Done`，不发评论 |
+
+<details><summary>细节：交接怎么进行</summary>
+
+- **标记只在独占一行时算数**，放在代码块和引用里不算——正文里贴的写法示例不是登记。除了「一份写对的清单」或「一行 none」，其余（两样都写、两个开始标记、某项缺字段）都算「写法不对」：每个标记附近的原文照搬（最多 4000 字），并提示去 PR 正文核对。
+- **一个 issue 一条评论，覆盖所有 PR**：同一个 issue 每合并一个新 PR 就发一条新评论，列出之前所有还没结束的 PR 的待办，合并时间新的在前。不会重复发：每条评论带一个标记，里面有内容的指纹；发评论的调用报失败时，下一轮先按标记去找，找到就不再发。
+- **本机清理照旧在前**：评论和标签等合并 PR 的工作目录和会话清理成功之后才发（或者清理不再重试：PR 已不在最近 30 个已合并 PR 里）。等清理的轮次不算失败。
+- **正文读不到的 PR**：清单里写「正文读不到，有没有待办无法确认」，前 30 轮每轮补读、之后每 30 轮一次；读到后发一条新的完整评论。如果分支名也认不出它属于哪个 issue，30 轮后在 PR 本身上提醒（评论 + `pending/human`），不清理它的工作目录（本机还剩什么请人确认），在提醒确认送到之前，之后合并的 PR 给机器人的通知都不说「完成」。
+- **标签**一次写一个，每次写之前重读 issue、写之后核对；issue 已经挂着新一轮的流程标签时，标签不动（评论照发）。托管合并的说明（PR 的总结段和合并依据）并进同一条评论。
+- **合并 PR 自己的标签**：同样一次写一个：先打 `Done`、再摘合并前挂着的流程标签，要提醒时最后才挂 `pending/human`。因为提醒总是最后一步，PR 已有 `Done`、除它以外没有别的流程标签时，loop 账号在合并之后挂的 `pending/human` 就是收尾完成的样子；合并之后挂上的其他流程标签（别人挂的，或 loop 账号挂在还没收尾的 PR 上）都算新一轮，这个 PR 的标签不动。看不出标签是谁、什么时候挂的（缺挂标签记录、读不出 loop 账号）时什么都不写，下一轮再看。
+- **给机器人的通知**和评论用同一份结论，从现读的数据算两次、一致才发；要等 issue 上的评论和标签都确认之后。
+- `AUTO_CLEANUP_ON_MERGE=false` 时交接照常做，只是不做本机清理（评论和标签不等它）。
+- 每一步读不到需要的东西就什么都不写，下一轮再试；连续 30 轮没成，这个 issue 先放下，等有新 PR 合并进来再试。
 
 </details>
 

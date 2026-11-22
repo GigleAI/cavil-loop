@@ -616,11 +616,17 @@ same_run() {   # <scripts 根> <场景>
         in-review)   jset labels.json '.["8"] = ["pending/review","autopilot"]' ;;
         off-none)    echo '{}' > "$STATE"; jset labels.json '.["8"] = ["pending/review","autopilot"]' ;;
     esac
+    local all=""
     for i in 1 2; do
         tick "$root/scripts"
-        echo "── 第 $i 轮调用"; cat "$CALLS"
+        all="$all── 第 $i 轮调用"$'\n'"$(compat_merge_calls < "$CALLS")"$'\n'
     done
-    echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"checks_pending_since": [0-9]+/"checks_pending_since": <秒>/'
+    # 合并了：合并请求之后的那一段按新规则做（见 compat_cut_after_merge），只比到合并请求为止
+    if printf '%s' "$all" | grep -qE ' -X PUT [^ ]*/pulls/[0-9]+/merge( |$)'; then
+        printf '%s' "$all" | compat_cut_after_merge; return
+    fi
+    printf '%s' "$all"
+    echo "── state"; jq -S 'del(.autopilot.handoff) | del(.merge_followup) | '"$COMPAT_MERGE_STATE_JQ" "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"checks_pending_since": [0-9]+/"checks_pending_since": <秒>/'
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
 }
