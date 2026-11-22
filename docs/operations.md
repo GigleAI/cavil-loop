@@ -1633,74 +1633,11 @@ again any item that stopped half-way:
 
 - **How to spot one**: the item carries `doing/agent`, has had no new comment for a while, and its agent
   session has stopped (on a project with the stuck-worker check, the daemon also reminds or hands over by itself)
-- **Find which dispatch was interrupted**: a dispatch is made with the loop's write account, which first removes the label that dispatched the item and then adds `doing/agent`. The block names a label to put back only when it finds a daemon dispatch that still stands, that is when all of these hold:
-  - the item is still open, and two reads give the same state and labels
-  - the item carries `doing/agent`, no dispatch label and no protecting label (`pending/human`, `pending/blocked`, `pending/merge`, `pending/PR`, `Done`)
-  - the last change to `doing/agent` added it and was made by the loop account, which removed exactly one dispatch label right before
-  - after that the item was not closed, reopened or merged, and no dispatch label, protecting label or `doing/agent` changed
-
-  Before running it, replace `owner/repo` with the repository, `123` with the item number and `loop-account` with the loop's write account; also the label names if the project renamed them, and add the requester bot's waiting label to `PROTECT` if one is configured. Find the loop account with the first block below: it looks at the comments carrying a usage record among the repository's latest 100 (every agent delivery, round log and review verdict has one), and prints `LOOP: <account>` when they have exactly one author, `UNKNOWN` when they have none or several — then do not run the second block and leave the item as it is.
-
-<!-- round-log-loop-account-ops:begin -->
-```bash
-(
-  REPO=owner/repo
-  A="$(gh api "repos/$REPO/issues/comments?sort=created&direction=desc&per_page=100" --jq '.[] | select((.body // "") | contains("<!-- agent-metrics ")) | (.user.login // "")')" \
-    || { echo "UNKNOWN: could not read the comments"; exit 1; }
-  U="$(printf '%s\n' "$A" | grep . | sort -u)"
-  case "$(printf '%s\n' "$U" | grep -c .)" in
-    1) echo "LOOP: $U" ;;
-    0) echo "UNKNOWN: no agent comment among the latest 100"; exit 1 ;;
-    *) echo "UNKNOWN: more than one author:" $U; exit 1 ;;
-  esac
-)
-```
-<!-- round-log-loop-account-ops:end -->
-
-  With everything replaced, run the whole second block and read its last line:
-  - `RESTORE: <label>` — the label that dispatched it. `pending/review` is a review (a first-round review of a PR whose delivery is only in its description, with no worker comment yet, as well), `pending/agent…` is a worker
-  - `NOT_STUCK: …` — the item no longer carries `doing/agent`; nothing to dispatch again
-  - `UNKNOWN: …` — one of the conditions above does not hold, or something was not read in full (a read failed, a field is missing, it changed while reading). Run it once more; if it is still `UNKNOWN`, do not change any label and do not guess from the latest comment. On the item page's timeline, check the dispatch (the loop account removing a dispatch label and adding `doing/agent`) and what changed after it; put that dispatch label back only once that is confirmed, otherwise leave the item as it is for a maintainer
-
-<!-- round-log-redispatch-ops:begin -->
-```bash
-(
-  REPO=owner/repo; N=123; LOOP=loop-account
-  PROTECT='pending/human pending/blocked pending/merge pending/PR Done'
-  if [ -z "$LOOP" ] || [ "$LOOP" = loop-account ]; then echo "UNKNOWN: fill in LOOP first"; exit 1; fi
-  I1="$(gh api "repos/$REPO/issues/$N")" || { echo "UNKNOWN: could not read the item"; exit 1; }
-  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[]')" || { echo "UNKNOWN: could not read the history"; exit 1; }
-  I2="$(gh api "repos/$REPO/issues/$N")" || { echo "UNKNOWN: could not read the item"; exit 1; }
-  OUT="$(printf '%s\n' "$I1" "$I2" "$EV" | jq -rs --arg loop "$LOOP" --arg protect "$PROTECT" '
-    def trig: . == "pending/review" or . == "pending/agent" or startswith("pending/agent/");
-    def item: if (.state | type) == "string" and (.labels | type) == "array" and all(.labels[]; (.name | type) == "string")
-      then {state, labels: (.labels | map(.name) | sort)} else null end;
-    ($protect | split(" ")) as $p | (.[0] | item) as $a | (.[1] | item) as $b | .[2:] as $ev |
-    if $a == null or $b == null then "UNKNOWN: the item could not be read in full"
-    elif $a != $b then "UNKNOWN: the item changed while reading"
-    elif $a.state != "open" then "UNKNOWN: the item is \($a.state)"
-    elif ($a.labels | index(["doing/agent"])) == null then "NOT_STUCK: the item does not carry doing/agent"
-    elif any($a.labels[]; IN($p[])) then "UNKNOWN: the item is on a protecting label"
-    elif any($a.labels[]; trig) then "UNKNOWN: the item carries a dispatch label too"
-    else ([$ev | to_entries[] | select(.value.label.name == "doing/agent")] | last) as $d |
-      if $d == null or $d.value.event != "labeled" then "UNKNOWN: the history does not end with doing/agent added"
-      elif ($d.value.actor.login // "") != $loop then "UNKNOWN: doing/agent was not added by \($loop)"
-      elif any($ev[($d.key + 1):][]; (.event | IN("closed", "reopened", "merged"))
-             or ((.event | IN("labeled", "unlabeled")) and ((.label.name // "") | . == "" or . == "doing/agent" or trig or IN($p[]))))
-        then "UNKNOWN: the item changed after the dispatch"
-      else ($ev[:$d.key] | reverse) as $r |
-        ([$r | to_entries[] | select(.value.event != "unlabeled" or (.value.actor.login // "") != $loop) | .key] | first // ($r | length)) as $k |
-        [$r[:$k][] | .label.name // "" | select(trig)] as $t |
-        if ($t | length) == 1 then "RESTORE: \($t[0])" else "UNKNOWN: cannot tell which label dispatched it" end
-      end
-    end')" || { echo "UNKNOWN: the history could not be read in full"; exit 1; }
-  printf '%s\n' "$OUT"
-  case "$OUT" in RESTORE:*) ;; *) exit 1 ;; esac
-)
-```
-<!-- round-log-redispatch-ops:end -->
-
-- **How to dispatch it again**: in the Labels box on the item's page, remove `doing/agent` and add the label after `RESTORE:`
+- **Hand it to a person first**: in the Labels box on the item's page, remove `doing/agent` and add
+  `pending/human`, so the daemon does not dispatch it again before someone has looked
+- **Then dispatch it as usual**: look at the latest agent comment. If it is a worker's delivery waiting
+  for review, replace `pending/human` with `pending/review` so the review carries on; if it is a review
+  verdict or anything else, replace it with `pending/agent` so a worker carries on
 - **How to tell it worked**: the item first carries `doing/agent` again (the daemon dispatched it), then a
   new comment by the loop account appears — a review verdict or a worker delivery, a separate comment now,
   no longer part of the round log — and `doing/agent` has given way to the next step's label. With a queue of

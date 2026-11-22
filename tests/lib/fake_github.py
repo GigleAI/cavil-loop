@@ -535,11 +535,6 @@ if method == "GET":
         if parts[1] not in items or items[parts[1]]["kind"] != "pr":
             fail("HTTP 404: Not Found")
         emit(shaped(view(parts[1])[1]))
-    if len(parts) == 2 and parts[0] == "issues" and parts[1] == "comments":
-        # 整个仓库的对话评论（GitHub#646 查 loop 账号）：按 id 从新到旧，和 sort=created&direction=desc 一样
-        allc = [c for lst in load("comments.json", {}).values() for c in lst]
-        allc.sort(key=lambda c: c.get("id") or 0, reverse=True)
-        emit(paged(allc), pages=True)
     if len(parts) == 2 and parts[0] == "issues":
         if parts[1] not in items:
             fail("HTTP 404: Not Found")

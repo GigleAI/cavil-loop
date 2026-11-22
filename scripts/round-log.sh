@@ -31,25 +31,15 @@
 # what can happen and how to dispatch a stopped item again. Do not bring back a "check, turn off, check again"
 # procedure or a label-check command; do not add a prompt branch that posts separately when the view is
 # missing (review round 4 on PR #652: it skips this script's staleness checks).
-# Which dispatch was interrupted is read from the item's label history, never from its latest comment: a
-# dispatch removes its trigger label and then adds doing/agent with the write account (flip_to_doing →
-# gh_label_flip), so the label to put back is the one the loop account removed right before it added doing/agent
-# — a first-round review whose delivery is only the PR description has no worker comment at all (PR #652 code
-# review round 1). A label is given only for a dispatch that still stands, judged in one jq program over two
-# reads of the item and the whole event history between them. Three review rounds each found one more input, so
-# every input is listed here and none may be added piecemeal: the item is open and both reads agree on state and
-# labels; it carries doing/agent, no dispatch label and none of the protecting labels this script's own write
-# check uses (pending/human, pending/blocked, pending/merge, pending/PR) plus Done; the last doing/agent event is
-# "added" by the loop account; after it no closed / reopened / merged event and no event on a dispatch label, a
-# protecting label, doing/agent or a nameless label; right before it the loop account removed exactly one
-# dispatch label. Anything else — a missing field, an unknown account, a failed read — is UNKNOWN, and UNKNOWN
-# changes nothing. The loop account is named in the block (whoever runs it is not the loop); the docs' first
-# block finds it from the latest comments carrying the usage footer's machine record — exactly one author, or
-# UNKNOWN — so a PR whose delivery is only its description still has a source (rounds 2–3).
+# For an item that stopped half-way the docs give no command that decides which label to put back: four
+# review rounds on PR #652 each found a new input such a command got wrong (a maintainer doing the two label
+# steps by hand, a later hand-over, protecting labels, a closed item, a nameless event, the loop account taken
+# from an old comment), and the maintainer chose (PR #652 second Q1 = A) to have a person take it: remove
+# doing/agent and add pending/human, then read the latest agent comment and dispatch as usual (a worker's
+# delivery → pending/review, anything else → pending/agent). Do not bring back such a command.
 # The blocks behind <!-- round-log-check-ops / -off-ops / -on-ops:begin --> are run verbatim by
 # tests/project-config.test.sh §9 (they trust only the settings script's RESULT= word, never its exit code: a save
-# killed after the rename exits non-zero with the file written); <!-- round-log-loop-account-ops:begin --> and
-# <!-- round-log-redispatch-ops:begin --> are run verbatim by tests/round-log-redispatch.test.sh, which then puts the label back and runs a real poll round.
+# killed after the rename exits non-zero with the file written).
 # Keep the two doc copies identical.
 set -uo pipefail
 
