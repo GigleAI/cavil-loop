@@ -271,74 +271,85 @@ describe('reading and acting', () => {
 });
 
 /**
- * GitHub#590 (seen on PRs #592, #595, #596): the two tests below run the real project-config script many times
- * through both the remote and the local way — about 15 s on a dev box, past the suite's 20 s on a slow CI runner.
- * They get their own limit; nothing they check depends on time.
+ * GitHub#590 (seen on PRs #592, #595, #596): the two scenarios below used to run the real project-config
+ * script ~14 times each in one case, past the suite's 20 s on a loaded runner. GitHub#649: one case per
+ * step, each on a fresh copy of the machine, so no case holds more than a few script runs.
  */
-const SCRIPT_RUNS_MS = 60_000;
-
 describe("a project's settings on that machine (GitHub#530)", () => {
   const field = (c: any, name: string) => c.fields.find((f: any) => f.name === name);
   const value = async (b: HarnessBackend) => field((await b.call('daemonConfigGet', { key: 'widget' })).config, 'MAX_CONCURRENT_WORKERS').value;
-
-  it('read and save: the remote way and the local way give the same answers on the same scenarios', async () => {
+  /** a back end paired with the machine, and the config's fingerprint read the remote way */
+  async function paired() {
     const b = backend({ local: true });
     await pair(b);
-    // read: the same JSON both ways (the same machine, the same script)
+    const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev as string;
+    return { b, rev };
+  }
+
+  it('read: the same answer the remote way and the local way (the same machine, the same script)', async () => {
+    const b = backend({ local: true });
+    await pair(b);
     const remote = await b.call('remoteConfigGet', { id: ID, key: 'widget' });
     const local = await b.call('daemonConfigGet', { key: 'widget' });
     expect(remote.result).toBe('ok');
     expect(remote.config).toEqual(local.config);
-    expect(field(remote.config, 'MAX_CONCURRENT_WORKERS')).toMatchObject({ mode: 'edit', editable: true });
-    const rev = remote.config.rev;
-    const before = await value(b);
-    expect(before).toBe('1');
+    expect(field(remote.config, 'MAX_CONCURRENT_WORKERS')).toMatchObject({ mode: 'edit', editable: true, value: '1' });
+  });
 
-    // a save from the other computer: written, and the machine itself now reads the new value
+  it('a save from the other computer: written, and the machine itself now reads the new value', async () => {
+    const { b, rev } = await paired();
     const saved = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '3' } });
     expect(saved).toMatchObject({ result: 'saved', detail: { changes: [{ name: 'MAX_CONCURRENT_WORKERS', old: '1', new: '3' }] } });
     expect(await value(b)).toBe('3');
+  });
 
-    // the fingerprint read before the save is stale now: both ways refuse and write nothing
+  it('a fingerprint read before a save is stale afterwards: both ways refuse and write nothing', async () => {
+    const { b, rev } = await paired();
+    expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '3' } })).result).toBe('saved');
     const staleRemote = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '4' } });
     const staleLocal = await b.call('daemonConfigSet', { key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '4' } });
     expect([staleRemote.result, staleLocal.result]).toEqual(['changed', 'changed']);
     expect(await value(b)).toBe('3');
+  });
 
-    // a setting shown only (the autopilot label): refused both ways, nothing written
-    const rev2 = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
-    const roRemote = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'autopilot' } });
-    const roLocal = await b.call('daemonConfigSet', { key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'autopilot' } });
+  it('a setting shown only (the autopilot label): refused both ways, nothing written', async () => {
+    const { b, rev } = await paired();
+    const roRemote = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { LABEL_AUTOPILOT: 'autopilot' } });
+    const roLocal = await b.call('daemonConfigSet', { key: 'widget', rev, values: { LABEL_AUTOPILOT: 'autopilot' } });
     expect([roRemote.result, roLocal.result]).toEqual(['refused', 'refused']);
-    expect((await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev).toBe(rev2);
+    expect((await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev).toBe(rev);
+  });
 
-    // a project that is not connected there
-    expect((await b.call('remoteConfigGet', { id: ID, key: 'nope' })).result).toBe('not_found');
-  }, SCRIPT_RUNS_MS);
-
-  it('the save was carried out but its answer cannot be verified (signature dropped / wrong): "unconfirmed", never "not written"', async () => {
+  it('a project that is not connected there: "not_found"', async () => {
     const b = backend({ local: true });
     await pair(b);
-    for (const [mode, to] of [['drop', '2'], ['corrupt', '4']] as const) {
-      const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
-      const n = arrived(r).length;
-      writeFileSync(r.replySig, mode);
-      const got = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: to } });
-      rmSync(r.replySig, { force: true });
-      expect(got.result).toBe('unconfirmed');
-      expect(got.output).toContain('有没有执行不确定');
-      // the request did arrive and the machine did write the file
-      expect(arrived(r)).toHaveLength(n + 1);
-      expect(await value(b)).toBe(to);
-    }
-    // with the signature passed on again: a signed success, and a signed refusal (a setting shown only)
-    const rev = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
+    expect((await b.call('remoteConfigGet', { id: ID, key: 'nope' })).result).toBe('not_found');
+  });
+
+  it.each([
+    ['drop', '2'],
+    ['corrupt', '4'],
+  ] as const)('the save was carried out but its answer cannot be verified (signature %s): "unconfirmed", never "not written"', async (mode, to) => {
+    const { b, rev } = await paired();
+    const n = arrived(r).length;
+    writeFileSync(r.replySig, mode);
+    const got = await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: to } });
+    rmSync(r.replySig, { force: true });
+    expect(got.result).toBe('unconfirmed');
+    expect(got.output).toContain('有没有执行不确定');
+    // the request did arrive and the machine did write the file
+    expect(arrived(r)).toHaveLength(n + 1);
+    expect(await value(b)).toBe(to);
+  });
+
+  it('…with the signature passed on: a signed success, and a signed refusal (a setting shown only)', async () => {
+    const { b, rev } = await paired();
     expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev, values: { MAX_CONCURRENT_WORKERS: '5' } })).result).toBe('saved');
     expect(await value(b)).toBe('5');
     const rev2 = (await b.call('remoteConfigGet', { id: ID, key: 'widget' })).config.rev;
     expect((await b.call('remoteConfigSet', { id: ID, key: 'widget', rev: rev2, values: { LABEL_AUTOPILOT: 'x' } })).result).toBe('refused');
     expect(await value(b)).toBe('5');
-  }, SCRIPT_RUNS_MS);
+  });
 
   it('a value that cannot go on a config line is refused on this computer: nothing is sent', async () => {
     const b = backend();
