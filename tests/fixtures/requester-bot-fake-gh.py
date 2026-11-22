@@ -316,6 +316,9 @@ if args and args[0] == "api":
                     sys.stdout.write(r.stdout)
                     rc = rc or r.returncode
                 sys.exit(rc)
+            # 真 gh：--paginate --slurp 把各页包进一个外层数组（GitHub#656 起合并后交接这样读 PR 的事件）
+            if paginate and slurp:
+                emit([evs[k:k + size] for k in range(0, max(len(evs), 1), size)] if size else [evs])
             emit(evs)
         if rest == "/labels" and method == "POST":
             for kv in fields:
