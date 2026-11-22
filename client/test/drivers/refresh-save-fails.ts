@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { encodeGrant } from '../support/grant';
 import type { CredentialStore } from '../support/credentials';
@@ -58,7 +59,7 @@ const cache = new Cache(db);
 // a profile that signed in with this credential (what a completed sign-in records)
 cache.setSetting('trustedCredentials', [createHash('sha256').update('ghu_expired000000000000000000000000001').digest('hex')]);
 const backend = new HarnessBackend({ db, endpoints, credentials: store, now: () => now });
-const c = await Controller.create({ backend, endpoints, now: () => now, defaultClientId: 'Ov23litestclient0000' });
+const c = await createController({ backend, endpoints, now: () => now, defaultClientId: 'Ov23litestclient0000' });
 await c.start().catch((e: Error) => console.log('CALLER_CAUGHT', e.message));
 console.log('AFTER_START', c.getState().phase, JSON.stringify(c.getState().sync.problem));
 await c.syncNow().catch((e: Error) => console.log('CALLER_CAUGHT', e.message));

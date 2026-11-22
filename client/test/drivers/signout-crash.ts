@@ -12,6 +12,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { encodeGrant, decodeGrant } from '../support/grant';
 import { FileStore } from '../support/credentials';
@@ -74,7 +75,7 @@ const cache = new Cache(join(dir, 'cache.sqlite'));
 // the real back end (Rust) as a child process: it dies with this one
 let clock = NOW;
 const backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: store, now: () => clock, sleep: async () => {} });
-const c = await Controller.create({ backend, endpoints, now: () => clock, defaultClientId: 'Ov23litestclient0000' });
+const c = await createController({ backend, endpoints, now: () => clock, defaultClientId: 'Ov23litestclient0000' });
 const report = async (tag: string) => {
   const stored = decodeGrant(await new FileStore(join(dir, 'cred')).get());
   console.log(tag, JSON.stringify({ phase: c.getState().phase, stored: stored?.accessToken ?? null, auths, reason: c.getState().loginReason }));

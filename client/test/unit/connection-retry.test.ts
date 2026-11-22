@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController, readRetryWaits } from '../support/controller';
 import * as documents from '../../src/data/queries';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -14,6 +15,7 @@ import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const APP_TOKEN = 'ghu_retryapptoken00000000000000000001';
 const APP_REFRESH = 'ghr_retryapprefresh0000000000000000001';
@@ -26,11 +28,7 @@ const controllers: Controller[] = [];
 const backends: HarnessBackend[] = [];
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 async function signedIn(beforeLogin: () => void = () => {}) {
@@ -49,7 +47,7 @@ async function signedIn(beforeLogin: () => void = () => {}) {
     },
   });
   backends.push(b);
-  const c = await Controller.create({ backend: b, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend: b, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH, expiresIn: 8 * 3600 };
   c.addSource(REPO);
@@ -198,4 +196,41 @@ describe('every request the window can send: reads are sent again, writes are no
       expect(r.error, how).toBe('network');
     }
   });
+});
+
+// GitHub#649: the retries' waits do not sleep in tests, and nothing else about them changes. The real
+// controller (built by the shared function, which hands it a recorder for its own read retries) and
+// the real back end on its virtual retry clock, against a fake GitHub that drops every answer to the
+// repository's open-issue list: the waits asked for, the requests sent and how the round ends are
+// exactly the designed ones.
+describe('retry waits on the virtual clock (GitHub#649)', () => {
+  const isList = (e: LoggedRequest) => e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.path.includes('state=open');
+
+  it('a connection dropped every time: the back end waits 0.2 / 0.5 / 1 / 2 s and sends it 5 times; the round fails saying so', async () => {
+    const { c, b } = await signedIn(() => {
+      fake.state.breakAnswer = (e) => (isList(e) ? 'close' : null);
+    });
+    await until(c, (s) => !s.sync.syncing && s.sync.sources.length > 0, 'first round over');
+    const list = fake.log.filter(isList);
+    expect(list).toHaveLength(5);
+    expect(list.every((e) => e.broken === 'close')).toBe(true);
+    expect(b.retryWaits).toEqual([200, 500, 1000, 2000]);
+    // a lost connection is the back end's to retry, not the client's (it retries 5xx answers only)
+    expect(readRetryWaits(c)).toEqual([]);
+    const src = c.getState().sync.sources.find((s) => s.sourceKey === 'repo:gigleai/cavil-loop')!;
+    expect(src.ok).toBe(false);
+    expect(src.error).toContain('已自动重试 4 次');
+  }, 60_000);
+
+  it('a 502 every time: the client waits 1 s then 3 s through the recorder and asks three times; the round fails', async () => {
+    const { c, b } = await signedIn(() => {
+      fake.state.answerOverride = (e) => (isList(e) ? { status: 502, body: { message: 'Server Error' } } : null);
+    });
+    await until(c, (s) => !s.sync.syncing && s.sync.sources.length > 0, 'first round over');
+    expect(readRetryWaits(c)).toEqual([1000, 3000]);
+    expect(fake.log.filter(isList).map((e) => e.status)).toEqual([502, 502, 502]);
+    // a complete answer is never the back end's to retry
+    expect(b.retryWaits).toEqual([]);
+    expect(c.getState().sync.sources.find((s) => s.sourceKey === 'repo:gigleai/cavil-loop')!.ok).toBe(false);
+  }, 60_000);
 });

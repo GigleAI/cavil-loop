@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { GitHubClient } from '../../src/data/github';
 import { fetchProject, fetchRepo } from '../../src/data/fetchSources';
@@ -498,7 +499,7 @@ async function signedIn(opts: { sources?: string[]; seed?: Record<string, unknow
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);
   for (const s of opts.sources ?? []) c.addSource(s);
   return { c, backend, alerts, badges, clock, items: () => alerts.filter((a) => a.kind === 'item').map((a) => (a as Extract<Alert, { kind: 'item' }>).key), badge: () => badges[badges.length - 1] };

@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, OPS_KEY } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -13,6 +14,7 @@ import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { opAutoDismissable, opButtons, opDraftLeft, opLockOf, opPhase, opResendConfirm, opReusableDraft, opText, opTone, type OpRecord } from '../../src/shared/ops';
 import type { Item } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -26,7 +28,7 @@ let caches: Cache[] = [];
 let controllers: Controller[] = [];
 let backends: HarnessBackend[] = [];
 
-async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void } = {}) {
+async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opStuckMs?: number; fresh?: boolean; intercept?: (cmd: string, args: any) => unknown; followUpSyncMs?: number; afterRoundRead?: (dropped: boolean) => void; readRetrySleep?: (ms: number) => Promise<void> } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -36,12 +38,13 @@ async function ready(opts: { opCheckDelaysMs?: number[]; opAutoMs?: number; opSt
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
   const backend = opts.intercept ? { call: async (cmd: string, args?: any) => ((await opts.intercept!(cmd, args)) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000,
+  const c = await createController({ backend: backend as any, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: opts.opStuckMs ?? 600_000,
     // GitHub#359: only the check made at once, unless a test asks for the later ones
     opCheckDelaysMs: opts.opCheckDelaysMs ?? [],
     ...(opts.opAutoMs !== undefined ? { opAutoMs: opts.opAutoMs } : {}),
     ...(opts.followUpSyncMs !== undefined ? { followUpSyncMs: opts.followUpSyncMs } : {}),
-    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}) });
+    ...(opts.afterRoundRead ? { afterRoundRead: opts.afterRoundRead } : {}),
+    ...(opts.readRetrySleep ? { readRetrySleep: opts.readRetrySleep } : {}) });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -64,11 +67,7 @@ const opOf = (c: Controller, id: string): OpRecord => {
   return r;
 };
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 /** every job of the controller is through (requests, re-reads, evidence) */
 const idle = async (c: Controller) => {
@@ -1108,7 +1107,12 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
 
   it('re-reads and the sync fail past the wait (stuck); once both work again the notice is settled, no longer stuck, and puts itself away (PR #282 code review round 1)', async () => {
     waitingForHuman();
-    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30 });
+    // GitHub#649: the round's read retry waits until GitHub works again (the test opens it below): the
+    // round is still on when the notice goes stuck, and its next try is the one that succeeds — the
+    // order the 1 s / 3 s real sleeps used to give by chance
+    let healed!: () => void;
+    const healing = new Promise<void>((r) => (healed = r));
+    const c = await ready({ opStuckMs: 30, followUpSyncMs: 30, readRetrySleep: () => healing });
     fake.state.w.failRefresh.add(ITEM);
     fake.state.failProjectPage.set('org/gigleai/11', 0);
     fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
@@ -1119,10 +1123,11 @@ describe('a re-read that failed is caught up by the next round that reaches GitH
     expect(opPhase(opOf(c, s.id!))).toBe('settling');
     expect(opOf(c, s.id!).readProblem).toContain('重读这一条失败');
     expect(opAutoDismissable(opOf(c, s.id!))).toBe(false);
+    const n = refreshes();
     fake.state.w.failRefresh.delete(ITEM);
     fake.state.failProjectPage.clear();
     fake.state.failRepoPage.clear();
-    const n = refreshes();
+    healed();
     await c.syncNow();
     await idle(c);
     expect(refreshes()).toBeGreaterThan(n);

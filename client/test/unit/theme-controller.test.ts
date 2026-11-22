@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -57,7 +58,7 @@ async function make(opts: { seed?: Record<string, unknown>; scheme?: SystemSchem
       return backend.call(cmd, args);
     },
   };
-  const c = await Controller.create({ backend: recorded, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', scheme: opts.scheme ?? fakeSystem(false).scheme });
+  const c = await createController({ backend: recorded, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', scheme: opts.scheme ?? fakeSystem(false).scheme });
   controllers.push(c);
   const told = () => calls.filter((x) => x.cmd === 'setTheme').map((x) => x.args);
   return { c, cache, told, backend };

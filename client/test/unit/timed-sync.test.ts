@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { FULL_READ_EVERY_MS } from '../../src/data/changeCheck';
 import { headerText, hoverLines, offlineDataText } from '../../src/renderer/syncTimes';
 import { Cache } from '../support/cache';
@@ -20,6 +21,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -135,7 +137,7 @@ async function boot(opts: Opts = {}) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: clock.now, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({
+  const c = await createController({
     backend: harness,
     endpoints,
     now: clock.now,
@@ -172,12 +174,8 @@ const rounds = () => fake.log.filter(isFirstPage).length;
 const viewerAsks = () => fake.log.filter((l) => l.operation === 'user').length;
 const boardReads = () => fake.log.filter((e) => e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null).length;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 /** hold the next first page of the repository's open-issue list */
 function holdNextRead(which: (e: LoggedRequest) => boolean = isFirstPage): () => void {
@@ -325,7 +323,7 @@ describe('two times per source: 整份读取 and 上次检查', () => {
 
     // a restart: the check time is not stored — it is the stored read's time again (older, never newer)
     await c.settled();
-    const again = await Controller.create({ backend: harness, endpoints: { api: fake.api, web: fake.web }, now: clock.now, timers: clock.timers, defaultClientId: '' });
+    const again = await createController({ backend: harness, endpoints: { api: fake.api, web: fake.web }, now: clock.now, timers: clock.timers, defaultClientId: '' });
     controllers.push(again);
     expect(times(again, REPO_KEY)).toEqual({ sourceKey: REPO_KEY, readAt: t0, checkedAt: t0 });
 
@@ -493,7 +491,8 @@ describe.each<Entry>(['window', 'shell'])('a stretch of syncing that ran over a 
     const { c, clock } = await waitingFor150(entry, { followUpSyncMs: 200 });
     clock.to(121);
     expect((await c.act({ kind: 'addLabel', key: K(139), label: 'bug' })).ok).toBe(true);
-    // the clock stays at 121 s: the round after the change runs on its own (0.2 s of real time), long before 150 s
+    // the round after the change is due 0.2 s later (GitHub#649: on the same timers as the timed rounds), long before 150 s
+    clock.to(121.2);
     await waitFor(() => rounds() === 2, 'the round after the change');
     await settle(c);
     expect(onBoard(c, 139)!.labels.map((l) => l.name)).toContain('bug');
@@ -615,7 +614,7 @@ describe('the alarm of a timed round', () => {
     fake.state.nextGrant = { token: FAKE_TOKEN };
     c.setClientId(fake.state.oauthClientId);
     const login = c.startLogin();
-    for (let i = 0; i < 500 && c.getState().login.status !== 'waiting'; i++) await sleep(10);
+    await waitUntil(() => !(c.getState().login.status !== 'waiting'), '不再满足：c.getState().login.status !== "waiting"');
     fake.resolveGrant('approved');
     await login;
     await settle(c);

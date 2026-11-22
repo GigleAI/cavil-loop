@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -16,6 +17,7 @@ import { opActions, opLocked, opPhase, type OpRecord } from '../../src/shared/op
 import { sendActions, sendTakeable, type SendRecord } from '../../src/shared/sends';
 import { createActions } from '../../src/shared/noticeTone';
 import type { CreateJob } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -40,7 +42,7 @@ async function ready() {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: 600_000, opCheckDelaysMs: [], followUpSyncMs: 60_000 });
+  const c = await createController({ backend: harness, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', observeMs: 60_000, observeFirstMs: 60_000, opStuckMs: 600_000, opCheckDelaysMs: [], followUpSyncMs: 60_000 });
   controllers.push(c);
   if (!c.getState().sources.length) {
     c.addSource(PROJECT_URL);
@@ -53,11 +55,7 @@ async function ready() {
 }
 
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 3000; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 const idle = async (c: Controller) => {
   for (const j of [...((c as any).opJobs as Map<string, Promise<void>>).values()]) await j;

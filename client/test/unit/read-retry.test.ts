@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { RATE_LIMIT_MESSAGE } from '../../src/data/github';
 import { clockAt, hoverLines, retryText, retryByHand } from '../../src/renderer/syncTimes';
 import { hhmm } from '../../src/shared/readFailure';
@@ -24,6 +25,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type CannedAnswer, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -75,7 +77,7 @@ async function boot(opts: { sources?: string[]; retryDelaysMs?: number[] } = {})
     },
   });
   backends.push(harness);
-  const c = await Controller.create({
+  const c = await createController({
     backend: harness,
     endpoints,
     now: () => clock.t,
@@ -106,12 +108,8 @@ const isRepoList = (e: LoggedRequest) => e.method === 'GET' && e.path.startsWith
 const repoReads = (l: LoggedRequest[]) => l.filter((e) => isRepoList(e) && !/[?&]page=/.test(e.path)).length;
 const fullReads = (l: LoggedRequest[]) => boardReads(l) + repoReads(l);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 const status = (c: Controller, key: string) => c.getState().sync.sources.find((s) => s.sourceKey === key)!;
 const label = (k: string) => (k === PROJECT_KEY ? '看板' : '仓库');

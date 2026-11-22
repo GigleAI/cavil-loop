@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { FULL_READ_EVERY_MS } from '../../src/data/changeCheck';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -15,6 +16,7 @@ import { HarnessBackend } from '../support/harness';
 import type { Backend } from '../../src/backend/backend';
 import { startFakeGitHub, type CheckFault, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -56,7 +58,7 @@ async function ready(opts: { sources?: string[]; intercept?: Intercept; fullRead
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args, (c2, a2) => harness.call(c2, a2)) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({
+  const c = await createController({
     backend,
     endpoints,
     now: () => clock.t,
@@ -474,7 +476,7 @@ describe('a record vouches only for the snapshot it was taken for', () => {
     fake.state.nextGrant = { token: FAKE_TOKEN };
     c.setClientId(fake.state.oauthClientId);
     const login = c.startLogin();
-    for (let i = 0; i < 500 && c.getState().login.status !== 'waiting'; i++) await new Promise((res) => setTimeout(res, 10));
+    await waitUntil(() => !(c.getState().login.status !== 'waiting'), '不再满足：c.getState().login.status !== "waiting"');
     fake.resolveGrant('approved');
     await login;
     await c.syncNow();
@@ -507,7 +509,7 @@ describe('a kept snapshot is no new read: an edit in flight is not judged on it'
     const holdRefresh = fake.holdWhen((e) => e.operation === 'CavilItemRefresh');
     fault(() => 'not-modified');
     const p = c.act({ kind: 'addLabel', key: K(138), label: 'bug', color: 'd73a4a' });
-    for (let i = 0; i < 500 && !fake.log.some((e) => e.operation === 'CavilItemRefresh'); i++) await new Promise((res) => setTimeout(res, 10));
+    await waitUntil(() => !(!fake.log.some((e) => e.operation === 'CavilItemRefresh')), '不再满足：!fake.log.some((e) => e.operation === "CavilItemRefresh")');
     const before = cache.loadSnapshots().get(PROJECT_KEY)!.fetchedAt;
     clock.t += 60_000;
     const sent = await round(c);

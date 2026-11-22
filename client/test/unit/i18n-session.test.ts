@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -14,6 +15,7 @@ import { FIXTURE_NOW, tempDir } from './helpers';
 import { saidText } from '../../src/shared/i18n';
 import type { AppState } from '../../src/shared/types';
 import { CJK } from '../i18n/scan';
+import { waitUntil } from '../support/wait';
 
 const HOUR = 3_600_000;
 const REPO = 'GigleAI/cavil-loop';
@@ -33,11 +35,7 @@ class FlakyStore extends FileStore {
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 async function signInAsApp(store: FileStore, clock: { t: number }) {
@@ -63,7 +61,7 @@ async function signInAsApp(store: FileStore, clock: { t: number }) {
     },
   });
   fake.state.nextGrant = { token: 'ghu_fakeapptoken0000000000000000000001', refreshToken: 'ghr_fakeapprefresh00000000000000000000001', expiresIn: 8 * 3600 };
-  const c = await Controller.create({ backend: watched, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend: watched, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();

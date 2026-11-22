@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -17,6 +18,7 @@ import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-gi
 import { findCopies } from '../fake-github/writes';
 import { ENDED_CHECK_MS, tabStatus, tabUnread } from '../../src/shared/tabs';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const REPO_KEY = 'repo:gigleai/cavil-loop';
@@ -61,7 +63,7 @@ async function ready(first = true) {
   const backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: new FileStore(join(dir, 'cred')), now: () => clock.t, sleep: async () => {} });
   backends.push(backend);
   // no change check: every round reads the list in full, so "a round ran" is one first page
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
   controllers.push(c);
   if (first) c.addSource(REPO);
   await c.start();
@@ -334,11 +336,7 @@ describe('a change made from a tab shows on the tab\'s own copy too (code review
   const shown = (c: Controller) => tabCopy(c) ?? c.getBoardData().items.find((i) => i.key === K(ISSUE)) ?? null;
   const labelMark = (it: { edits?: { field: string; status: string }[] } | null) => it?.edits?.find((m) => m.field === 'label')?.status ?? null;
   async function until(pred: () => boolean, what: string) {
-    for (let i = 0; i < 1000; i++) {
-      if (pred()) return;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    throw new Error(`timeout waiting for: ${what}`);
+    await waitUntil(pred, what);
   }
 
   const ways: [string, (c: Controller) => Promise<void>][] = [

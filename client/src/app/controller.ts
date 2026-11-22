@@ -448,7 +448,7 @@ export class Controller {
    */
   private checkedAt = new Map<string, number>();
   /** the one sync round queued after the last successful change (GigleAI/cavil-loop#177) */
-  private followUp: ReturnType<typeof setTimeout> | null = null;
+  private followUp: unknown = null;
   /** bodies / comments with a box being ticked right now: one read-change-write each at a time (GitHub#193) */
   private tasksInFlight = new Set<string>();
   /** the back end's session: bumps on every login / logout, a round started in another session is dropped */
@@ -799,14 +799,15 @@ export class Controller {
    */
   private scheduleFollowUp(session: number): void {
     this.cancelFollowUp();
-    this.followUp = setTimeout(() => {
+    // GitHub#649: through the same replaceable timers as the timed rounds (the real ones unless a test hands its own)
+    this.followUp = this.timers.setTimeout(() => {
       this.followUp = null;
       if (session === this.session && this.signedIn) void this.syncNow();
     }, this.deps.followUpSyncMs ?? FOLLOW_UP_SYNC_MS);
   }
 
   private cancelFollowUp(): void {
-    if (this.followUp) clearTimeout(this.followUp);
+    if (this.followUp !== null) this.timers.clearTimeout(this.followUp);
     this.followUp = null;
   }
 

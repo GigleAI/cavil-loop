@@ -10,12 +10,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import type { Backend } from '../../src/backend/backend';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const REPO_KEY = 'repo:gigleai/cavil-loop';
@@ -64,7 +66,7 @@ async function ready(intercept?: (cmd: string, args: any, harness: HarnessBacken
   const backend: Backend = { call: async (cmd, args) => ((await intercept?.(cmd, args, harness)) as any) ?? harness.call(cmd, args) };
   // GitHub#261: no change check — these rounds change GitHub's data behind its back (no update time
   // moves) and count full reads; the check's own interplay with a dropped round is in change-check.test.ts
-  const c = await Controller.create({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
+  const c = await createController({ backend, endpoints, now: () => FIXTURE_NOW, defaultClientId: '', followUpSyncMs: 600_000, fullReadEveryMs: 0 });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();
@@ -97,12 +99,8 @@ const rounds = () => fake.log.filter(isFirstPage).length;
 /** open-issue pages after the first, across all rounds */
 const laterPages = () => fake.log.filter((l) => isOpenList(l) && /[?&]page=\d/.test(l.path)).length;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 /** hold the next first page of the open-issue list (later ones go through) */
 function holdNextRead(): () => void {
@@ -113,6 +111,15 @@ function holdNextRead(): () => void {
     return true;
   });
 }
+/** GitHub#649: every first-page read the fake received has been answered (a held one only after its release) */
+const allAnswered = () => fake.log.filter(isFirstPage).every((l) => l.status !== 0);
+/** the old round's late answer was sent, and the old round itself has ended: whatever it did with it is done */
+async function oldRoundOver(old: Promise<unknown>) {
+  await waitFor(allAnswered, 'the held answer went out');
+  await old;
+  await waitFor(() => !s0(), 'no round running');
+}
+let s0: () => boolean = () => false;
 /** the held request reached the fake (its answer is written out only when released) */
 const heldReached = (n: number) => () => rounds() >= n;
 
@@ -124,7 +131,8 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
     expect(pagesPerRound).toBeGreaterThanOrEqual(1); // the fixture does span several pages
 
     const release = holdNextRead();
-    void c.syncNow(); // the timer's round
+    const old = c.syncNow(); // the timer's round
+    s0 = () => c.getState().sync.syncing;
     await waitFor(heldReached(before + 1), 'round 1 reached GitHub');
     expect(c.getState().sync.syncing).toBe(true);
     // GitHub changes after round 1 read it: only round 2 can know
@@ -142,7 +150,7 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
     // the old round's answer arrives late: thrown away, and it asks for no further page
     issue().title = 'title nobody should see';
     release();
-    await sleep(500);
+    await oldRoundOver(old);
     expect(laterPages()).toBe(pagesAfterNew);
     expect(titleOnBoard(c)).toBe('title read by the new round');
     expect(titleInCache()).toBe('title read by the new round');
@@ -157,7 +165,8 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
     const before = rounds();
     expect(laterPages()).toBe(0); // one page per list: the held answer is the old round's last
     const release = holdNextRead();
-    void c.syncNow();
+    const old = c.syncNow();
+    s0 = () => c.getState().sync.syncing;
     await waitFor(heldReached(before + 1), 'round 1 reached GitHub');
     issue().title = 'title read by the new round';
     await c.restartSync();
@@ -165,7 +174,7 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
     // the fake writes a held answer out when it is released: this is what the old round gets
     issue().title = 'title nobody should see';
     release();
-    await sleep(500);
+    await oldRoundOver(old);
     expect(titleOnBoard(c)).toBe('title read by the new round');
     expect(titleInCache()).toBe('title read by the new round');
     expect(c.getState().sync.syncing).toBe(false);
@@ -175,13 +184,14 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
     const { c } = await ready();
     const before = rounds();
     const release = holdNextRead();
-    void c.syncNow();
+    const old = c.syncNow();
+    s0 = () => c.getState().sync.syncing;
     await waitFor(heldReached(before + 1), 'round 1 reached GitHub');
     const p = [c.restartSync(), c.restartSync(), c.restartSync()];
     await Promise.all(p);
     expect(rounds()).toBe(before + 2);
     release();
-    await sleep(300);
+    await oldRoundOver(old);
     expect(rounds()).toBe(before + 2);
     expect(c.getState().sync.syncing).toBe(false);
   });

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, EDITS_KEY } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -17,6 +18,7 @@ import type { EditMark, Item } from '../../src/shared/types';
 import type { WriteAction } from '../../src/shared/actions';
 import { noteEditOf, stepNoteEdits } from '../../src/renderer/noteEdits';
 import { createTone } from '../../src/shared/noticeTone';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -41,7 +43,7 @@ async function ready(opts: { intercept?: (cmd: string, args: any, next: (cmd: st
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args, (c2, a2) => harness.call(c2, a2)) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await Controller.create({
+  const c = await createController({
     backend,
     endpoints,
     now: () => clock.t,
@@ -90,11 +92,7 @@ const storedEdits = () => {
   return ((cache.loadSnapshots().get(EDITS_KEY) as any)?.edits ?? null) as any[] | null;
 };
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 1000; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 
 beforeEach(async () => {

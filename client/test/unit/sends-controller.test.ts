@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, SENDS_KEY } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -13,6 +14,7 @@ import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { sendButtons, sendClosable, sendHolds, sendKeepsText, sendNoticeText, sendShown, sendTakeable, sendTakeText, sendTone, type SendRecord } from '../../src/shared/sends';
 import type { ItemDetail } from '../../src/shared/actions';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -36,7 +38,7 @@ async function ready() {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => FIXTURE_NOW, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => clock, defaultClientId: '', followUpSyncMs: 3_600_000,
+  const c = await createController({ backend: harness, endpoints, now: () => clock, defaultClientId: '', followUpSyncMs: 3_600_000,
     // GitHub#359: only the check made at once (as in the operation tests)
     opCheckDelaysMs: [] });
   controllers.push(c);
@@ -113,7 +115,7 @@ describe('a reply', () => {
     expect(r0.state).toBe('sending');
     expect(sendTone(r0)).toBe('busy');
     expect(sendClosable(r0)).toBe(false);
-    for (let i = 0; i < 300 && posts().length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(posts().length === 0), '不再满足：posts().length === 0');
     expect(posts()).toHaveLength(1);
     release();
     await idle(c);
@@ -356,7 +358,7 @@ describe('PR #510 review round 1', () => {
     const late = fake.lateWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/comments`);
     const op = c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '交回说明' });
     expect(op.ok).toBe(true);
-    for (let i = 0; i < 500 && c.getState().ops.find((x) => x.id === op.id)?.steps[0].state !== 'unknown'; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(c.getState().ops.find((x) => x.id === op.id)?.steps[0].state !== 'unknown'), '不再满足：c.getState().ops.find((x) => x.id === op.id)?.steps[0].state !== "unknown"');
     late.stop();
     const r = c.getState().ops.find((x) => x.id === op.id)!;
     expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'unknown' });
@@ -399,7 +401,7 @@ describe('PR #510 review round 1', () => {
     const b = c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '同一段说明' });
     expect(b.ok).toBe(true);
     const opB = () => c.getState().ops.find((x) => x.id === b.id)!;
-    for (let i = 0; i < 1000 && !(opB().steps[0].state === 'unknown' && !opB().checking && !opB().running); i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!(opB().steps[0].state === 'unknown' && !opB().checking && !opB().running)), '不再满足：!(opB().steps[0].state === "unknown" && !opB().checking && !opB().running)');
     lateB.stop();
     expect(opB().steps[0]).toMatchObject({ name: 'comment', state: 'unknown' });
     // A lands now: a new same-text comment by this account — not B's
@@ -423,7 +425,7 @@ describe('PR #510 review round 1', () => {
     const d = c.startOp({ kind: 'handBack', key: K(issue2), comment: '另一段说明' });
     expect(d.ok).toBe(true);
     const opD = () => c.getState().ops.find((x) => x.id === d.id)!;
-    for (let i = 0; i < 1000 && !(opD().steps[0].state === 'unknown' && !opD().checking && !opD().running); i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!(opD().steps[0].state === 'unknown' && !opD().checking && !opD().running)), '不再满足：!(opD().steps[0].state === "unknown" && !opD().checking && !opD().running)');
     lateD.stop();
     lateD.land();
     await c.opRecheck(d.id!);

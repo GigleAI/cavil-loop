@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { tempDir } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const TARGET = 'darwin-aarch64';
@@ -25,14 +26,28 @@ const HOUR = 3600_000;
 
 class FakeClock {
   t = 1_800_000_000_000;
-  private sleepers: { due: number; done: () => void }[] = [];
+  private sleepers: { due: number; ms: number; done: () => void }[] = [];
   now = () => this.t;
-  sleep = (ms: number) => new Promise<void>((done) => this.sleepers.push({ due: this.t + ms, done }));
-  /** move time forward, waking every sleeper on the way (each one may start the next sleep) */
-  async advance(ms: number) {
+  sleep = (ms: number) => new Promise<void>((done) => this.sleepers.push({ due: this.t + ms, ms, done }));
+  /** move time forward, waking every sleeper on the way (each one may start the next sleep).
+   * `keep.asks`: the sleeps (by length) the back end keeps going at this point. Before each step the
+   * clock waits until each of them is asked for again, or `over()` holds — with no time limit of its
+   * own (the case's limit stops it). GitHub#649: the fixed 30 ms below was the only wait, so a busy
+   * back end could ask for its next sleep after the clock had moved past it — the stall watch then
+   * counted from later than the data, and the round never ended within the step. Counted by length,
+   * not by number: a sleep the back end has let go of (a check's timeout) stays here until it is due. */
+  async advance(ms: number, keep?: { asks: number[]; over: () => boolean }) {
     const end = this.t + ms;
     for (;;) {
       await settle();
+      if (keep) {
+        const k = keep;
+        await waitUntil(
+          () => k.over() || k.asks.every((a) => this.sleepers.some((x) => x.ms === a)),
+          `the back end to ask again for its sleep(s) of ${k.asks.join(', ')} ms (clock ${end - this.t} ms short of the end of this step)`,
+          () => this.sleepers.map((x) => `${x.ms} ms, due in ${x.due - this.t}`),
+        );
+      }
       const due = this.sleepers.filter((s) => s.due <= end).sort((a, b) => a.due - b.due)[0];
       if (!due) break;
       this.t = Math.max(this.t, due.due);
@@ -47,6 +62,13 @@ class FakeClock {
 
 /** let the back end answer what it was sent (it is another process) */
 const settle = () => new Promise((r) => setTimeout(r, 30));
+
+/** whether a promise has settled yet (for the clock's `over`) */
+function settledFlag(p: Promise<unknown>): () => boolean {
+  let done = false;
+  p.then(() => (done = true), () => (done = true));
+  return () => done;
+}
 
 // ---- a release server ------------------------------------------------------------------
 
@@ -353,9 +375,11 @@ describe('one round: check, download, install (GitHub#184)', () => {
     const b = harness();
     await start(b);
     const round = b.call('test.update.check');
-    await clock.advance(29_000);
+    // while it checks the back end sleeps once: the 30 s it gives GitHub to answer
+    const keep = { asks: [30_000], over: settledFlag(round) };
+    await clock.advance(29_000, keep);
     expect(((await b.call('test.update.status')) as any).phase).toBe('checking');
-    await clock.advance(1_000);
+    await clock.advance(1_000, keep);
     expect(await round).toMatchObject({ phase: 'idle', last: { ok: false, message: '检查失败：GitHub 没有回应' } });
   });
 
@@ -366,9 +390,11 @@ describe('one round: check, download, install (GitHub#184)', () => {
     await start(b);
     const round = b.call('test.update.check');
     await expect.poll(() => b.updates.some((s) => s.phase === 'downloading' && s.got > 0)).toBe(true);
-    await clock.advance(59_000);
+    // while it downloads the back end keeps one sleep going: the watch that looks for new data every second
+    const keep = { asks: [1_000], over: settledFlag(round) };
+    await clock.advance(59_000, keep);
     expect(((await b.call('test.update.status')) as any).phase).toBe('downloading');
-    await clock.advance(2_000);
+    await clock.advance(2_000, keep);
     expect(await round).toMatchObject({ phase: 'idle', last: { ok: false, message: '下载 0.5.1 失败：60 秒没有收到数据' } });
     expect(existsSync(installed())).toBe(false);
     srv.pkgMode = 'whole';
@@ -474,9 +500,10 @@ describe('GitHub#473: the updater words its own part in the window\'s language, 
     const round = b.call('test.update.check');
     await expect.poll(() => b.updates.some((s) => s.phase === 'downloading' && s.got > 0)).toBe(true);
     // the same steps as the Chinese case above: the stall clock runs from the last chunk the back end took in
-    await clock.advance(59_000);
+    const keep = { asks: [1_000], over: settledFlag(round) };
+    await clock.advance(59_000, keep);
     expect(((await b.call('test.update.status')) as any).phase).toBe('downloading');
-    await clock.advance(2_000);
+    await clock.advance(2_000, keep);
     expect(await round).toMatchObject({ last: { ok: false, message: 'Downloading 0.5.1 failed: No data received for 60 seconds', said: { parts: [] } } });
   });
 });
@@ -493,7 +520,7 @@ describe('when it looks (GitHub#184)', () => {
     await settle();
     expect(srv.releaseRequests().length).toBe(1);
     srv.holdReleases = false;
-    await clock.advance(30_000); // the held one times out
+    await clock.advance(30_000, { asks: [30_000], over: settledFlag(first) }); // the held one times out
     await first;
     expect(await b.call('test.update.check')).toMatchObject({ phase: 'ready' });
     const n = srv.releaseRequests().length;

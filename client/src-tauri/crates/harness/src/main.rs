@@ -15,7 +15,10 @@
 // The daemon section runs only when the test sets CAVIL_CLIENT_TEST_DAEMON_HOME / _PATH (and
 // optionally _ENV, _CLONE) in the harness's environment; otherwise it is off.
 //
-//   cavil-harness --db <file> --api <loopback url> --web <loopback url> [--memory-credentials] [--keychain-bin <stand-in for /usr/bin/security>]
+//   cavil-harness --db <file> --api <loopback url> --web <loopback url> [--memory-credentials] [--keychain-bin <stand-in for /usr/bin/security>] [--virtual-retry-clock]
+//
+// With --virtual-retry-clock (GitHub#649) the connection retries of cavil_core::http wait on a virtual
+// clock: nothing sleeps, each wait counts against the budget and is sent as {"ev": "retryWait", "ms": n}.
 //
 // With --keychain-bin the back end uses its real macOS keychain store (against the
 // stand-in executable); `test.cred.get|set|clear` then call that store directly.
@@ -146,6 +149,18 @@ async fn main() {
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     let link = Arc::new(Link { out: out_tx.clone(), pending: Mutex::new(HashMap::new()), seq: AtomicU64::new(1) });
+    // GitHub#649: --virtual-retry-clock — the back end's connection retries do not sleep; each wait is
+    // added to the request's time budget as if it had passed, and reported to the test as an event
+    if args.iter().any(|a| a == "--virtual-retry-clock") {
+        let ev = out_tx.clone();
+        let report = move |d: std::time::Duration| {
+            let _ = ev.send(json!({ "ev": "retryWait", "ms": d.as_millis() as u64 }).to_string());
+        };
+        if let Err(e) = cavil_core::http::install_retry_clock(Arc::new(cavil_core::http::VirtualClock::new(Box::new(report)))) {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    }
     let keychain: Option<Arc<MacKeychainStore>> = arg(&args, "--keychain-bin").map(|bin| Arc::new(MacKeychainStore { bin }));
     let credentials: Arc<dyn CredentialStore> = match &keychain {
         Some(k) => k.clone(),

@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, PREFETCH_PER_ROUND } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -28,6 +29,7 @@ import { PendingTracker } from '../../src/data/pending';
 import { startFakeGitHub, FakeGitHub, loadCavilProjectPages, loadCavilRepoIssues } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, item, tempDir, trustedList } from './helpers';
 import type { SourceSnapshot } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -110,7 +112,7 @@ async function signedIn(
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
   controllers.push(c);
   for (const s of opts.sources ?? []) c.addSource(s);
   return {
@@ -587,7 +589,7 @@ describe('pending reminders against the fake GitHub', () => {
     fake.state.nextGrant = { token: FAKE_TOKEN };
     h.c.setClientId(fake.state.oauthClientId);
     const login = h.c.startLogin();
-    for (let i = 0; i < 500 && h.c.getState().login.status !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(h.c.getState().login.status !== 'waiting'), '不再满足：h.c.getState().login.status !== "waiting"');
     fake.resolveGrant('approved');
     await login;
     await h.c.desktopSettled();
@@ -908,7 +910,7 @@ describe('what the shell tells the window (GitHub#169)', () => {
     const rounds = () => h.backend.sent.filter((m) => m.cmd === 'replaceSnapshots').length;
     const before = rounds();
     f.push({ kind: 'tick' });
-    for (let i = 0; i < 300 && !h.items().length; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!h.items().length), '不再满足：!h.items().length');
     expect(rounds()).toBeGreaterThan(before);
     expect(h.items()).toEqual([key(OPEN_NEW)]);
     h.c.stopDesktopEvents();
@@ -927,7 +929,7 @@ describe('what the shell tells the window (GitHub#169)', () => {
     expect(h.c.getState().focus!.seq).toBeGreaterThan(f1!.seq);
     // not on the board (e.g. its source was removed): the browser, through the back end's GitHub-only rule
     h.c.onDesktopEvent({ kind: 'open', key: 'someone/else#1', url: 'https://github.com/someone/else/issues/1' });
-    for (let i = 0; i < 100 && !h.opened.length; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!h.opened.length), '不再满足：!h.opened.length');
     expect(h.opened).toEqual(['https://github.com/someone/else/issues/1']);
     expect(h.c.getState().focus!.key).toBe(key(SEEDED));
   });
@@ -1148,13 +1150,7 @@ describe('details read ahead of the click (GitHub#328)', () => {
     .map((x: any) => x.content.number as number)
     .filter((n, i, a) => a.indexOf(n) === i)
     .slice(0, PREFETCH_PER_ROUND + 2);
-  const until = async (cond: () => boolean, what: string) => {
-    for (let i = 0; i < 400; i++) {
-      if (cond()) return;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    throw new Error(`timed out waiting for ${what}`);
-  };
+  const until = (cond: () => boolean, what: string) => waitUntil(cond, what);
   /** A round one minute later; its notifications are out and every read ahead has ended. */
   async function round(h: Harness) {
     h.clock.t += 60_000;
@@ -1326,7 +1322,7 @@ describe('details read ahead of the click (GitHub#328)', () => {
     fake.state.nextGrant = { token: FAKE_TOKEN };
     h.c.setClientId(fake.state.oauthClientId);
     const login = h.c.startLogin();
-    for (let i = 0; i < 500 && h.c.getState().login.status !== 'waiting'; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(h.c.getState().login.status !== 'waiting'), '不再满足：h.c.getState().login.status !== "waiting"');
     fake.resolveGrant('approved');
     await login;
     await h.c.prefetchSettled();

@@ -7,12 +7,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, IMAGE_FETCHES } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type CannedAnswer, type FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { APP_CONTENTS_NOTE, imageFailureText, parseReleaseImage, sameReleaseImage, type ImageResult } from '../../src/shared/images';
+import { waitUntil } from '../support/wait';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const SVG = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
@@ -28,7 +30,7 @@ const clock = { t: FIXTURE_NOW };
 const img = (file: string, tag = 'v1', repo = 'acme/app') => `${fake.web}/${repo}/releases/download/${tag}/${file}`;
 const requests = (part: string) => fake.log.filter((l) => l.path.includes(part));
 async function seen(part: string, n = 1) {
-  for (let i = 0; i < 1000 && requests(part).length < n; i++) await new Promise((r) => setTimeout(r, 10));
+  await waitUntil(() => !(requests(part).length < n), '不再满足：requests(part).length < n');
   expect(requests(part).length).toBeGreaterThanOrEqual(n);
 }
 
@@ -41,7 +43,7 @@ async function restartSignedInWith(clientId: string) {
   cache.setSetting('grantClientId', clientId);
   const endpoints = { api: fake.api, web: fake.web };
   backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials: new FileStore(credentialsFile), now: () => clock.t, sleep: async () => {} });
-  c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   await c.start();
   expect(c.getState().phase).toBe('ready');
 }
@@ -72,7 +74,7 @@ beforeEach(async () => {
   await credentials.set(FAKE_TOKEN);
   const endpoints = { api: fake.api, web: fake.web };
   backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
-  c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
   await c.start();
   expect(c.getState().phase).toBe('ready');
 });

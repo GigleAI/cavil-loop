@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -37,6 +38,7 @@ import { PendingTracker } from '../../src/data/pending';
 import { buildGraph } from '../../src/data/graph';
 import { loopKnown } from '../../src/data/loopBlocked';
 import type { Item, SourceSnapshot } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const shared = { handBack: DEFAULT_HAND_BACK, blockedLabels: DEFAULT_BLOCKED_LABELS };
 const label = (name: string) => ({ name, color: 'ededed' });
@@ -410,13 +412,13 @@ async function make(script: (cmd: string, args: Record<string, unknown>) => Rena
       return backend.call(cmd, args);
     },
   };
-  const c = await Controller.create({ backend: wrapped, endpoints, now: () => FIXTURE_NOW, defaultClientId: '' });
+  const c = await createController({ backend: wrapped, endpoints, now: () => FIXTURE_NOW, defaultClientId: '' });
   open.push({ c, backend, cache });
   return { c, calls, backend };
 }
 
 const until = async (f: () => boolean) => {
-  for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+  await waitUntil(() => !(!f()), '不再满足：!f()');
   expect(f()).toBe(true);
 };
 

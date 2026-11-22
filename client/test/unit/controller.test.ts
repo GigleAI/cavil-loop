@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, REASON_REVOKED } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore, MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -14,6 +15,7 @@ import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList, FIXTURE_ITEM_COUNT } fro
 import type { AppState } from '../../src/shared/types';
 import { DEFAULT_QUERY, DEFAULT_SHOW_CLOSED } from '../../src/shared/viewSettings';
 import { flowTally, litTally } from '../../src/data/flowTally';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -51,7 +53,7 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
     opened,
   });
   backends.push(backend);
-  const c = await Controller.create({
+  const c = await createController({
     // a test may stand between the window and the real back end (hold a command, say)
     backend: opts.wrap ? opts.wrap(backend) : backend,
     endpoints,
@@ -67,11 +69,7 @@ async function make(opts: { credentials?: FileStore | MemoryStore; clock?: { t: 
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout waiting for: ${what} (state: ${JSON.stringify(c.getState().login)} phase=${c.getState().phase})`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 beforeEach(async () => {
@@ -129,7 +127,7 @@ describe('login (OAuth device flow)', () => {
     // still pending for a few polls: no token yet. Waited for by what is seen (the first token poll reached
     // GitHub), not by a fixed 30 ms: measured 0–11 ms from here, which a fully loaded box can exceed (PR #459 review round 2)
     const polls = () => fake.log.filter((l) => l.path === '/web/login/oauth/access_token').length;
-    for (let i = 0; i < 1500 && polls() === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(polls() === 0), '不再满足：polls() === 0');
     expect(polls()).toBeGreaterThan(0);
     expect(c.getState().phase).toBe('login');
     const g = fake.resolveGrant('approved');
@@ -809,20 +807,13 @@ const REPO_LIST = '/api/repos/GigleAI/cavil-loop/issues?';
 
 /** wait until the fake has seen `n` requests matching `pred` */
 async function requestsMatching(pred: (l: LoggedRequest) => boolean, n: number) {
-  for (let i = 0; i < 1500; i++) {
-    if (fake.log.filter(pred).length >= n) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`fake never saw ${n} matching requests`);
+  await waitUntil(() => fake.log.filter(pred).length >= n, `假 GitHub 收到 ${n} 个匹配的请求`, () => fake.log.filter(pred).length);
 }
 
 /** wait until the fake has seen `n` requests whose path contains `fragment` */
 async function requestsSeen(fragment: string, n: number) {
-  for (let i = 0; i < 1500; i++) {
-    if (fake.log.filter((l) => l.path.includes(fragment)).length >= n) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`fake never saw ${n} requests to ${fragment}`);
+  const seen = () => fake.log.filter((l) => l.path.includes(fragment)).length;
+  await waitUntil(() => seen() >= n, `假 GitHub 收到 ${n} 个 ${fragment} 请求`, seen);
 }
 
 describe('the cache belongs to one account', () => {
@@ -1087,11 +1078,7 @@ class SlowStore extends FileStore {
 const TOKEN_A2 = 'gho_faketokenA20000000000000000000003';
 
 async function untilWrites(store: SlowStore, n: number) {
-  for (let i = 0; i < 1500; i++) {
-    if (store.writes.length >= n) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`credential store never saw ${n} writes`);
+  await waitUntil(() => store.writes.length >= n, `凭据存储收到 ${n} 次写入`, () => store.writes.length);
 }
 
 describe('signing in is all-or-nothing against cancel / sign-out / a newer login', () => {

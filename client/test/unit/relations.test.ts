@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { GitHubClient } from '../../src/data/github';
 import { contentToItem, fetchProject, fetchRepo } from '../../src/data/fetchSources';
 import { applyFreshItem, fetchItem } from '../../src/data/itemRefresh';
@@ -437,7 +438,7 @@ describe('the app: cache on disk, status, the round after a failure, sign-out', 
     const endpoints = { api: fake.api, web: fake.web };
     const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
     backends.push(harness);
-    const c = await Controller.create({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000 });
+    const c = await createController({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000 });
     controllers.push(c);
     if (!again) for (const s of [PROJECT_URL, REPO]) c.addSource(s);
     return { c, cache, clock, harness };

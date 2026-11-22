@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -63,7 +64,7 @@ async function ready(opts: { sources?: string[]; lastSendAt?: number } = {}) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
+  const c = await createController({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
   controllers.push(c);
   for (const s of opts.sources ?? [PROJECT_URL]) c.addSource(s);
   await c.start();
@@ -535,5 +536,7 @@ describe('GitHub#558: no quota of the client\'s own; GitHub\'s own limit is said
     // REST: the checks that answered 200, the lists of changes — well under a tenth of the hour's 5000
     expect(fake.state.quota.core.used - core).toBeLessThan(650);
     expect(fake.state.quota.graphql.used - points).toBeLessThan(450);
-  });
+    // GitHub#649: 57 real rounds through the real back end — the point is their total over an hour, so it
+    // stays one case. Measured: 6.0 s idle, 12.1–12.2 s at load 32–38, 20.3 s at load ~60 on 28 cores
+  }, 60_000);
 });

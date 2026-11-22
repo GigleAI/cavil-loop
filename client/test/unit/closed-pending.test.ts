@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import type { Alert, Desktop, DesktopEvent } from '../../src/app/desktop';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -24,6 +25,7 @@ import { applyFilter, parseFilter } from '../../src/shared/filter';
 import { parseSource } from '../../src/shared/sources';
 import { GitHubClient } from '../../src/data/github';
 import type { SourceConfig } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const RKEY = 'gigleai/cavil-loop';
@@ -79,7 +81,7 @@ async function signedIn(checking = false): Promise<Harness> {
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop, readRetryDelaysMs: [], followUpSyncMs: 3_600_000, ...(checking ? {} : { fullReadEveryMs: 0 }) });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop, readRetryDelaysMs: [], followUpSyncMs: 3_600_000, ...(checking ? {} : { fullReadEveryMs: 0 }) });
   controllers.push(c);
   c.addSource(REPO);
   await c.start();
@@ -235,9 +237,9 @@ describe('a repository source: closed items carrying the pending label, however 
     expect(h.c.getBoardData().items.some((i) => i.key === key(OLD_OTHER))).toBe(false);
     const sent = fake.log.length;
     h.c.setHandBack({ human: 'waiting' });
-    for (let i = 0; i < 200 && !fake.log.slice(sent).some((e) => isClosedList(e, 'waiting') && e.status === 200); i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!fake.log.slice(sent).some((e) => isClosedList(e, 'waiting') && e.status === 200)), '不再满足：!fake.log.slice(sent).some((e) => isClosedList(e, "waiting") && e.status === 200)');
     await h.c.desktopSettled();
-    for (let i = 0; i < 200 && !h.c.getBoardData().items.some((x) => x.key === key(OLD_OTHER)); i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(!h.c.getBoardData().items.some((x) => x.key === key(OLD_OTHER))), '不再满足：!h.c.getBoardData().items.some((x) => x.key === key(OLD_OTHER))');
     // "did happen": the new name's closed list was read, and the old closed one under it is on the board
     expect(fake.log.slice(sent).some((e) => isClosedList(e, 'waiting') && e.status === 200)).toBe(true);
     const n = human(h.c);

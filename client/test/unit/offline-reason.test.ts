@@ -7,12 +7,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const APP_TOKEN = 'ghu_fakeapptoken0000000000000000000001';
 const APP_REFRESH = 'ghr_fakeapprefresh00000000000000000000001';
@@ -26,11 +28,7 @@ const controllers: Controller[] = [];
 const backends: HarnessBackend[] = [];
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 /** Signed in as a GitHub App (an expiring token + a refresh token), one source synced. */
@@ -51,7 +49,7 @@ async function signedIn() {
     },
   });
   backends.push(backend);
-  const c = await Controller.create({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
   controllers.push(c);
   fake.state.nextGrant = { token: APP_TOKEN, refreshToken: APP_REFRESH, expiresIn: 8 * 3600 };
   c.addSource(REPO);

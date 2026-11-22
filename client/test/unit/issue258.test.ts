@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -18,6 +19,7 @@ import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { handleGraphql, type Store } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { CreateJob } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -45,7 +47,7 @@ async function ready(opts: { looks?: number[] } = {}) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', watchLooksMs: opts.looks ?? LOOKS, watchVerifyMs: VERIFY, followUpSyncMs: 60_000 });
+  const c = await createController({ backend: harness, endpoints, now: () => clock.t, defaultClientId: '', watchLooksMs: opts.looks ?? LOOKS, watchVerifyMs: VERIFY, followUpSyncMs: 60_000 });
   controllers.push(c);
   c.addSource(PROJECT_URL);
   c.addSource(REPO);
@@ -56,11 +58,7 @@ async function ready(opts: { looks?: number[] } = {}) {
 }
 
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 6000; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

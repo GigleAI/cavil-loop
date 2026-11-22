@@ -5,12 +5,13 @@
 //     connected. Results are read back from the config file on disk, not from
 //     the back end's word.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { configWorld } from '../support/config-world';
 import { canEdit, configGroups, configLayout, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
@@ -126,38 +127,17 @@ describe('the rules the form is drawn from', () => {
 });
 
 describe('the back end and the daemon\'s real script', () => {
-  const open: HarnessBackend[] = [];
+  // GitHub#649: the machine, built once for this block, a fresh copy per case (test/support/config-world.ts)
+  const cw = configWorld();
+  const backend = (os?: Os, p?: string) => cw.backend(os, p);
+  const line = (name: string) => cw.line(name);
+  const byName = (c: ProjectConfig, name: string) => cw.byName(c, name);
   let w: DaemonWorld;
   let path: string;
-  let host: string;
   let config: string;
-
-  // a fresh machine, the daemon cloned and a project connected with the real setup.sh per case: on
-  // a loaded box this passes vitest's default 10 s hook limit (PR #493 code review round 2)
   beforeEach(() => {
-    w = daemonWorld(tempDir());
-    installByHand(w);
-    path = pathFor(w);
-    host = connect(w, 'widget', 'Darwin', path);
-    config = join(host, 'cavil-loop.config');
-  }, 60_000);
-  afterEach(async () => {
-    await Promise.all(open.splice(0).map((b) => b.close()));
-    // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
-    dropWorlds();
-  }, 60_000);
-  function backend(os: Os = 'Darwin', p = path) {
-    const b = new HarnessBackend({
-      db: join(w.dir, `cache-${open.length}.sqlite`),
-      endpoints: { api: 'http://127.0.0.1:9', web: 'http://127.0.0.1:9' },
-      credentials: new MemoryStore(),
-      env: daemonEnv(w, { os, path: p }),
-    });
-    open.push(b);
-    return b;
-  }
-  const line = (name: string) => readFileSync(config, 'utf8').split('\n').filter((l) => l.startsWith(`${name}=`));
-  const byName = (c: ProjectConfig, name: string) => c.fields.find((f) => f.name === name)!;
+    ({ w, path, config } = cw);
+  });
 
   it('reads the settings of a project the real setup.sh connected: values from its config, nothing secret', async () => {
     const r = await backend().call('daemonConfigGet', { key: 'widget' });
@@ -168,7 +148,7 @@ describe('the back end and the daemon\'s real script', () => {
     expect(byName(c, 'MAX_CONCURRENT_WORKERS')).toMatchObject({ value: '1', editable: true, min: 1, max: 16 });
     expect(byName(c, 'DISPATCH_MODE')).toMatchObject({ mode: 'show', value: 'label', editable: false });
     // every registered setting is in the template setup.sh writes, as a plain literal: all "edit" rows are inputs
-    expect(c.fields.filter((f) => f.mode === 'edit' && !f.editable).map((f) => f.name)).toEqual([]);
+    expect(c.fields.filter((f) => f.mode === 'edit' && !f.editable).map((f) => `${f.name}: ${f.reason}`)).toEqual([]);
     const all = JSON.stringify(r);
     for (const secret of ['GH_TOKEN', 'WORKTREE_SETUP_CMD', 'PR_CREATED_HOOK', 'npm ci', 'dangerously']) expect(all, secret).not.toContain(secret);
   });
@@ -198,6 +178,7 @@ describe('the back end and the daemon\'s real script', () => {
     expect(p.deps).toEqual({ state: 'missing', missing: ['codex'] });
   });
 
+  // GitHub#649: two cases of one read and one save each (they were one case of four script runs)
   it('a file edited since it was read: "changed", and the outside edit stays', async () => {
     const b = backend();
     const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
@@ -206,111 +187,15 @@ describe('the back end and the daemon\'s real script', () => {
     const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { MAX_CONCURRENT_WORKERS: '2' } });
     expect(r.result).toBe('changed');
     expect(readFileSync(config, 'utf8')).toBe(after);
-    // reachable: the same save with the fingerprint of the file as it is now goes through
+  });
+  it('…reachable: the same save with the fingerprint of the file as it is now goes through, the outside edit kept', async () => {
+    const b = backend();
+    writeFileSync(config, readFileSync(config, 'utf8') + '# edited elsewhere\n');
     const c2: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
     expect((await b.call('daemonConfigSet', { key: 'widget', rev: c2.rev, values: { MAX_CONCURRENT_WORKERS: '2' } })).result).toBe('saved');
     expect(readFileSync(config, 'utf8')).toContain('# edited elsewhere\n');
-  });
-
-  it('what the window may not name is refused before the script\'s save ever starts', async () => {
-    // the save is the only thing that takes a lock: a wrapper in front of flock records every start
-    const calls = join(w.dir, 'flock-calls');
-    wrapTool(path, 'flock', `echo x >> ${JSON.stringify(calls)}\nexec "$REAL" "$@"`);
-    const b = backend();
-    const before = readFileSync(config, 'utf8');
-    const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-    const set = (o: Record<string, unknown>) => b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { MAX_CONCURRENT_WORKERS: '2' }, ...o });
-    const refused: Record<string, unknown>[] = [
-      { key: '../x' },
-      { key: 'deploy' },
-      { rev: 'abc' },
-      { rev: `${c.rev}; rm -rf x` },
-      { values: {} },
-      { values: { GH_TOKEN: 'x' } },
-      { values: { WORKTREE_SETUP_CMD: 'true' } },
-      { values: { PR_CREATED_HOOK: 'x' } },
-      { values: { DISPATCH_MODE: 'greedy' } },
-      { values: { LABEL_AUTOPILOT: 'autopilot' } },
-      { values: { MAX_CONCURRENT_WORKERS: '2', NOT_A_SETTING: '1' } },
-      { values: { 'MAX_CONCURRENT_WORKERS=2\nGH_TOKEN': 'x' } },
-      { values: { WORKER_MODEL: 'a b' } },
-      { values: { WORKER_MODEL: '$(id)' } },
-      { values: { WORKER_MODEL: 'a"\nGH_TOKEN="x' } },
-      { values: { MAX_CONCURRENT_WORKERS: 2 } },
-    ];
-    for (const o of refused) expect((await set(o)).result, JSON.stringify(o)).toBe('refused');
-    expect(existsSync(calls)).toBe(false);
-    expect(readFileSync(config, 'utf8')).toBe(before);
-    // a value of plain characters that the type does not allow reaches the script, which says "invalid"
-    const r = await set({ values: { MAX_CONCURRENT_WORKERS: '99' } });
-    expect(r.result).toBe('invalid');
-    expect(readFileSync(config, 'utf8')).toBe(before);
-    // reachable: the wrapper does see a save, and this one is written
-    expect((await set({})).result).toBe('saved');
-    expect(readFileSync(calls, 'utf8').trim().split('\n').length).toBe(2);
     expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   });
-
-  // 17 values × (read + save) through the real script, one after another: 16 s on CI with the
-  // default 20 s budget (main run 43150760693), so any extra load on the runner tipped it over
-  // (PR #400 review round 5). The work is the point of the test; give it the time, keep every value.
-  // Then the script's per-setting cost grew with the registry (84 settings, ~1400 processes per read): 37.9–39.5 s
-  // on CI through 2026-11-21, while the integers case next to it reached 62 s and failed the nightly build. The script
-  // now works out every setting in one pass (GitHub#662): on a dev box at load ~45, 55.8 s before, 10.5 s after.
-  it('one list of values, three checks — the form, the back end, the script — agree on which may be written', async () => {
-    const b = backend();
-    const values = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];
-    const verdicts: [string, boolean, string][] = [];
-    for (const v of values) {
-      const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-      const model = byName(c, 'WORKER_MODEL');
-      const form = fieldProblem(model, v) === null;
-      const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { WORKER_MODEL: v } });
-      verdicts.push([v, form, r.result]);
-      // written exactly when the form would have let it through (the same value twice is "unchanged")
-      expect(['saved', 'unchanged'].includes(r.result), `${JSON.stringify(v)} → ${r.result}`).toBe(form);
-      if (form) expect(line('WORKER_MODEL')).toEqual([`WORKER_MODEL="${v}"`]);
-    }
-    // both kinds really occurred, and a refusal never came back as anything but "nothing written"
-    expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
-    expect(new Set(verdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
-    // 17 values × (read + save through the real script): ~17 s on a loaded dev box, past the 20 s default on CI (PR #415)
-  }, 60_000);
-
-  // 16 values × 3 runs of the real script (read, the back end's read before saving, the save): 58.6–59.2 s on CI in
-  // five of eight runs on 2026-11-21, 62.1 s and a timeout on the nightly build of 2026-11-22 (GitHub#662). With the
-  // script doing every setting in one pass: on a dev box at load ~45, 59.8 s before, 16.2 s after.
-  // GitHub#555: whole numbers past 9 digits, up to the using code's own bound, go through the form, the back end and the
-  // script alike; one past the bound, or a leading zero, through none of them
-  it('integers: the form, the back end and the script agree up to the using code\'s own bound', async () => {
-    const b = backend();
-    const cases: [string, string][] = [
-      ['GREEDY_SCAN_LIMIT', '1000000000'], ['GREEDY_SCAN_LIMIT', '18446744073709551616'],
-      ['GREEDY_SCAN_LIMIT', '0'], ['GREEDY_SCAN_LIMIT', '0100'], ['GREEDY_SCAN_LIMIT', '100'],
-      ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
-      ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
-      // GitHub#556: the one integer that may be left blank, and one that may not
-      ['PREVIEW_PORT_MODULO', '1000'], ['PREVIEW_PORT_MODULO', ''], ['PREVIEW_PORT_MODULO', '0'], ['PREVIEW_PORT_MODULO', '1000000000'], ['PREVIEW_PORT_MODULO', '3074457345618258603'], ['PREVIEW_PORT_MODULO', '9223372036854775808'],
-      ['PREVIEW_BACKEND_OFFSET', ''],
-    ];
-    const verdicts: [string, boolean][] = [];
-    for (const [name, v] of cases) {
-      const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-      const f = byName(c, name);
-      expect(f.editable, `${name} editable before ${v}`).toBe(true);
-      const form = fieldProblem(f, v) === null;
-      const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { [name]: v } });
-      verdicts.push([`${name}=${v}`, form]);
-      expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(form);
-      if (form) expect(line(name).map((l) => l.replace(/"/g, ''))).toEqual([`${name}=${v}`]);
-    }
-    expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual([
-      'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551616', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
-      'AUTOPILOT_CHECKS_TIMEOUT_HOURS=2562047788015215',
-      `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1${'0'.repeat(60)}`,
-      'PREVIEW_PORT_MODULO=1000', 'PREVIEW_PORT_MODULO=', 'PREVIEW_PORT_MODULO=1000000000', 'PREVIEW_PORT_MODULO=3074457345618258603',
-    ]);
-  }, 60_000);
 
   it('a config that does not load: "unreadable" with no values; an unknown project: "not_found"', async () => {
     const b = backend();

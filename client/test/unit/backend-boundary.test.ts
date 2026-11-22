@@ -7,11 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const APP_TOKEN = 'ghu_boundaryapptoken000000000000000001';
 const APP_REFRESH = 'ghr_boundaryrefresh0000000000000000001';
@@ -32,11 +34,7 @@ afterEach(async () => {
 });
 
 async function until(c: Controller, pred: (s: AppState) => boolean) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error('timeout');
+  await waitUntil(() => pred(c.getState()), '条件成立', () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 function backend(clock: { t: number }) {
@@ -58,7 +56,7 @@ describe('the credential never crosses into the window', () => {
   it('sign in, sync, change an item, refresh, sign out: no command and no answer carries a token', async () => {
     const clock = { t: FIXTURE_NOW };
     const b = backend(clock);
-    const c = await Controller.create({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+    const c = await createController({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
     c.addSource(REPO);
     await c.start();
     c.setAppKind('github-app');
@@ -95,7 +93,7 @@ describe('the back end only signs requests for the GitHub API', () => {
   async function signedIn() {
     const clock = { t: FIXTURE_NOW };
     const b = backend(clock);
-    const c = await Controller.create({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
+    const c = await createController({ backend: b, endpoints: { api: fake.api, web: fake.web }, now: () => clock.t, defaultClientId: fake.state.oauthClientId });
     await c.start();
     const login = c.startLogin();
     await until(c, (s) => s.login.status === 'waiting');

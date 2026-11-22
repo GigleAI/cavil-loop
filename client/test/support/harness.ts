@@ -41,6 +41,12 @@ export interface HarnessOptions {
   env?: Record<string, string>;
   /** GitHub#315: the folder picker of "接上 daemon" — the test answers (a path, or null = cancelled) */
   pickFolder?: (start: string | null) => string | null | Promise<string | null>;
+  /**
+   * GitHub#649: the back end's connection retries (0.2 / 0.5 / 1 / 2 s) — 'virtual' (default): no
+   * sleep, each wait counts against the request's time budget and lands in `retryWaits`; 'real':
+   * the application's own clock (the UI tests keep it, as they always did).
+   */
+  retryClock?: 'virtual' | 'real';
 }
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
@@ -55,6 +61,8 @@ export class HarnessBackend implements Backend {
   readonly sent: { cmd: string; args: unknown }[] = [];
   /** every status the updater reported (test.update.*), in order */
   readonly updates: any[] = [];
+  /** GitHub#649: every connection-retry wait the back end took, in ms, in order (virtual retry clock only) */
+  readonly retryWaits: number[] = [];
   /** every answer received, in order */
   readonly received: unknown[] = [];
 
@@ -62,6 +70,7 @@ export class HarnessBackend implements Backend {
     const args = ['--db', o.db, '--api', o.endpoints.api, '--web', o.endpoints.web];
     if (!o.credentials.persistent) args.push('--memory-credentials');
     if (o.keychainBin) args.push('--keychain-bin', o.keychainBin);
+    if ((o.retryClock ?? 'virtual') === 'virtual') args.push('--virtual-retry-clock');
     this.p = spawn(harnessBin(), args, { stdio: ['pipe', 'pipe', 'pipe'], ...(o.env ? { env: { ...process.env, ...o.env } } : {}) });
     let stderr = '';
     this.p.stderr.on('data', (d) => (stderr += String(d)));
@@ -84,6 +93,10 @@ export class HarnessBackend implements Backend {
     try {
       m = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (m.ev === 'retryWait') {
+      this.retryWaits.push(Number(m.ms));
       return;
     }
     if (m.ev === 'update') {

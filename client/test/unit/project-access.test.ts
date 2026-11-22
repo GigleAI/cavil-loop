@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { Controller, type SyncTimers } from '../../src/app/controller';
+import { createController } from '../support/controller';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
@@ -21,6 +22,7 @@ import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { emptyGuideOf } from '../../src/shared/emptyGuide';
 import type { SourceConfig, SourceStatus } from '../../src/shared/types';
 import { describeFailure, failureOf } from '../../src/shared/readFailure';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -59,7 +61,7 @@ async function boot(sources: string[], now: () => number = () => FIXTURE_NOW) {
   const endpoints = { api: fake.api, web: fake.web };
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now, sleep: async () => {} });
   backends.push(harness);
-  const c = await Controller.create({ backend: harness, endpoints, now, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
+  const c = await createController({ backend: harness, endpoints, now, timers: NO_TIMERS, defaultClientId: '', followUpSyncMs: 600_000, readRetryDelaysMs: [0, 0] });
   controllers.push(c);
   for (const s of sources) c.addSource(s);
   await c.start();
@@ -67,12 +69,8 @@ async function boot(sources: string[], now: () => number = () => FIXTURE_NOW) {
   return c;
 }
 const status = (c: Controller, key: string) => c.getState().sync.sources.find((s) => s.sourceKey === key)!;
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 
 describe("a source's failure, classified (GitHub#401)", () => {
