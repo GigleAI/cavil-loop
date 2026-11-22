@@ -34,7 +34,10 @@
 #   through is run with the argument list `check` hands back — the one checked real path as the
 #   only `-S`, every original global `-S` / `-L` removed, the subcommand and its own options as
 #   they were — so tmux chooses nothing on its own and never sees a second address (the path is
-#   resolved once, and that same result is both judged and handed on) — and any record fails the
+#   resolved once, and that same result is both judged and handed on). The list travels on stdout
+#   as NUL-terminated items framed by `ok`, the count and `end`; diagnostics go to stderr and are
+#   only shown, never parsed, and nothing is evaluated by the shell. A failed check, a missing or
+#   extra item, a wrong count or a first item other than `-S` is refused before real tmux runs — and any record fails the
 #   file; the exit also looks at every tmux server among the processes reparented to the test and fails
 #   the file when one listens on a socket that is not this run's (a child that lost `PATH` and ran the
 #   real tmux elsewhere). "This run's" is one rule for both, `owns` in `tests/lib/tmux_sandbox_reap.py`:
@@ -201,14 +204,31 @@ if [ -e "\$d/closed" ]; then echo "tmux 沙盒已关闭，拒绝：tmux \$*" >&2
 # 里）判断；收尾认沙盒外服务也用 owns（PR #660 复审：原来包装自己在 shell 里拆选项，漏了合并写法）。
 # check 给出要原样执行的完整参数：唯一一个 -S（核过的真实地址），原来的全局 -S / -L 已去掉，
 # 子命令和它自己的选项不动（PR #660 复审 #9 / #11）。tmux 不再自己选址，也看不到第二个地址。
-bad=""
-out=\$(python3 "\$lib/tmux_sandbox_reap.py" check "\$d/s" "\$@" 2>&1) || bad="\${out:-判断服务地址失败}"
+# 参数走标准输出、一条一个以 NUL 结尾（ok、个数、参数…、end），诊断走标准错误、另存一个文件，
+# 两路不混；不经 shell 解析。进程失败、格式不对、个数对不上、第一项不是 -S，都在调用真 tmux 之前
+# 拒绝（PR #660 复审 #12）。
+bad=""; crc=0; a=""
+f="\$d/argv.\$\$"
+python3 "\$lib/tmux_sandbox_reap.py" check "\$d/s" "\$@" > "\$f" 2> "\$f.err" || crc=\$?
+[ -s "\$f.err" ] && cat "\$f.err" >&2   # 诊断照常给看，不进参数
+if [ "\$crc" -ne 0 ]; then
+    bad=\$(tr -d '\\000' < "\$f" 2>/dev/null); bad="\${bad:-判断服务地址失败（退出码 \$crc）}"
+else
+    argv=(); while IFS= read -r -d '' a; do argv+=("\$a"); done < "\$f"
+    n=\${#argv[@]}
+    # a 非空 = 末尾有一段没以 NUL 结尾的残余
+    if [ -n "\$a" ] || [ "\$n" -lt 5 ] || [ "\${argv[0]}" != ok ] || [ "\${argv[n-1]}" != end ] \\
+        || [ "\${argv[1]}" != "\$((n - 3))" ] || [ "\${argv[2]}" != "-S" ]; then
+        bad="核对服务地址的结果格式不对"
+    fi
+fi
+rm -f "\$f" "\$f.err"
 if [ -n "\$bad" ]; then
     printf '%s | tmux %s\n' "\$bad" "\$*" >> "\$d/violations"
     echo "tmux 沙盒：这次调用连的不是本次运行的专用服务（\$bad），拒绝：tmux \$*" >&2
     exit 1
 fi
-eval "set -- \$out"   # check 用 shlex.quote 逐个加了引号
+set -- "\${argv[@]:2:n-3}"
 sock="\$2"
 "\$real" -f /dev/null "\$@"; rc=\$?
 if [ "\$rc" -eq 0 ]; then

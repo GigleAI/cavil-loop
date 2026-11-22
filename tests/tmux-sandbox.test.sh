@@ -553,12 +553,18 @@ chk "check：-S 在子命令之后不算全局选项" "$(ck capture-pane -p -S -
 chk "check：看不懂的全局选项" "$(ck -Z ls)" "out"
 chk "check：地址在服务目录里、但所在目录已不存在（复审 #9）" "$(TMUX_TMPDIR="$OW/s/gone" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls > /dev/null && echo in || echo out)" "out"
 RS=$(cd "$OW/s" && pwd -P); U=$(id -u)
-ckout() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@"; }
-chk "check：放行时给出要原样执行的参数，只有一个 -S（核过的真实地址）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls)" "-S $RS/tmux-$U/default ls"
-chk "check：原来的全局 -S（别名）换成真实地址，子命令自己的 -S 不动（复审 #11）" "$(ckout -S "$OW/alias/tmux-$U/default" -2 capture-pane -p -S -)" "-S $RS/tmux-$U/default -2 capture-pane -p -S -"
-chk "check：两个全局 -S 只剩一个" "$(ckout -S "$OW/s/tmux-$U/a" -S "$OW/alias/tmux-$U/b" ls)" "-S $RS/tmux-$U/b ls"
-chk "check：-L 去掉，换成它对应的地址；别的全局选项和参数原样" "$(ckout -uL n -f /dev/null ls -F x)" "-S $RS/tmux-$U/n -u -f /dev/null ls -F x"
-chk "check：-- 保留" "$(ckout -- ls)" "-S $RS/tmux-$U/default -- ls"
+# check 的输出：一条一个、以 NUL 结尾，ok / 个数 / 参数… / end；这里换成空格分隔的一行再比
+nulline() { tr '\0' '\n' | paste -sd' ' -; }
+ckout() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@" | nulline; }
+chk "check：输出里每一项都以 NUL 结尾（末尾没有残余）" "$(TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls | tail -c 4 | od -An -c | tr -s ' ')" " e n d \\0"
+chk "check：放行时给出要原样执行的参数，只有一个 -S（核过的真实地址）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls | nulline)" "ok 3 -S $RS/tmux-$U/default ls end"
+chk "check：参数里的空格、引号、换行原样成一项" "$(TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" display -p "a b'\"\$(x)
+y" | tr '\0' '|')" "ok|5|-S|$RS/tmux-$U/default|display|-p|a b'\"\$(x)
+y|end|"
+chk "check：原来的全局 -S（别名）换成真实地址，子命令自己的 -S 不动（复审 #11）" "$(ckout -S "$OW/alias/tmux-$U/default" -2 capture-pane -p -S -)" "ok 7 -S $RS/tmux-$U/default -2 capture-pane -p -S - end"
+chk "check：两个全局 -S 只剩一个" "$(ckout -S "$OW/s/tmux-$U/a" -S "$OW/alias/tmux-$U/b" ls)" "ok 3 -S $RS/tmux-$U/b ls end"
+chk "check：-L 去掉，换成它对应的地址；别的全局选项和参数原样" "$(ckout -uL n -f /dev/null ls -F x)" "ok 8 -S $RS/tmux-$U/n -u -f /dev/null ls -F x end"
+chk "check：-- 保留" "$(ckout -- ls)" "ok 4 -S $RS/tmux-$U/default -- ls end"
 chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
 
 REAL_TMUX=$(command -v tmux)
@@ -606,6 +612,36 @@ chk "转发：别名地址照常连上、两个 -S 照常连上" "$(grep -c -e F
 chk "转发：真 tmux 收到的 has-session 调用，每次恰好一个 -S" "$(wc -l < "$T/rec.wrapped" | tr -d ' '):$(awk '{n=0; for(i=1;i<=NF;i++) if($i=="-S") n++; print n}' "$T/rec.wrapped" | sort -u | tr '\n' ' ')" "2:1 "
 chk "转发：那个 -S 就是核过的真实地址，别名没传下去" "$(grep -c -- "^-f /dev/null -S $D2/tmux-$(id -u)/default has-session" "$T/rec.wrapped")" "2"
 chk "转发：别名路径一次也没交给真 tmux" "$(grep -c '/alias/' "$T/rec.log")" "0"
+
+echo "【21】检查进程的诊断和坏结果：参数不被诊断污染，坏结果在调用真 tmux 之前拒绝（复审 #12）"
+# 在 PATH 最前放一个 python3：照 FAKEPY 的模式改真 check 的输出，别的照常交给真 python3
+FP="$T/fakepy"; mkdir -p "$FP"; REALPY=$(command -v python3)
+cat > "$FP/python3" <<SH
+#!/usr/bin/env bash
+case "\${2:-}:\${FAKEPY:-}" in
+check:warn) echo "Python runtime state: core initialized; warning: \"\$(id)\" ' \\\`x\\\`" >&2; exec "$REALPY" "\$@" ;;
+check:junk) "$REALPY" "\$@"; printf 'extra'; exit 0 ;;
+check:short) "$REALPY" "\$@" | head -c 10; exit 0 ;;
+check:count) printf 'ok\0009\000-S\000/x\000end\000'; exit 0 ;;
+check:noS) printf 'ok\0001\000ls\000end\000'; exit 0 ;;
+check:empty) exit 0 ;;
+check:fail) echo "boom" >&2; exit 7 ;;
+esac
+exec "$REALPY" "\$@"
+SH
+chmod +x "$FP/python3"; : > "$T/rec.log"
+run_case diag "$FP:$REC" <<'EOF'
+tmux_sandbox_start
+for m in warn junk short count noS empty fail; do
+    FAKEPY=$m tmux has-session -t '=cavil-sandbox-keep' 2> "$OUT/$m.err" && echo "RC-$m=0" || echo "RC-$m=1"
+done
+EOF
+chk "诊断：退出 0 带一行警告（含引号、命令替换的写法）照常连上" "$(grep -c '^RC-warn=0' "$T/diag.out")" "1"
+chk "诊断：警告照常显示在标准错误，没进参数" "$(grep -c 'Python runtime state' "$T/diag.d/warn.err" 2>/dev/null)" "1"
+chk "诊断：警告那次真 tmux 收到的参数恰好是核过的一份" "$(grep -c -- '^-f /dev/null -S [^ ]*/tmux-[0-9]*/default has-session -t =cavil-sandbox-keep$' "$T/rec.log")" "1"
+chk "诊断：末尾多出残余 / 截断 / 个数不对 / 第一项不是 -S / 没有输出 / 进程失败，都拒绝" "$(grep -c -e '^RC-junk=1' -e '^RC-short=1' -e '^RC-count=1' -e '^RC-noS=1' -e '^RC-empty=1' -e '^RC-fail=1' "$T/diag.out")" "6"
+chk "诊断：被拒的 6 次一次也没调到真 tmux（经包装的只有警告那一次）" "$(grep -c -- '^-f /dev/null -S .* has-session' "$T/rec.log")" "1"
+chk "诊断：被拒的都记进 violations、文件判失败" "$CASE_RC:$(grep -c -e '^  核对服务地址的结果格式不对 | ' -e '^  判断服务地址失败.* | ' "$T/diag.out")" "1:6"
 
 echo
 echo "通过 $pass / 失败 $fail"

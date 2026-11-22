@@ -20,7 +20,6 @@ SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总�
 import getopt
 import os
 import select
-import shlex
 import signal
 import sys
 import time
@@ -225,7 +224,9 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ["check"]:
         # 包装用：check <服务目录> <tmux 的参数…>。地址只解析一次，判断的和交出去的是同一个结果：
-        # 在服务目录里、所在目录存在 → 退出 0，打印要原样执行的完整参数（shell 引号）：
+        # 在服务目录里、所在目录存在 → 退出 0，标准输出给出要原样执行的完整参数，一条一个、各以 NUL
+        # 结尾，前后包着 ok、参数个数和 end（包装据此核对没缺没多；PR #660 复审 #12：原来是一行 shell
+        # 引号文本、和标准错误合在一起交给 eval，一行运行时警告就能混进命令）：
         # 「-S <核过的真实地址>」+ 去掉 -S / -L 的其余全局选项 + 子命令及其后的参数（子命令自己的
         # 选项不动）。tmux 只会看到这一个地址（PR #660 复审 #11：原来前置一个 -S，原参数里的 -S
         # 排在后面、tmux 取最后一个）。否则打印原因、退出 1。
@@ -243,7 +244,10 @@ def main():
             print("服务地址 %s 所在的目录不存在" % sock)
             return 1
         final = ["-S", real] + kept + (["--"] if dashdash else []) + rest
-        print(" ".join(shlex.quote(a) for a in final))
+        out = sys.stdout.buffer
+        for a in ["ok", str(len(final))] + final + ["end"]:
+            out.write(os.fsencode(a) + b"\0")
+        out.flush()
         return 0
     if args[:1] == ["owns"]:
         # 包装用：owns <服务目录> <地址>，在里面退出 0，不在 1，判断不了 2
