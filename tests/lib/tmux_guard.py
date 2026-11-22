@@ -50,10 +50,22 @@ SANDBOX_START = re.compile(r"(?:^|[;&|(]|\bthen\b)\s*tmux_sandbox_start\b")
 #     `-u 变量名` 的写法（`env -u A -u B 命令`，它保留原环境，不清空）；
 #   - `exec -c`（bash 自己清空环境再执行）也报；
 #   - 写在引号里、行尾注释里的也照报（不区分），改措辞即可。
-# 看不出来的：经变量调 env（`"$ENV" -i`）、子进程自己再清空环境——写在 AGENTS.md。
+# 另外守住三样隔离变量（PR #660 复审第 5 轮：`env -u TMUX_TMPDIR` 被放过）。整个文件里，
+# 不分是不是 env 那一行、在不在引号里，一律只看文字：
+#   - `-u` 后面跟 PATH / TMUX_TMPDIR / TMUX / TMUX_PANE，报；`unset` 这几个名字，报；
+#   - 给 TMUX_TMPDIR / TMUX / TMUX_PANE 赋值（`名字=`，含 export、命令前缀、env 参数），报——
+#     这三样只由沙盒设；
+#   - 给 PATH 赋值而值里没有 `$PATH` / `${PATH}`（整个换掉，包装就找不到了），报；在原值
+#     前后加目录（造假 gh 等常见写法）放过。
+# 看不出来的：经变量调 env（`"$ENV" -i`）、子进程自己再清空环境、经变量拼出的名字或值、
+# 在原 PATH 前面加的目录里自己放了 tmux——写在 AGENTS.md。
 ENV_DASH = re.compile(r"""(?:^|[\s;&|()`'"=/])env\s+-""")
 ENV_U_ONLY = re.compile(r"""env(?:\s+-u\s+[A-Za-z_][A-Za-z0-9_]*)+\s+(?!-)\S""")
 EXEC_C = re.compile(r"(?:^|[\s;&|(])exec\s+-[A-Za-z]*c")
+ISO = r"(?:PATH|TMUX_TMPDIR|TMUX|TMUX_PANE)"
+UNSET_ISO = re.compile(r"(?:-u\s+|--unset[=\s]+|\bunset\b[^;&|#]*?\s)" + ISO + r"(?![A-Za-z0-9_])")
+SET_ISO = re.compile(r"""(?:^|[\s;&|(`'"])(?:TMUX_TMPDIR|TMUX|TMUX_PANE)=""")
+SET_PATH = re.compile(r"""(?:^|[\s;&|(`'"])PATH=""")
 
 
 def env_i_problems(line):
@@ -65,6 +77,13 @@ def env_i_problems(line):
                        "不要直接写 env 加选项（注释、引号里写的也算）")
     if EXEC_C.search(line):
         out.append("exec -c 清空了环境，子进程会连到别的 tmux 服务；改用 tmux_sandbox_env_i")
+    if UNSET_ISO.search(line):
+        out.append("取消了沙盒的隔离变量（PATH / TMUX_TMPDIR / TMUX / TMUX_PANE），子进程会连到别的 tmux 服务或绕过包装")
+    if SET_ISO.search(line):
+        out.append("给 TMUX_TMPDIR / TMUX / TMUX_PANE 赋了值，这三样只由 tmux 沙盒设")
+    for m in SET_PATH.finditer(line):
+        if not re.match(r"""["']?[^\s;&|]*\$(?:PATH\b|\{PATH\})""", line[m.end():]):
+            out.append("给 PATH 赋的值里没有原来的 $PATH，子进程找不到沙盒的 tmux 包装；在原值前后加目录即可")
     return out
 
 

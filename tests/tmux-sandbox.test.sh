@@ -458,6 +458,8 @@ tmux_sandbox_env_i "$@" bash -c ': > "$1/ran.expand"' _ "$OUT"; echo "$?" > "$OU
 set --
 tmux_sandbox_env_i -u HOME bash -c ': > "$1/ran.opt"' _ "$OUT"; echo "$?" > "$OUT/rc.opt"
 tmux_sandbox_env_i A=1; echo "$?" > "$OUT/rc.nocmd"
+# 只带 -u 取消普通变量的 env（守卫放行的那种）：隔离变量照样传下去
+FOO=1 env -u FOO bash -c 'printf "%s|%s|%s" "${FOO-unset}" "$PATH" "$TMUX_TMPDIR"' > "$OUT/envu"
 # 命令名之后的 PATH= 是给命令的参数，不进环境
 tmux_sandbox_env_i A=1 bash -c 'printf "%s" "$PATH"' _ PATH=/usr/bin > "$OUT/after"; echo "$?" > "$OUT/rc.after"
 EOF
@@ -475,6 +477,7 @@ for k in redir empty quoted tmux expand opt; do
     chk "拒绝（$k）：命令没跑" "$([ -e "$D/ran.$k" ] && echo ran || echo no)" "no"
 done
 chk "没给命令：返回 125" "$(cat "$D/rc.nocmd")" "125"
+chk "env -u 普通变量：那个变量没了，PATH / TMUX_TMPDIR 原样" "$(cat "$D/envu")" "unset|$p_path|$p_dir"
 chk "命令名之后的 PATH= 是参数：照常跑" "$(cat "$D/rc.after")" "0"
 chk "命令名之后的 PATH= 不进环境" "$(cat "$D/after")" "$p_path"
 

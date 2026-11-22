@@ -599,10 +599,15 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   reported unless the options are only `-u NAME` (which keeps the environment), and so is `exec -c` —
   also inside quotes and trailing comments, on purpose, since it never tries to read what `env -i` was
   given (PR #660 review rounds 2–4 each found a shell form that a text reading of `env -i`'s arguments
-  got wrong: single quotes, an empty value or a comment, a redirection before a reassignment); an
+  got wrong: single quotes, an empty value or a comment, a redirection before a reassignment); the
+  isolation variables are guarded anywhere in the file, by text, also over-reporting: `-u` / `--unset`
+  / `unset` naming `PATH`, `TMUX_TMPDIR`, `TMUX` or `TMUX_PANE`, any assignment of the last three,
+  and a `PATH=` whose value does not contain `$PATH` / `${PATH}` (adding directories around it is
+  allowed) are reported (round 5: the `-u` exception let `env -u TMUX_TMPDIR` through); an
   absolute-path tmux call is always reported; continuation lines are joined first). It cannot see
   `PATH` changed somewhere else, a child that changes its own `PATH` or empties its own environment,
-  `env` called through a variable, tmux called through a
+  `env` called through a variable, names or values built from variables, a directory put in front of
+  `PATH` that holds its own `tmux`, tmux called through a
   variable or a wrapper function (`"$REAL_TMUX" …`), a test that only reaches tmux through the script
   under test, or a script written out through a here-doc — the author and the reviewer check those.
   Start-up and exit are tested in `tests/tmux-sandbox.test.sh`
