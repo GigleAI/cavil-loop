@@ -441,7 +441,8 @@ mf_pr_labels() {   # <PR> <true|false>
     printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" '
         . as $s | $s.merged == true and all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k | (($r[$k] // "") != "" and $r[$k] == $s.ident[$k]))' \
         >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
-    me=$(write_identity_login | tr '[:upper:]' '[:lower:]'); [ -n "$me" ] || return 1
+    # 写入账号读不出时，谁挂的提醒都不认作自己的（照常算新一轮），交接本身不因此停下
+    me=$(write_identity_login 2>/dev/null | tr '[:upper:]' '[:lower:]') || true; [ -n "$me" ] || me=' (unknown)'
     flows=$(mf_flow_labels)
     # 交接自己写的那个提醒（写入账号挂上的 pending/human——上一轮写了一半：加了提醒、摘旧标签失败）不是新一轮：
     # 它不挡这次收尾，提醒本身按 <reminder> 保留或摘掉。只认 pending/human：别的流程标签哪怕是写入账号挂的
