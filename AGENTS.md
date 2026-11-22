@@ -539,11 +539,25 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   stdout / stderr is a regular file, `/proc` is unreadable, or the caller's interpreter-startup
   environment — `PYTHON*` unless the original runs with `-I`, `LC_ALL` / `LC_CTYPE` / `LANG` —
   differs from the server's, which is started the same way, `python3` or `python3 -I`, as the original).
+  Both sides of that comparison are **raw** environments, `/proc/<pid>/environ` — never the server's
+  `os.environ` (GitHub#648): Python rewrites its own environment at startup (no locale variable, or
+  `LANG=C`, adds `LC_CTYPE=C.UTF-8`), and comparing the rewritten copy with a caller's raw one sent
+  every call from bash back to the old way under `env -i`. What Python itself rewrites is measured once
+  at server start by running the same interpreter, same `-I`-or-not, with `-S` (no startup scripts) on
+  the server's raw environment; the server's own rewrite must equal it exactly, or it takes over no
+  call at all; a call it takes over runs with the caller's raw environment plus that measured rewrite.
+  Known limit, accepted on GitHub#648: a startup script (`sitecustomize` …) that changes the
+  environment depending on the caller's own ordinary variables is not visible — it only ran once, in
+  the server. A Python program that calls `gh` without passing its raw environment on (it hands down
+  its rewritten `os.environ`) falls back when no locale is set; the test's own `cap` passes the raw one.
   Each unit runs at most once per `run.sh` run: a name given twice, or a file plus one of its parts, is
   run once. Any other failure after the request
   went out exits 70 with "假 GitHub：请求已交出、执行结果未知，不重试" and is never re-run.
-  `<gh>.d/served` and `<gh>.d/fallback` count both paths. Guarded by `tests/fake-gh-server.test.sh`
-  (both ways byte-for-byte on one set of calls, concurrency, the interruption timings)
+  `<gh>.d/served` and `<gh>.d/fallback` count both paths; each fallback byte is its reason (`c` could
+  not connect, `f` the server answered "fall back"), and every "fall back" answer writes its reason to
+  `<gh>.d/server.log` — a red "went through the resident server" check prints both. Guarded by
+  `tests/fake-gh-server.test.sh` (both ways byte-for-byte on one set of calls, concurrency, the
+  interruption timings, five locale settings and five startup-script cases, run with and without a locale)
 - **"Same as before the change" comparisons skip when nothing changed** (GitHub#211). The tests that
   run the merge-base scripts next to the current ones decide through `compat_skip` in
   `tests/lib/compat.sh`: when the two trees being compared are byte-identical, the old run is skipped
