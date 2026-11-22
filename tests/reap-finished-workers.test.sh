@@ -13,12 +13,17 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
+# shellcheck source=lib/tmux-sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 
-TMP_CONF=$(mktemp -d)/coding-agent.config
-SANDBOX="$(dirname "$TMP_CONF")"
+SANDBOX="$(mktemp -d)" || exit 1
+tmux_sandbox_own_dir "$SANDBOX"
+TMP_CONF="$SANDBOX/coding-agent.config"
 cat > "$TMP_CONF" <<CONF
 REPO="example/none"
 PROJECT_ROOT="$SANDBOX/project"
@@ -43,14 +48,6 @@ exec 2>&8 8>&-
 # source 顺带把 -e 带了进来；测试要自己收集失败再汇总，这里关掉。
 set +e
 
-cleanup() {
-    for s in $(tmux ls 2>/dev/null | awk -F: '$1 ~ /^reaptest-/ {print $1}'); do
-        tmux kill-session -t "=$s" 2>/dev/null || true
-    done
-    rm -rf "$(dirname "$TMP_CONF")"
-}
-trap cleanup EXIT
-cleanup
 
 pass=0; fail=0
 chk() {
@@ -89,6 +86,8 @@ tmux new-session -d -s reaptest-issue904 'sleep 3000'
 sleep 1
 
 echo "【1】list_worker_sessions 的正则带结尾锚点，dev server 落在外面"
+chk "901–904 建在本次运行的专用服务上" \
+    "$(tmux -S "$(tmux_sandbox_socket)" ls -F '#{session_name}' 2>/dev/null | grep -c '^reaptest-issue90[1-4]')" "4"
 chk "枚举结果" "$(list_worker_sessions | sort | tr '\n' ',')" "reaptest-issue901,reaptest-issue902,reaptest-issue904,"
 
 echo "【2】宽限期内不回收（worker 是先翻 label 再收尾的，别打断）"

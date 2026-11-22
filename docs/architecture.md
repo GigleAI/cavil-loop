@@ -123,6 +123,8 @@ The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` fro
 
 </details>
 
+When a human's comment is a question that suggests a way ("could we use X to avoid Y?"), the agent first checks whether the suggestion works. If it does, the agent treats it as a change request, and the next comment that reaches a human quotes it and reports what was adopted and how it turned out. If one of them does not work, or review overturns a suggestion already adopted, the agent answers the human and stops; the other requests of that round go into a list of deferred items, and every reply while stopped carries that list. Handed back with no new comment, or asked only a follow-up question, it answers and stays stopped; once the human comments 「继续」 ("continue"), writes a new request or changes a ticked option, the agent handles the listed items and any new request against their current wording, then hands the work to review as usual.
+
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
 
 ## Dispatch modes: label / greedy
@@ -379,7 +381,7 @@ The layers, in order: the skill's base workflow template (a project may replace 
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
-With `ENABLE_ROUND_LOG` on, comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
+With `ENABLE_ROUND_LOG` on (the default; `false` or an empty value turns it off), comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
 
 Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 

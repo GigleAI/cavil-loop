@@ -413,6 +413,8 @@ WORKER_AGENT_DEFAULT="claude"
 WEEKLY_REPORT_ASSET_ROOT_URL="$url"
 PATH="$DSB/bin:\$PATH"
 GH_TOKEN="fake-token-for-test"
+# 往返记录 GitHub#669 起没写就开；这里比的是它关着时拼出的提示词
+ENABLE_ROUND_LOG=""
 CONF
     rm -rf "$DSB/home/.config"; mkdir -p "$DSB/home/.config/cavil-loop"
     [ "$reg" = 1 ] && printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$w/project" "$w/config" > "$DSB/home/.config/cavil-loop/demo.conf"

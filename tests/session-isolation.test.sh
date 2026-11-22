@@ -11,11 +11,15 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
+# shellcheck source=lib/tmux-sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; tmux kill-session -t "$TMUX_TEST_SESS" 2>/dev/null' EXIT
+TMP="$(mktemp -d)" || exit 1
+tmux_sandbox_own_dir "$TMP"
 
 FAKE_HOME="$TMP/home"
 WT="$TMP/wt/issue-42"
@@ -74,7 +78,7 @@ chk_lacks() {
 # 在当前 shell 里赋值再调函数，等于绕过了要测的那条链路。
 lib_eval() {   # <snippet> [VAR=VAL ...]
     local snippet="$1"; shift
-    env -i PATH="$PATH" HOME="$FAKE_HOME" \
+    tmux_sandbox_env_i HOME="$FAKE_HOME" \
         CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
         REPO_DIR="$REPO_DIR" SNIPPET="$snippet" "$@" \
         bash -c 'source "$REPO_DIR/scripts/_lib.sh" 2>/dev/null; eval "$SNIPPET"'
@@ -241,6 +245,8 @@ if command -v tmux > /dev/null 2>&1; then
     tmux set-option -t "$TMUX_TEST_SESS" @worker_agent claude 2>/dev/null
     tmux set-option -t "$TMUX_TEST_SESS" @worker_model "" 2>/dev/null
     tmux set-option -t "$TMUX_TEST_SESS" @worker_role worker 2>/dev/null
+    chk "会话在专用服务上" \
+        "$(tmux -S "$(tmux_sandbox_socket)" has-session -t "=$TMUX_TEST_SESS" 2>/dev/null && echo yes || echo no)" "yes"
     chk "worker session + worker 派工 → 复用" \
         "$(lib_eval "tmux_session_matches_worker '$TMUX_TEST_SESS' && echo reuse || echo restart")" "reuse"
     chk "worker session + review 派工 → 重启换角色" \

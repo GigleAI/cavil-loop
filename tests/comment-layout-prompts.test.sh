@@ -98,7 +98,7 @@ WARN_REJECT_ACTION_ONLY='没有要人处理的事'
 OK_REJECT='✅ 撒在不需要人确认的普通描述上'
 REVIEW_OMIT='只放要人采取行动或会影响人判断的事；没有就整节省掉'
 HR_FOLD='这张表是自审证据，整张放进折叠块'
-# GitHub#649：流程复杂就配图（四份「交人评论怎么写」第 11 条 + 通用复审模板评论版式那一段）
+# GitHub#649：流程复杂就配图（四份「交人评论怎么写」第 12 条 + 通用复审模板评论版式那一段）
 DIAGRAM_HEAD='**流程复杂就配图**'
 # 带 / 的短语在 sed 里要转义，grep 前还原
 unesc() { sed 's#\\/#/#g' <<<"$1"; }
@@ -218,7 +218,7 @@ check_prompts() {
         if [ -z "$ref_hr" ]; then ref_hr="$t"; elif [ "$t" != "$ref_hr" ]; then echo "$name: 硬规则折叠要求和 issue-comment 不一致"; fi
     done
 
-    # 7. GitHub#649：流程复杂就配图——四份成品都有、逐字一致，worker 和本项目 review 增量都在第 11 条；
+    # 7. GitHub#649：流程复杂就配图——四份成品都有、逐字一致，worker 和本项目 review 增量都在第 12 条；
     #    没有项目增量的复审模板评论版式里也有同一句；没配出图地址时的退路也在
     local ref_dia=""
     for name in "${ALL[@]}"; do
@@ -226,7 +226,7 @@ check_prompts() {
         t=$(texts "$DIAGRAM_HEAD" "$f" | sort -u)
         if [ -z "$t" ]; then echo "$name: 没有「流程复杂就配图」"; continue; fi
         [ "$(wc -l <<<"$t")" -eq 1 ] || { echo "$name: 「流程复杂就配图」有不同写法"; continue; }
-        grep -qF -- "11. $DIAGRAM_HEAD" "$f" || echo "$name: 「流程复杂就配图」不在交人评论那段的第 11 条"
+        grep -qF -- "12. $DIAGRAM_HEAD" "$f" || echo "$name: 「流程复杂就配图」不在交人评论那段的第 12 条"
         grep -qF '本项目没配出图地址时，改用表格或分步编号列表' <<<"$t" || echo "$name: 「流程复杂就配图」没写没出图地址时怎么办"
         if [ -z "$ref_dia" ]; then ref_dia="$t"; elif [ "$t" != "$ref_dia" ]; then echo "$name: 「流程复杂就配图」和 ${ALL[0]} 不一致"; fi
     done

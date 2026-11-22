@@ -8513,7 +8513,7 @@ lessons_for_prompt() {   # <经验文件>
 #     再被渲染。
 #   · 任何失败都不挡派工。
 ENABLE_CONCURRENT_WORK_HINT="${ENABLE_CONCURRENT_WORK_HINT:-}"
-ENABLE_ROUND_LOG="${ENABLE_ROUND_LOG:-}"   # 往返记录（GitHub#610）：空 = 关，判定只在 round_log_enabled
+ENABLE_ROUND_LOG="${ENABLE_ROUND_LOG-true}"   # 往返记录（GitHub#610；GitHub#669 起默认开）：没写 = 开、写成空值 = 关，判定只在 round_log_enabled
 CONCURRENT_WORK_MAX_BYTES="${CONCURRENT_WORK_MAX_BYTES:-6000}"
 CONCURRENT_WORK_BYTES_DEFAULT=6000
 CONCURRENT_WORK_BYTES_MIN=2000
@@ -10895,7 +10895,8 @@ _MANAGED_REQUESTER_BOT="${CAVIL_DEPLOY_ROOT:-$HOME/.agents/releases/cavil-loop}/
 REQUESTER_BOT_NOTIFY_CMD="bash '$REQUESTER_BOT_NOTIFY_SCRIPT' --config '$CONFIG_FILE'"
 
 # ── 往返记录（GitHub#610）：agent 之间的来回写进同一条评论 ──
-# 开关只在这里判定（以后改成默认打开：把下面空值的那一支改成「开」即可，其余代码不用动）。
+# 开关只在这里判定。GitHub#669 起默认开：配置里没有这一行 = 开（上面加载时用 ${X-true}，不带冒号，
+# 只有「没设置」才取默认）；写成 false 或空值 = 关。
 # 记录格式、拆单元、去重只在 round_log.py；写入 / 读取命令是 round-log.sh，同 footer 走长期入口。
 round_log_enabled() {
     case "$(printf '%s' "${ENABLE_ROUND_LOG:-}" | tr '[:upper:]' '[:lower:]')" in

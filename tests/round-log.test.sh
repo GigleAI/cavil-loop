@@ -21,6 +21,8 @@
 #  10  提示词：开着时多一段、占位符都填上；关着时不加（其余逐字节对比由各自的测试守）
 #  11  每一节的折叠标题（GitHub#651）：耗时 · 角色 · 第一行；缺用量写「耗时未记录」；正文转义；折叠块只包住自己那一节；
 #      拆单元 / 统计 / 读取视图与加标题之前的写法逐项相同；旧格式的节照常读
+#  12  开关默认开（GitHub#669）：配置里没写这一行 / 写 true = 开，写 false / 空值 = 关——真实派工脚本写出的
+#      提示词有没有往返记录一段、真实写入命令写不写，四种写法逐一跑
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -220,6 +222,36 @@ chk "正文里有记录标记：拒收" "$rc" "2"
 o=$(RL post 7 --role worker --to pending/review --body "$(mk b 'x')"); rc=$?
 chk "worker 没给完整版本：拒收" "$rc" "2"
 chk "以上全部零写入" "$(writes)" "0"
+
+echo "── 4a. 来回进行到一半关掉开关：下一次调用立刻按关着处理（GitHub#646）──"
+# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收，一笔不写；受保护读取（outsider-read.sh）不再附往返视图，
+# 直接读取（round-log.sh show）不看开关、照常拆分并标出 --of；重新打开后同一会话照常写进记录
+fresh issue 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""'
+echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
+RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
+OFV=$(ofv 7)
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+chk "到达性：开着时读取命令成功并附往返视图" "$rc $(grep -c '往返记录视图' <<<"$o")" "0 1"
+chk "到达性：开着时取得了节编号、记录已写进评论区" "$([ -n "$OFV" ] && echo yes) $(records)" "yes 1"
+w0=$(writes)
+sed -i 's/^ENABLE_ROUND_LOG=true$/ENABLE_ROUND_LOG=false/' "$CONF"
+o=$(RL post 7 --role review --of "$OFV" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+chk "关掉之后带着之前的节编号发结论：拒收、退出 2" "$rc $(result "$o")" "2 RESULT=rejected"
+chk "关掉之后：一笔没写" "$(( $(writes) - w0 ))" "0"
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+lacks "关掉之后读取命令不再附往返视图" "$o" "往返记录视图"
+lacks "关掉之后受保护读取不再标出要回应的交付（--of）" "$o" "--of "
+lacks "关掉之后受保护读取没有「最新单元」这一段" "$o" "## 最新单元"
+chk "关掉之后读取命令照常成功" "$rc" "0"
+o=$(RL show 7); rc=$?
+chk "关掉之后直接读取命令（round-log.sh show）不看开关：照常成功、仍标出 --of" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
+# 重新打开 → 同一个会话带着关掉前取得的节编号照常写进记录
+sed -i 's/^ENABLE_ROUND_LOG=false$/ENABLE_ROUND_LOG=true/' "$CONF"
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+chk "重新打开后受保护读取又附上往返视图、标出同一个节编号" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
+o=$(RL post 7 --role review --of "$OFV" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+chk "重新打开后带着关掉前的节编号发结论：写入记录" "$rc $(result "$o")" "0 RESULT=written"
+chk "重新打开后：仍只有一条往返记录" "$(records)" "1"
 
 echo "── 4. 最新单元：中途有别的评论 → 另起一条 ──"
 fresh issue
@@ -917,6 +949,81 @@ print(len(secs), secs[0]["title"])
 PY
 )
 chk "旧格式的节：照常切出、没有标题" "$o" "1 None"
+
+echo "── 12. 开关默认开：没写 / true 开，false / 空值关（GitHub#669）──"
+# 配置的四种写法；「没写」就是从配置里删掉这一行（fresh 默认写了 true）
+switch_conf() {   # <没写|true|false|空值>
+    sed -i '/^ENABLE_ROUND_LOG=/d' "$CONF"
+    case "$1" in
+        true) echo 'ENABLE_ROUND_LOG=true' >> "$CONF" ;;
+        false) echo 'ENABLE_ROUND_LOG=false' >> "$CONF" ;;
+        空值) echo 'ENABLE_ROUND_LOG=""' >> "$CONF" ;;
+    esac
+}
+# 真实派工脚本：新 issue 的 worker 提示词、issue 评论的复审提示词（gh / tmux 用不碰网络的替身）
+DSB="$SANDBOX/dispatch"; mkdir -p "$DSB/bin"
+git init -q --bare "$DSB/upstream.git"
+git clone -q "$DSB/upstream.git" "$DSB/seed" 2>/dev/null
+(cd "$DSB/seed" && git config user.email t@example.invalid && git config user.name t \
+    && echo x > f && git add f && git commit -qm init && git push -q origin HEAD:main) >/dev/null 2>&1
+printf '#!/usr/bin/env bash\ncase "$*" in *title*) echo "测试标题" ;; *) echo "{}" ;; esac\nexit 0\n' > "$DSB/bin/gh"
+printf '#!/usr/bin/env bash\ncase "$1" in has-session) exit 1 ;; esac\nexit 0\n' > "$DSB/bin/tmux"
+chmod +x "$DSB/bin/gh" "$DSB/bin/tmux"
+# shellcheck source=lib/prompt-files.sh
+source "$TEST_DIR/lib/prompt-files.sh"
+DN=$((900000000 + ($$ % 1000000) * 2)); DC=$((DN + 1))
+dispatch_prompts() {   # <写法> → $DSB/<写法>/{new-issue,review}.md
+    local v="$1" w="$DSB/$1"
+    rm -rf "$w"; mkdir -p "$w/state" "$w/wt" "$w/home"
+    git clone -q "$DSB/upstream.git" "$w/project" 2>/dev/null
+    cat > "$w/config" <<CONF
+REPO="example/none"
+PROJECT_ROOT="$w/project"
+WORKTREE_BASE="$w/wt"
+STATE_DIR="$w/state"
+TMUX_PREFIX="rlsw"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+LABEL_AGENT_DOING="doing/agent"
+LABEL_PENDING_REVIEW="pending/review"
+WORKER_AGENT_DEFAULT="claude"
+PATH="$DSB/bin:\$PATH"
+GH_TOKEN="fake-token-for-test"
+CONF
+    case "$v" in true) echo 'ENABLE_ROUND_LOG=true' ;; false) echo 'ENABLE_ROUND_LOG=false' ;; 空值) echo 'ENABLE_ROUND_LOG=""' ;; esac >> "$w/config"
+    prompt_files_clear "$REPO_DIR" "$w/state"
+    local E=(env -u CODING_AGENT_RELEASE_ROOT -u ENABLE_ROUND_LOG -u CAVIL_DEPLOY_ROOT HOME="$w/home" CODING_AGENT_CONFIG="$w/config")
+    (cd "$w/project" && "${E[@]}" bash "$REPO_DIR/scripts/dispatch-new-issue.sh" "$DN") >/dev/null 2>&1
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" new "$DN")" "$w/new-issue.md" 2>/dev/null
+    (cd "$w/project" && "${E[@]}" DISPATCH_PROMPT_KIND=review bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$DC" 0) >/dev/null 2>&1
+    mv "$(prompt_file_of "$REPO_DIR" "$w/state" cmt "$DC" 0)" "$w/review.md" 2>/dev/null
+}
+for v in 没写 true false 空值; do
+    case "$v" in 没写|true) on=1 ;; *) on=0 ;; esac
+    dispatch_prompts "$v"
+    for kind in new-issue review; do
+        f="$DSB/$v/$kind.md"
+        if [ ! -s "$f" ]; then chk "写法「$v」：派工脚本写出了 $kind 提示词" "没写出" "写出"; continue; fi
+        if [ "$on" = 1 ]; then has "写法「$v」：$kind 提示词有往返记录一段" "$(cat "$f")" "# 往返记录（本项目开启了"
+        else lacks "写法「$v」：$kind 提示词没有往返记录一段" "$(cat "$f")" "# 往返记录（本项目开启了"; fi
+    done
+    fresh issue; switch_conf "$v"
+    o=$(RL post 7 --role worker --to pending/review --body "$(mk b12 '第 1 版')" --full "$(mk f12 'V1')"); rc=$?
+    if [ "$on" = 1 ]; then
+        chk "写法「$v」：写入命令写进往返记录" "$rc $(result "$o")" "0 RESULT=written"
+        chk "写法「$v」：评论区多出 1 条往返记录" "$(records)" "1"
+    else
+        chk "写法「$v」：写入命令拒收（没开往返记录）" "$rc $(result "$o")" "2 RESULT=rejected"
+        chk "写法「$v」：零写入" "$(writes)" "0"
+    fi
+done
+# 关着的两种写法拼出的提示词逐字节相同（只差各自的目录和派工时刻）
+norm() { sed -e "s|$DSB/$1|<W>|g" -e 's|--start "[^"]*"|--start "<T>"|g' "$DSB/$1/$2.md" | md5sum; }
+for kind in new-issue review; do
+    chk "false 与空值的 $kind 提示词逐字节相同" "$(norm false "$kind")" "$(norm 空值 "$kind")"
+done
 
 echo
 echo "通过 $pass，失败 $fail"

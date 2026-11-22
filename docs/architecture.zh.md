@@ -123,6 +123,8 @@ PR 挂着 `pending/human`（且没有 `doing/agent` / 任何触发 label——�
 
 </details>
 
+人的话是「疑问 + 建议」（「能不能用 X 来避免 Y」）时，agent 先核实建议可不可行。可行就当作修改要求照做，到人手上的下一条评论引用原话、汇报采纳了什么、结果如何。有一条不可行，或复审推翻了已经采纳的建议，agent 先回答人、停下，同一轮的其他要求列进一张「暂缓」清单，停下期间的每条回复都带着这张清单；人不留言交回、或只是追问，都只会收到回复并继续停着；人留言「继续」、写下新要求或改了勾选后，agent 按当时最新的原文处理清单里的事和新要求，改完照常交复审。
+
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
 
 ## 派工模式：label / greedy
@@ -343,7 +345,7 @@ driver 实现三个函数即可接入（见 [docs/drivers.zh.md](drivers.zh.md#�
 
 提示词再按三种方式之一送到 agent：粘贴进 worker 还活着的 tmux 会话（复审派工不会粘进写代码的会话）；按 `(工作编号, agent, 角色)` 找到原对话续上；没有可续的（或续上后几秒内就退出）就新开一条会话，提示词作为启动参数传入。详见上面的[会话隔离](#会话隔离)。
 
-开了 `ENABLE_ROUND_LOG`时，一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_log)。
+开着 `ENABLE_ROUND_LOG` 时（默认开，写 `false` 或空值才关），一个 agent 留给另一个 agent 的评论——交复审的交付、打回给 worker 的复审意见——追加成同一条「往返记录」评论里的一节，不再每轮新发一条；worker 判断「最新一条评论」时看的是这个视图里的最新单元（每节一个单元）。交给人的评论照旧单独发。见[往返记录](operations.zh.md#往返记录agent-之间的来回写进同一条评论enable_round_log)。
 
 项目还可以自己装 agent hook，例如 Claude Code 的 `PreToolUse` 在改文件前注入目录规矩。这是宿主项目侧的做法，cavil-loop 不自带、也不管理。图里最右一栏（第 ⑤⑥ 步）画的就是这样一个钩子，只作示例。
 

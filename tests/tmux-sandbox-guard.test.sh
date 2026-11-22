@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# kind: guard
+# reads: repo
+# 用真 tmux 的测试必须有自己的 tmux 服务（GitHub#647）——只读文本的检查。
+#
+# 跑法：bash tests/tmux-sandbox-guard.test.sh   （约 1 秒）
+#
+# 为什么要有：在本机默认 tmux 服务上建会话、会话名又写死的测试，两份同时跑会互相列出、
+# 杀掉对方的会话（reap-finished-workers 在 w01 上 587 次红了 40 次）。规则和检查本身在
+# tests/lib/tmux_guard.py；这里先用一张用例表证明检查分得清对错，再扫仓库里全部测试。
+set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$TEST_DIR/lib/tmux_guard.py"
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+pass=0; fail=0
+chk() {
+    if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
+    else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
+}
+# case_from <名字> <期望 report|ok>，正文从 stdin 读
+n=0
+case_from() {
+    n=$((n+1))
+    local f="$T/case$n.test.sh" got
+    cat > "$f"
+    if python3 "$GUARD" "$f" >/dev/null 2>&1; then got=ok; else got=report; fi
+    chk "$1" "$got" "$2"
+}
+
+echo "【1】要报的写法"
+case_from "行首直接调用、没有隔离" report <<'EOF'
+tmux new-session -d -s x 'sleep 3'
+EOF
+case_from "trap 字符串里的调用" report <<'EOF'
+trap 'rm -rf "$TMP"; tmux kill-session -t "$S" 2>/dev/null' EXIT
+EOF
+case_from "\$( ) 里的调用" report <<'EOF'
+for s in $(tmux ls -F '#{session_name}' 2>/dev/null); do :; done
+EOF
+case_from "&& 之后的调用" report <<'EOF'
+true && tmux kill-server
+EOF
+case_from "if 后面的调用" report <<'EOF'
+if tmux has-session -t x 2>/dev/null; then :; fi
+EOF
+case_from "timeout N 之后的调用" report <<'EOF'
+timeout 5 tmux list-sessions
+EOF
+case_from "沙盒启动写在第一处调用之后" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux new-session -d -s x 'sleep 3'
+tmux_sandbox_start
+EOF
+case_from "载入了沙盒却没启动" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+echo hi
+EOF
+case_from "有 export TMUX_TMPDIR= 但没清 TMUX" report <<'EOF'
+export TMUX_TMPDIR="$D"
+tmux new-session -d -s x 'sleep 3'
+EOF
+case_from "用沙盒的文件里 env -i 没带 TMUX_TMPDIR=" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i PATH="$PATH" bash -c 'tmux ls'
+EOF
+case_from "用沙盒的文件里 env -i 重置了 PATH（绕过包装）" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i PATH=/usr/bin:/bin TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
+EOF
+case_from "env -i 的 PATH 用了单引号（字面量，不展开）" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH='$PATH' /bin/bash -c 'tmux ls'
+EOF
+case_from "env -i 的 PATH 在原值前面拼了别的目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="/opt/bin:$PATH" bash -c 'tmux ls'
+EOF
+case_from "env -i 的 PATH 在原值后面拼了别的目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="$PATH:/opt/bin" bash -c 'tmux ls'
+EOF
+case_from "续行写的 env -i 没带 TMUX_TMPDIR=" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i PATH="$PATH" \
+    HOME="$H" bash -c 'tmux ls'
+EOF
+case_from "清理回调里删目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_on_exit 'rm -rf "$TMP"'
+tmux_sandbox_start
+EOF
+case_from "载入沙盒之前就 mktemp" report <<'EOF'
+TMP=$(mktemp -d)
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+EOF
+case_from "载入沙盒之后又自己设 EXIT trap" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+trap 'rm -rf "$TMP"' EXIT
+EOF
+case_from "绝对路径直接调 tmux" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+/usr/bin/tmux ls
+EOF
+
+echo "【2】不报的写法"
+case_from "按规矩用沙盒" ok <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_on_exit ': > "$OUT/hook-ran"'
+tmux_sandbox_start
+TMP=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$TMP"
+tmux new-session -d -s x 'sleep 3'
+tmux_sandbox_env_i HOME="$H" bash -c 'tmux ls'
+tmux_sandbox_env_i HOME="$H" \
+    A=1 bash -c 'tmux ls' > "$OUT/x" 2>&1
+env -u FOO -u BAR HOME="$H" bash -c 'tmux ls'
+EOF
+case_from "带 -S / -L 的调用" ok <<'EOF'
+tmux -S "$SOCK" kill-server 2>/dev/null || true
+tmux -L "$NAME" ls
+EOF
+case_from "写假 tmux、注释、断言标题和说明文字里的 tmux" ok <<'EOF'
+# tmux new-session -d -s x 这行是注释
+printf '#!/usr/bin/env bash\ncase "$1" in list-sessions|ls) echo x ;; esac\n' > "$BIN/tmux"
+chk "tmux 调用逐条一致" "$a" "$b"
+echo "  ⏭  跳过（本机没有 tmux）"
+command -v tmux >/dev/null 2>&1
+EOF
+case_from "here-doc 正文里的 tmux" ok <<'EOF'
+cat > "$BIN/fake" <<'SH'
+tmux ls
+SH
+EOF
+# 已经各用私有服务的测试：真实写法原样摘录（文件开头到第一处直接调用为止的一段）
+for f in stuck-worker heavy-test token-redaction; do
+    case_from "原样摘录：$f 的私有服务写法" ok < "$TEST_DIR/$f.test.sh"
+done
+
+echo "【3】改用沙盒的五个文件：拿掉沙盒那几行就该报"
+for f in reap-finished-workers session-isolation poll-pace pending-human-conflict cavil-names; do
+    case_from "$f 去掉沙盒后被拦下" report \
+        < <(grep -v -e 'tmux-sandbox\.sh' -e 'tmux_sandbox_start' -e 'tmux_sandbox_on_exit' "$TEST_DIR/$f.test.sh")
+done
+
+echo "【4】清空环境的子进程：用沙盒的文件里只认 tmux_sandbox_env_i（PR #660 复审 #4）"
+# 前几轮各被找出一种让子进程拿错 PATH / TMUX_TMPDIR 的 env -i 写法，这里全部保留；现在
+# 不再判断 env -i 的参数对不对，一律报，改用 tmux_sandbox_env_i（它在运行时原样带上两样，
+# 行为在 tests/tmux-sandbox.test.sh【18】用真实子进程测）。
+form() {   # <名字> <期望 ok / report> <这一行>
+    case_from "$1" "$2" \
+        < <(printf 'source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"\ntmux_sandbox_start\n%s\n' "$3")
+}
+C="bash -c 'command -v tmux'"
+form "第 2 轮：单引号 PATH"                    report "env -i TMUX_TMPDIR=\"\$TMUX_TMPDIR\" PATH='\$PATH' $C"
+form "第 2 轮：PATH 前面拼了目录"              report "env -i TMUX_TMPDIR=\"\$TMUX_TMPDIR\" PATH=\"/opt/bin:\$PATH\" $C"
+form "第 3 轮：TMUX_TMPDIR= 空值"              report "env -i PATH=\"\$PATH\" TMUX_TMPDIR= $C"
+form "第 3 轮：正确的 PATH 只在注释里"         report "env -i PATH=/usr/bin:/bin TMUX_TMPDIR=\"\$TMUX_TMPDIR\" $C # PATH=\"\$PATH\""
+form "第 4 轮：重定向之后又赋了 PATH"          report "env -i PATH=\"\$PATH\" TMUX_TMPDIR=\"\$TMUX_TMPDIR\" >/dev/null PATH=/usr/bin:/bin $C"
+form "两样都原样带上也报（只认 tmux_sandbox_env_i）" report "env -i PATH=\"\$PATH\" TMUX_TMPDIR=\"\$TMUX_TMPDIR\" $C"
+form "选项连写 -iu"                            report "env -iu X PATH=\"\$PATH\" $C"
+form "先 -u 再 -i"                             report "env -u X -i PATH=\"\$PATH\" $C"
+form "长选项 --ignore-environment"             report "env --ignore-environment PATH=\"\$PATH\" $C"
+form "单独一个 -"                              report "env - PATH=\"\$PATH\" $C"
+form "绝对路径 /usr/bin/env -i"                report "/usr/bin/env -i PATH=\"\$PATH\" $C"
+form "写在 bash -c 的引号里"                   report "bash -c 'env -i PATH=/usr/bin tmux ls'"
+form "exec -c 清空环境"                        report "( exec -c bash -c 'tmux ls' )"
+form "多报：行尾注释里提到 env -i"             report "tmux_sandbox_env_i A=1 $C # env -i starts the child"
+form "tmux_sandbox_env_i 带重定向"             ok     "tmux_sandbox_env_i A=1 >/dev/null B=2 $C"
+form "只带 -u 的 env（保留原环境）"            ok     "env -u FOO -u BAR A=1 $C"
+form "第 5 轮：env -u TMUX_TMPDIR"             report "env -u TMUX_TMPDIR $C"
+form "env -u 普通变量后又赋 TMUX_TMPDIR"       report "env -u FOO TMUX_TMPDIR=/x $C"
+form "env -u PATH"                             report "env -u FOO -u PATH $C"
+form "env --unset=TMUX"                        report "env --unset=TMUX $C"
+form "unset TMUX_TMPDIR"                       report "unset FOO TMUX_TMPDIR"
+form "命令前缀赋 TMUX="                        report "TMUX=/x,1,0 $C"
+form "export TMUX_PANE="                       report "export TMUX_PANE=%1"
+form "env 不带选项也不能赋 TMUX_TMPDIR"        report "env TMUX_TMPDIR=/x $C"
+form "PATH 整个换掉"                           report "PATH=/usr/bin:/bin $C"
+form "env -u 普通变量后整个换掉 PATH"          report "env -u FOO PATH=/usr/bin $C"
+form "第 6 轮：env -u 加了引号的 TMUX_TMPDIR"   report "env -u \"TMUX_TMPDIR\" $C"
+form "env -u'TMUX' / -uTMUX_PANE"              report "env -u'TMUX' -uTMUX_PANE $C"
+form "unset 加了引号的 PATH"                    report "unset 'PATH'"
+form "unset 加了双引号的 TMUX_TMPDIR"           report "unset FOO \"TMUX_TMPDIR\""
+form "第 6 轮：PATH 的原值写在单引号里"         report "PATH='\$T/bin:\$PATH' $C"
+form "PATH 的 \$PATH 只在后面另一个词里"       report "PATH=/usr/bin $C \$PATH"
+form "PATH 前面加目录、混用引号"                ok     "PATH='/opt/x':\"\$PATH\" $C"
+form "PATH 前面加目录（造假工具）"             ok     "export PATH=\"\$T/bin:\$PATH\""
+form "env -u 普通变量 + PATH 前面加目录"        ok     "env -u FOO PATH=\"\$T/bin:\${PATH}\" $C"
+form "名字里带 TMUX 的别的变量"                 ok     "CASE_TMUX=1 MY_PATH=/x $C"
+form "printenv 不是 env"                       ok     "printenv -0 >/dev/null"
+
+echo "【5】仓库里全部测试文件"
+out="$(cd "$TEST_DIR/.." && python3 "$GUARD" tests/*.test.sh 2>&1)"; rc=$?
+[ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/     /'
+chk "仓库里没有一个测试在默认 tmux 服务上直接用 tmux" "$rc" "0"
+scanned=$(cd "$TEST_DIR/.." && ls tests/*.test.sh | wc -l)
+chk "扫到了测试文件（不是空跑）" "$([ "$scanned" -gt 50 ] && echo yes)" "yes"
+
+echo
+echo "通过 $pass / 失败 $fail"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

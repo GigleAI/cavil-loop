@@ -10,7 +10,8 @@
 #   - 两次保存各自的备份：存在、权限 600、内容等于保存前的配置
 # 样本：tests/project-config.test.sh 3b 组的全部写法（条件 / 循环 / 函数 / 一行写完的结构 / declare / read …），
 # 值的末尾有换行 / 只有换行、早期名字、export、行尾注释、名字是别的词的一部分、CRLF、含 NUL 字节、没有末尾换行、加载失败、配置模板全文。
-# 两边脚本一样（改动已合入主干）时整组跳过（tests/lib/compat.sh）。
+# 两边脚本一样（改动已合入主干）时整组跳过（tests/lib/compat.sh）。改动前那一侧只换项目配置脚本和 _names.sh，
+# 登记表、公共库两边用现在的同一份：某项默认值有意改了不算脚本行为变了。
 #
 #   bash tests/project-config-compat.test.sh
 set -uo pipefail
@@ -47,7 +48,12 @@ copy_tree() {   # <目标目录> [<rev>]
 }
 NEW="$SANDBOX/new"; copy_tree "$NEW"
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
-OLD="$SANDBOX/old"; copy_tree "$OLD" "$BASE_REV"
+# 对拍的是项目配置脚本本身（和它读名字用的 _names.sh）：改动前那一侧只换这两个文件，其余（登记表、公共库）
+# 两边用现在的同一份——登记表或公共库里某项的默认值有意改了（例：GitHub#669 往返记录改成默认开），
+# 两边读到的是同一个新值，不算脚本行为变了
+COMPAT_FILES="scripts/project-config.sh scripts/_names.sh"
+OLD="$SANDBOX/old"; copy_tree "$OLD"
+for f in $COMPAT_FILES; do git -C "$REPO_DIR" show "$BASE_REV:$f" > "$OLD/$f" || { echo "❌ 取不到改动前的 $f"; exit 1; }; done
 
 if compat_skip "项目配置脚本改动前后的输出" "$OLD" "$NEW" scripts; then
     compat_summary

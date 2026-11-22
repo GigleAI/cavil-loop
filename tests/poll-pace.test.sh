@@ -14,11 +14,16 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
+# shellcheck source=lib/tmux-sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 
-SANDBOX=$(mktemp -d)
+SANDBOX=$(mktemp -d) || exit 1
+tmux_sandbox_own_dir "$SANDBOX"
 TMP_CONF="$SANDBOX/coding-agent.config"
 mkdir -p "$SANDBOX/state" "$SANDBOX/project" "$SANDBOX/wt" "$SANDBOX/bin" "$SANDBOX/home"
 
@@ -92,8 +97,6 @@ kill_stray_sessions() {
         tmux kill-session -t "=$s" 2>/dev/null || true
     done
 }
-cleanup() { kill_stray_sessions; rm -rf "$SANDBOX"; }
-trap cleanup EXIT
 kill_stray_sessions
 
 pass=0; fail=0
@@ -406,6 +409,8 @@ if command -v tmux >/dev/null 2>&1; then
     reset_e2e
     printf '%s\n' '[[]]' > "$SNAP_ISSUES"
     tmux new-session -d -s pacetest-issue42 'sleep 3000' 2>/dev/null
+    chk "pacetest-issue42 建在本次运行的专用服务上" \
+        "$(tmux -S "$(tmux_sandbox_socket)" has-session -t '=pacetest-issue42' 2>/dev/null && echo yes || echo no)" "yes"
     run_ticks $T0 $T0 >/dev/null
     B3=$((T0 + 10 * DAY))
     chk_e2e "十天没变化但本机 session 还活着 → 仍每 tick 跑" "$(run_ticks $B3 $((B3 + 1740)))" "30"
