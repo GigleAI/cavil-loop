@@ -16,6 +16,17 @@
 #   【4】项目自己在追加要求里写「方案交复审」（tutor 的做法）：开关开 / 关下，最后生效的
 #        那句都是交复审——开关上线不打断这种项目
 #   【5】负对照：沙盘副本逐个改坏，对应检查必须变红
+
+# ── Design proposals through the review gate: rules moved here from the root agent guide (GitHub#658); read before changing ──
+# Design proposals through the review gate (GitHub#102: `REVIEW_DESIGN_PROPOSALS`, the
+# `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` placeholders in the two design exits of
+# `new-issue.template.md` and `issue-comment.template.md` § B) → `tests/design-review-gate.test.sh`
+# (~1 min by default, it runs the real dispatch scripts; ~6 min with `MUTATION=1`, which adds ten
+# deliberately broken copies). With the switch off the rendered prompts must match the merge-base copy
+# byte for byte, and a project that routes proposals to review from its own `*.extra.md`
+# (`${LABEL_REVIEW_OR_HUMAN}`) must still do so with the switch on or off — never make
+# `${LABEL_REVIEW_OR_HUMAN}` depend on the switch. Clarifying answers keep `${LABEL_PENDING_HUMAN}`
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

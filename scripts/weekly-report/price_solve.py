@@ -1,4 +1,72 @@
 #!/usr/bin/env python3
+
+# ── The footer's Claude prices and "one price table per footer": rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The footer's Claude prices and "one price table per footer" (GitHub#606: `listed_table` /
+# `load_latest` / `--listed` in `scripts/weekly-report/price_solve.py`, `refresh_latest` /
+# `latest-prices.next` in `price_fetch.py`, the due check in `price_fetch_tick`, `--both` in
+# `claude.sh`, `run_driver_both` in `comment_footer.py`) → `tests/footer-listed-price.test.sh` (~5 s;
+# real solver, driver, footer, fetch script and tick, fixture price pages over `file://`). The
+# maintainer decided on PR #612: **the footer does not solve prices from logs; it takes the latest
+# published price, refreshed once a day** — do not bring a log scan back into the driver (it read
+# every Claude session on the machine, 7 GB here, and took 20–40 s per footer). Per model: the daily
+# latest price (`fetched`) > the built-in `REFERENCE` (`reference_only`) > a gap-fill price
+# (`fetched`); a latest entry is used only with all five items as valid numbers, anything else falls
+# back to the built-in price for that model. The daily download runs only in a poll the scheduler
+# started (`POLL_SCHEDULED=1`, the same rule as `config_notice_tick`; `price_fetch_tick` passes
+# `PRICE_FETCH_LATEST=off` otherwise, so a marker-driven gap-fill in a hand-run or test poll fetches
+# no latest prices) — before that every test that runs `agent-poll.sh` directly downloaded the pricing
+# page and wrote cache files into its sandbox HOME (PR #612 CI, `cavil-names`). It takes the official
+# pricing page alone — no LiteLLM cross-check (the maintainer on PR #612: "使用当前的api 返回的价格即可，不用再找别的");
+# a model still has to pass `sane` with all five items. The gap-fill keeps its two-source rule. A
+# failed download keeps the previous file and retries after the cooldown. Every cache write in
+# `price_fetch.py` goes through one function, `_replace_file` (temp file, rename, temp removed on
+# failure, error raised); `_write_due` reports a failed write instead of swallowing it, and the log
+# says "next time not saved, next round fetches again" rather than promising a retry time it did not
+# store (review round 6). "Is the daily download due" is judged in two places — `price_latest_not_due`
+# in `_lib.sh` (whether the tick starts the script at all) and `latest_due` in `price_fetch.py` — by
+# one format rule (at most 64 bytes, 1–18 digits, then only newlines; anything else, or no file, means
+# "due"), and the test runs the same file matrix through both (PR #612 review round 1: the tick
+# stripped spaces and read `12 9999999999` as a future time while the script said due, so a broken
+# file was never rewritten). A price read back from either cache is valid only through `_price_ok` (a
+# real number, not a bool, `0 ≤ p ≤ MAX_PRICE`, compared before converting to float — a JSON integer
+# like 10**400 overflowed the conversion and the whole table failed, review round 1); a bad item drops
+# only that model to the built-in price. `PRICE_AUTO_FETCH=off` stops the downloads only — an existing
+# `latest-prices.json` and the gap-fill prices in `fetched-prices.json` are still used (do not
+# document a "delete a file to use only the built-in table" step: review round 2 showed the gap-fill
+# file still prices models the built-in table lacks). Every cache file on these paths
+# (`latest-prices.next`, `latest-prices.json`, `fetched-prices.json`, the fetch state and lock) is
+# opened non-blocking, used only when it is a regular file and read up to a limit (`read_regular` /
+# `load_json_file` in `price_solve.py`); anything else is "absent" / "due" — a named pipe at one of
+# those paths made a plain `open()` hang the daemon's fetch and the footer (review round 2). The
+# gap-fill cache has one decoded-structure check too, `_clean_fetched` behind `load_fetched()`
+# (`{agent: {model: {"prices": {item: price}}}}`, agents and items from `FETCH_ITEMS`, every price
+# through `_price_ok`, model names by `MODEL_NAME_RE`, an entry counts only with both `FETCH_CORE`
+# items): a bad layer is dropped alone, the rest kept. Every consumer reads only through it — the
+# Claude table (`fetched_reference`), the codex table (`codex_price_table`), the codex driver
+# (`fetched_prices_json` in `_price_cache.sh` calls it instead of a second jq reader) and the daemon's
+# "already priced?" check before deleting a gap marker — so "has a price" means the same everywhere
+# (review round 3: `{"claude":[1]}` failed the whole table, and an entry priced at 1001 was dropped by
+# the table but kept the daemon from fetching). The fetch state is read the same way (`load_state` in
+# `price_fetch.py`): an entry that is not an object, or an attempt time that is not a valid number,
+# counts as "not tried". **Every number read back from a cache or from the network goes through one
+# check, `number_in(v, lo, hi)` in `price_solve.py`** — type first, then the range, then the float
+# conversion inside a `try` — prices (`_price_ok`), the fetch state's attempt time and LiteLLM's
+# per-token prices included: a JSON integer like 10**400 overflowed the float conversion once for a
+# price (review round 1) and once for a retry time (review round 4, where it ended the whole fetch
+# round). And one model's failure stays its own: each marker is handled in `_fetch_one` inside its own
+# `try`, and the daily refresh in its own, so an unexpected error is logged and the rest of the round
+# goes on. A model's commit point is "its price is on disk": `_fetch_one` writes a copy of the price
+# cache first and only then updates the shared price table, records `ok` and removes the marker; a
+# failed write commits nothing (no attempt recorded, marker kept, retried next round), so another
+# model's state save in the same round cannot carry an unwritten `ok` out (review round 5). A daily
+# refresh that downloaded but could not write is retried after `WRITE_RETRY` (10 minutes), not counted
+# as done. The test feeds one set of broken caches to all four consumers (§8) and broken numbers to
+# the fetch state and LiteLLM (§9). Models in the latest list but not in `REFERENCE` also go into
+# `fetched_reference()`, since the gap-fill no longer fetches them separately and the weekly report
+# (which still solves) would otherwise have no price for them. The footer calls the Claude driver once
+# with `--both`; anything but exactly two lines is "unknown" for both lines and the driver is never
+# called a second time
+#
 """从本机 CLI 记账反解每个模型的逐项单价，并给出每项的可信状态（GigleTutor-Web#934）。
 
 为什么不是一张手工维护的价目表（issue #934 已确认 Q3=C）：

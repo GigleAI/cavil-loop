@@ -1,7 +1,8 @@
 # Vendored third-party code
 
-Used only by `tests/lib/doc_links.py` (the link check of the external user documents), so the
-tests need nothing installed beyond Python's standard library.
+Used by `tests/lib/doc_links.py` (the link check of the external user documents) and by
+`scripts/pr-body-lint.sh` (the PR body layout check workers run; it ships with the release, which is
+a copy of the whole repository), so neither needs anything installed beyond Python's standard library.
 
 | Package | Version | Licence | Source |
 |---|---|---|---|

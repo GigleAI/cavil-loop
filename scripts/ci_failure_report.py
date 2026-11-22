@@ -1,4 +1,64 @@
 #!/usr/bin/env python3
+
+# ── Reporting a failed test workflow on the base branch: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Reporting a failed test workflow on the base branch (GitHub#345: `CI_FAILURE_REPORT_WORKFLOWS` /
+# `_BRANCH` / `_DISPATCH` / `_MAX_FIX_ATTEMPTS`, `scripts/ci-failure-report.sh`,
+# `scripts/ci_failure_report.py`, `ci_failure_report_tick` / `ci_report_dispatch_hold` /
+# `ci_report_flow_labels` in `_lib.sh`, the call before the pace gate and the four hold checks in
+# `agent-poll.sh`, `$STATE_DIR/ci-failure-report.json`) → `tests/ci-failure-report.test.sh` (three
+# parts, ~7 min in all; the real `ci-failure-report.sh`, and the real `agent-poll.sh` + dispatch
+# scripts wherever "dispatched or not" is the question, against the stateful fake GitHub, which serves
+# Actions runs / jobs / annotations / logs, `commits/<sha>/pulls` and an issue timeline). The rules
+# that are easy to break: **only a run's first attempt is judged** (`…/attempts/1`), and every way of
+# seeing a run goes through `eligible` (created at or after the enable time — never the frontier); the
+# frontier moves only after a list was read whole (total checked, halved above GitHub's 1000-result
+# cap), and a run that cannot be judged stays in `pending` with no age limit. "Same cause" needs
+# **complete** evidence (every failed job has an error annotation, no step at the 10-annotation cap)
+# and an exactly equal set; incomplete evidence goes to the workflow's one "cause not confirmed"
+# report and never matches anything; unreadable evidence writes nothing. A failed fix is decided from
+# the commit's merged PR (`parse_refs`: keyword and `#N` on one line, all references — its first
+# number must equal `pr_body_linked_issue`'s, the test diffs them) and counted per PR from the
+# report's comments, never from local state. Every REST write is preceded by its own re-read. At the
+# limit the report goes into `state.handover` **before** anything is written to GitHub, and
+# `ci_report_dispatch_hold` is the one question all three dispatch entries and `dispatch_one_issue`
+# ask — do not replace it by label ordering: an issue with no flow label is still dispatched by the
+# greedy and autopilot entries. Where a listed report stands comes from its timeline
+# (`handover_status`), and a person's label change / close after the announcement is checked before
+# any write. **A lost or unreadable state file is never reconstructed** (three design rounds failed on
+# exactly that): reports exist → pause, hold every report (by the body marker), one notice issue,
+# `--restart` from now; no reports → first enable; list unreadable → unknown, hold, write nothing. "Is
+# the state file usable" has one definition, `load_state` (asked by `_lib.sh` through the
+# `state-check` sub-command) — never a second jq test on the dispatch side and **never cached** (a
+# cache keyed on mtime / size reused an "ok" for a file damaged in place within the same second;
+# `stat` flags also differ on macOS — PR #393 review round 2), and the hold marker is written before
+# anything is read from GitHub. GitHub tokens in the log excerpt are masked by `redact_tokens.py`
+# (`analyze` / `replacement`) — the matching rules stay in that one file (GitHub#342); `REDACT` in the
+# checker only covers the other secret shapes. **External commands on this path** are only what
+# `cavil_required_cmds` lists for both systems (`gh`, `jq`, `flock`) plus `python3`; no `timeout`, no
+# `stat`, no GNU-only flags — time limits are the checker's own per-call timeout and round budget plus
+# a bash-builtin wait in `ci_failure_report_tick` (PR #393 review round 3: an unconditional `timeout`
+# meant the check never started on a Mac). The test runs the poller with a command directory that has
+# no `timeout` at all. **Stopping the check stops the whole process chain**: the entry script, the
+# checker, `gh` and whatever it starts share one process group (`ci_failure_report_tick` launches it
+# under `set -m`), and `ci_report_group_stop` stops the group and returns only once it is empty —
+# stopping the checker alone left the `gh` write it was waiting on alive, and the report was created
+# after the poller had moved on (PR #393 review round 4); the hand-run entry follows the same rule
+# with a group of its own (only that group is stopped, never the calling terminal). **Every process of
+# a check stays in that one group and the group's owner is the only reaper**: `gh` calls are never
+# given a group or session of their own — the checker's per-call timeout and stop handler kill only
+# the direct `gh` (`_end_call`) and end the round, and whatever `gh` started is reaped by the owner's
+# group stop, which works whether or not the checker can run any clean-up (review round 6: `gh` in its
+# own session survived a checker that was killed, and its request created a report later). The test's
+# `gh` stand-in sends the request from a descendant, stops the check during a read and during a write
+# from every entry, freezes the checker (and the entry script) with SIGSTOP so only the forced stop is
+# left, checks every recorded pid, and waits past the original delay to confirm no late write. A
+# dedupe read (comments, timeline) comes *before* the re-read of the issue, so nothing sits between
+# the re-read and the write; the run a report was opened for counts as already reported, same as a
+# comment marker. With the setting empty the poller's calls, labels and `state.json` equal the
+# merge-base scripts' (the test diffs them). The commands in `docs/operations{,.zh}.md` behind `<!--
+# ci-failure-report-ops:begin -->` / `<!-- ci-failure-report-restart:begin -->` are run verbatim in an
+# empty environment; keep the two copies identical
+#
 """Base-branch test workflow failed → open a report issue, or continue the matching one (GitHub#345).
 
 Run by scripts/ci-failure-report.sh (which loads the project's config and passes it in the

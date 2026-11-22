@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+
+# ── Waking the bot on items it did not file: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Waking the bot on items it did not file (GitHub#133: `REQUESTER_BOT_WAKE_ANY_ITEM`, the `MODE=any`
+# branch of `notify-requester-bot.sh`, `scripts/requester_bot_handoff.py`,
+# `REQUESTER_BOT_ORIGIN_CLASS` / `REQUESTER_BOT_LINKED` from `requester_bot_item_origin`,
+# `prompts/requester-bot-handoff-any-item.md`) → `tests/requester-bot-any-item.test.sh` (~1 min by
+# default; ~3.5 min with `MUTATION=1`, eighteen broken copies incl. the bot-side rules of design
+# rounds 2 and 3 and routing on the body marker alone). The bot side is
+# `tests/fixtures/requester-bot-ref-consumer.py`, written from the doc's handoff protocol and
+# deliberately **not** importing `requester_bot_handoff.py` — keep it that way, it is the cross-check.
+# The fake GitHub runs it before every call of the wake-up script (`FAKE_GH_OBSERVER`), so "the bot
+# never judges error / never picks another comment at any point" is checked between every two steps,
+# not only at the end. `requester_bot_item_origin`'s return value / origin / reason must stay
+# byte-identical to the merge-base copy with the switch on or off — the merge / close notice only
+# reads those (autopilot no longer does, GitHub#162); the new class is for the wake-up entry alone.
+# The handoff comment is matched by label event id and comment id, never by timestamps (GitHub's are
+# whole seconds). The script never edits it — GitHub's comment edit has no conditional write, so a
+# whole-body PATCH overwrote a concurrent edit (code review round 1); it posts a separate wake-record
+# comment instead, so the usage footer is untouched
+#
 """非机器人条目的交接：转交标记核对、正文指纹、叫醒记录（GitHub#133）。
 
 叫醒脚本（notify-requester-bot.sh）调用；规则与 docs/requester-bot*.md「交接协议」一节逐条对应，

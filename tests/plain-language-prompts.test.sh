@@ -23,6 +23,24 @@
 #
 # 「只有真的 issue / PR 才写 #编号」（GitHub#646）同理：三份 worker 模板第 11 条、本项目 review 增量第 11 条、
 # 通用 review 模板 review 评论那一段各一份，逐字一致。
+
+# ── How workers / the reviewer write comments that ask a human to decide: rules moved here from the root agent guide (GitHub#658); read before changing ──
+# How workers / the reviewer write comments that ask a human to decide (the fixed skeleton, the
+# no-code-names rule) → `tests/plain-language-prompts.test.sh`. The skeleton is copied verbatim into
+# the three worker templates and the project's `review.extra.md`; the no-code-names sentence
+# additionally sits in the worker decision-question rules and the reviewer's rejection rule
+# (`review.template.md`, step 2Q). The "self-contained hand-off comment, links only as sources" rule
+# (GitHub#74) is item 8 of the hand-off section in the same four places, plus the hand-off step of
+# `review.template.md` so reviewers of projects without a `review.extra.md` get it too. The "name the
+# human or the agent, no 你 / 我" rule (GitHub#237: no first / second person, no 他 / 她 for a person, in
+# comments and PR bodies — quotes, code and command output excepted) is item 10 of the same four
+# hand-off sections, plus the review-comment paragraph of `review.template.md`, with its rejection
+# rule at step 2R; the sample phrases agents copy into comments (the skeleton examples, the proposal /
+# revision closing lines, the split hand-off) carry no 你 / 我 either, and the daemon's own comments
+# follow it (`tests/blocked-label.test.sh`, `tests/sub-issue-split.test.sh`,
+# `tests/checkout-stale-alert.test.sh` check what is actually posted). Edit every copy together — the
+# test diffs the composed prompts and fails on any drift
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

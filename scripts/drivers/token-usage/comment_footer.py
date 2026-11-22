@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+
+# ── The comment usage footer: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The comment usage footer (GitHub#88: `comment-footer.sh` / `comment_footer.py`, the AI-time estimate
+# in `ai_time.py`, the footer step of the four templates, the `${COMMENT_FOOTER_CMD}` placeholder, the
+# weekly report reading the new visible layout) → `tests/comment-footer.test.sh` (~10 s, it runs the
+# real dispatch scripts). The footer is generated whole by the script — templates must not tell the
+# agent to assemble time / token lines by hand again, and the agent-metrics record stays the last
+# non-empty line
+#
 """评论用量 footer 的生成器（GitHub#88），由 comment-footer.sh 调用。参数见那个文件头。
 
 形状（数字示意）：

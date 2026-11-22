@@ -305,7 +305,7 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
         reviews(first: 50, after: $reviewsAfter) @include(if: $withReviews) {
           pageInfo { hasNextPage endCursor }
           nodes {
-            id url state submittedAt createdAt bodyHTML author { login }
+            id url state submittedAt createdAt bodyHTML body author { login }
             comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { ${LINE_COMMENT_FIELDS} } }
           }
         }

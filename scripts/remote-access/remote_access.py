@@ -1,4 +1,29 @@
 #!/usr/bin/env python3
+
+# ── Restarting the remote entry after the code on disk changed: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Restarting the remote entry after the code on disk changed (GitHub#533: `API_LEVEL` /
+# `code_identity` / the `code-info` command and the SIGTERM drain in `remote_access.py`, `entry` in
+# its `/v1/status` reply and `level` / `fingerprint` in `/v1/hello`, `remote_access` in
+# `install-status.sh`, `auto-restart` / `svc_lock` / `restart.json` in `remote-access.sh`, the call in
+# `poll-entry.sh`, `why_not_found` / `old_entry` in the client's `remote.rs`, the steps behind `<!--
+# remote-restart-linux:begin -->` / `<!-- remote-restart-mac:begin -->` in `docs/operations{,.zh}.md`)
+# → `tests/remote-access-restart.test.sh` (~30 s; real scripts and real service processes under a fake
+# HOME, with a service manager that really starts and stops them,
+# `tests/fixtures/remote-access-svc-fakes.sh` — the older fakes only record state; "old code" is the
+# fixed commit `9e7f628c`) plus `tests/remote-access.test.sh` and, for the client, `cargo test -p
+# cavil-core --lib remote::`, `npx vitest run test/unit/remote.test.ts` and `npm run test:e2e --
+# remote`. A restart needs evidence: a fingerprint that is not the one on disk, or none at all from a
+# service that answers as this feature; the code on disk is the script the service registration points
+# at (`--skill`), never this script's own directory. Only a running service is restarted
+# (`try-restart`, `kickstart -k`), only while holding `svc.lock` — the lock `enable` and `disable`
+# also take, re-reading everything after taking it — and a restart counts only once the service
+# reports the fingerprint on disk; failures back off (1, 2, 5, 15 min, at most 5 per version of the
+# code, "in progress" written before the restart is sent). Anything that cannot be read changes
+# nothing. On the client a missing field is "cannot tell", never "old" or "new"; the steps it gives
+# are the documented commands (a Rust test checks every command in both doc blocks is in them) and the
+# test runs them verbatim for every skill folder name and a development checkout; keep the two doc
+# copies identical
+#
 """远程入口（GitHub#387）：让配对过的桌面客户端经 Tailscale 看这台机器上的 daemon。
 
 只用标准库。由 scripts/remote-access.sh 调用，不直接给人用：

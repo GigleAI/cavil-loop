@@ -12,6 +12,13 @@
 #   3. 两个示例标题的符号和文字一致（✅ 配「通过」、❌ 配「未通过」）
 #   4. 没漏进 worker 模板——worker 的评论不是复审结论
 # 负对照已按 GitHub#234 删去，本文件只跑普通回归。
+
+# ── Review verdict comment headings start with ✅: rules moved here from the root agent guide (GitHub#658); read before changing ──
+# Review verdict comment headings start with ✅ (passed) or ❌ (everything else) (GitHub#84) →
+# `tests/review-verdict-emoji.test.sh`. The rule lives only in `review.template.md` step 3, so
+# projects without a `review.extra.md` get it too; the test checks the composed review prompt with and
+# without the extra, the ✅/❌ mapping and examples, and that it does not leak into the worker templates
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

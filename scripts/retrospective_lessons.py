@@ -1,3 +1,61 @@
+# ── Post-merge retrospective: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Post-merge retrospective (`scripts/retrospective_lessons.py`, `scripts/post-merge-retrospective.py`,
+# `prompts/retrospective.template.md`; the optional `## 目录经验` directory-lessons section and
+# `POST_RETROSPECTIVE_PROJECT_CMD`, GitHub#152) → `tests/retrospective-lessons.test.sh` (~5 s) and
+# `tests/retrospective-directory-lessons.test.sh` (~2 s; its group 4 composes the four real templates
+# with this repo's real lessons file and checks every hard rule's fields against the parser); the
+# machine-wide lock (`CAVIL_RETROSPECTIVE_LOCK` in `_names.sh`, never derived from the skill directory
+# — a release directory is not a git checkout, GitHub#165) → `tests/retrospective-global-lock.test.sh`
+# (~1 s, real shell entry on a non-git and a git copy). Prompt composition leaves the directory
+# section out through one function, `lessons_for_prompt` in `_lib.sh`, used by both lessons entry
+# points; for a counted-format file (it has a `next-id` line) the same function also drops the whole
+# `观察中` section and every entry's `这样做是对的` / `Seen` lines, then appends one pointer line (GitHub#208)
+# — the 24 000-character limit is still measured on the full file minus the directory section
+# (`outside_directory_text`), never on that trimmed copy. Its Python twin (`prompt_text`) must stay
+# byte-identical to it — the test diffs the two on one set of fixtures (LF, CRLF and lone-CR files:
+# the shell side reads line breaks the way Python's text mode does, since that is how the
+# retrospective decides the section exists), and with no heading the composed prompt must match the
+# merge-base copy byte for byte. Any new check goes into `CHECKS` and gets its own case in
+# `tests/retrospective_lessons_test.py`. The length limit on promotions (GitHub#600:
+# `RETROSPECTIVE_RULE_MAX_CHARS`, the `<!-- held-over-limit: … -->` line under next-id) →
+# `tests/retrospective-rule-limit.test.sh` (~10 s, real entry in the cutoff sandbox) plus the
+# `RuleLimit*` cases there and the registered-default check in `tests/project_config_retro_test.py`.
+# Who may promote is decided by one function, `promotion_plan`: `place` (run by the program before
+# validation — promotions are no longer the model's job) and `validate` both use it, so never add a
+# second eligibility rule next to it. Eligible = in 观察中 in the previous version, 3+ sightings now, and
+# either just crossed 3 or on the previous held line — a human typing an id onto the line never
+# promotes it. The line is the program's alone: stripped before the model sees it, a model output
+# carrying it is rejected, a broken one makes the baseline `NotReady` (uncounted), and prompt
+# composition drops it in both `lessons_for_prompt` and `prompt_text`. Every edit `place` makes
+# (moving an entry, removing / inserting the line) uses the positions `parse` returned for that very
+# text (`Entry.at` / `.end`, `sections_at`, `marker_at`, `held_at`) — never a search for a heading,
+# which picked up a `### L1` quoted in the preamble (PR #601 review round 2). Which lines are the
+# program's line is one rule, `HELD_TAG` (comment opening at the line start, optional blanks,
+# `held-over-limit:`; mirrored byte for byte by the awk pattern in `lessons_for_prompt`) — a comment
+# that merely mentions the name is ordinary text (PR #601 review round 3). `parse` raises only
+# `LessonsError` (numbers over 9 digits included), so a broken baseline is always `NotReady` and never
+# costs an attempt. The limit accepts exactly what the settings dialog saves (plain decimal, no
+# leading zeros; `tests/project_config_retro_test.py` runs one batch through both). A mistyped limit
+# stops `main()` before the queue is touched. With the limit at 0 and no held line a round is
+# byte-identical to before (the cutoff test's comparison with `954a294` runs that way) Which PRs a run
+# may touch (GitHub#168: `RETROSPECTIVE_DIRECTORY_LESSONS`, default true; the start-time file
+# `retrospectives/directory-lessons.json`, never `cursor.json`; `sync_directory_state` / `classify` in
+# the runner) → `tests/retrospective-directory-cutoff.test.sh` (~7 s; real shell entry in `env -i`,
+# local bare origin, single-file faults injected from a `sitecustomize`, the switch-off case diffed
+# against the fixed commit `954a294`). While on, every unfinished job merged before the start time is
+# marked `skipped` *before* at most one is retrospected — never stop classifying at the first eligible
+# job, never look at retry times while classifying; a start time that cannot be read or written pauses
+# the whole queue (it cannot tell what to skip), and turning the switch off must leave evidence
+# (marker says off, marker removed, or the `cursor.json` note) or a later "on" reuses the old start;
+# an unreadable start-time file is never taken for "off", and the start recorded for a `cursor.json`
+# note keeps it as `consumed` so a note that could not be cleared is not a new off; "is the report
+# already on the base branch" is unknown, not "no", when the branch or tree cannot be read. When the
+# run may not write directory lessons the section is cut out before the model sees it and put back
+# byte for byte (`detach_directory_section`, checked by `dir_frozen`); when it may, the runner adds
+# the heading itself (`with_directory_section`). The recovery steps in `docs/operations{,.zh}.md`
+# (behind `<!-- retro-dir-recovery:begin -->`) are run verbatim by the test; keep the two copies
+# identical
+#
 """Project lessons file: parse it, and judge a model's rewrite of it.
 
 The retrospective model rewrites the whole lessons file after every merged PR,

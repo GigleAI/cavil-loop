@@ -18,6 +18,24 @@
 # 两份 worker 模板的硬规则核对表也要求整张折叠。
 # 所以按拼好的成品对拍：每处都在、逐字一致；旧的「测试结果写进正文」说法已改掉。
 # （原来每个写入点各一份的负对照已按 GitHub#234 删去。）
+
+# ── Comment layout: rules moved here from the root agent guide (GitHub#658); read before changing ──
+# Comment layout (only what the human needs outside folds, everything else folded; ❌ / ✅ / ⚠️ markers,
+# unmarked by default — GitHub#125) → `tests/comment-layout-prompts.test.sh` (about 1 s). The same
+# rules live in: items 7 (what stays outside, what folds) and 9 (markers) of the hand-off section in
+# the three worker templates and the project's `review.extra.md`; the "plan comment layout" bullet in
+# `new-issue` step 2 and the `issue-comment` plan-revision step; the "comment layout" paragraph plus
+# the marker rule in step 3 of `review.template.md`, and its 2B item ⑧ rejection rule. Item 8 and the
+# `pr-comment` Q&A section no longer say "put test results in the body"; they now say "in this
+# comment, test evidence inside its folds". Edit every copy together Markers are the exception
+# (GitHub#125): ⚠️ only for something the human must act on, or a real risk / limit that affects their
+# judgement even with nothing to do; ✅ only for work that should be done, was done, and the human
+# needs to know it was done right (tests, comparisons). The reviewer's 2B ⑧ rejection uses the inverse
+# of that same ⚠️ criterion — never narrow it to "nothing for the human to do", that rejects
+# legitimate limits. The verdict title's ✅ / ❌ is a separate rule and stays mandatory. The hard-rule
+# self-check table in `issue-comment` / `pr-comment` goes in a fold, including the "no hard rules"
+# sentence.
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

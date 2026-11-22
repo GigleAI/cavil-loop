@@ -12,6 +12,16 @@
 #   【2】收敛段送达：每份复审 prompt 都有、worker prompt 都没有；托管复审时托管规则段排在它后面
 #   【3】修复范围脚本：真实 git 仓库里造跨轮历史，docs/operations.md 两张表每行一例
 #   【4】问题编号不带井号：六份成品里的编号规则、返工回应句、「只有真的 issue / PR 才写 #编号」，示例按自动链接规则对拍
+#
+# ── Problem numbers in review lists (GitHub#646); read before changing ──
+# Reviews number problems 「问题 1」「问题 2」, never `#1`: GitHub turns `#1` into a link to issue 1, and the lists
+# on #644 / PR #645 were full of links to old issues. The rule lives in `prompts/review-converge.md` (with the
+# transition: a list written with `#N` earlier is read as problem N); the one rework sentence
+# 「按复审结论里的问题编号逐条回应…」 is byte-identical in `issue-comment.template.md` and `pr-comment.template.md`
+# (the two entries that handle rework; a split sub-issue goes through the issue-comment one); 「只有真的 issue /
+# PR 才写 `#编号`」 is item 11 of the four hand-off sections plus the review-comment paragraph of
+# `review.template.md` (`tests/plain-language-prompts.test.sh` diffs those copies). 【4】 checks the six prompts
+# the real dispatch scripts write, and runs the sentence's own example through GitHub's autolink rule.
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

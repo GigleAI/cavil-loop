@@ -1564,6 +1564,14 @@ review label or back to the dispatch label) is appended as a short section: what
 next agent needs, the usage footer. The full current version (whole proposal / whole delivery
 summary) sits at the top of the record and is replaced by the latest one.
 
+Each section is folded into one line titled "⏱️ the section's time · worker or 复审 (review) · the first
+line of the section"; the full text opens below it. A worker writes that first line as a one-sentence
+summary starting with ✅ (delivered), ❓ (a question for the reviewer) or ❌ (not finished, something
+failed); a review's first line is its `## ✅ …` / `## ❌ …` verdict heading. A first line without an
+emoji gets 📝, and a section with no usage record says "耗时未记录" (time not recorded). In the desktop
+client's activity list the record's line shows the sum of the sections' times ("≥" in front when a
+section has no record), how many deliveries and reviews it holds, and the last section's sentence.
+
 - **Stay separate**: every comment to a human, the review verdict that queues an autopilot merge
   (the merge check only accepts the test record in a comment created after the review was dispatched), daemon
   comments, waiting-on-prerequisite notes. A new comment by anyone in between ends the record; the next delivery
@@ -1625,11 +1633,40 @@ again any item that stopped half-way:
 
 - **How to spot one**: the item carries `doing/agent`, has had no new comment for a while, and its agent
   session has stopped (on a project with the stuck-worker check, the daemon also reminds or hands over by itself)
-- **How to dispatch it again**: in the Labels box on the item's page, remove `doing/agent`, then add the
-  dispatch label that fits the latest agent comment — `pending/review` when it is a worker's delivery
-  waiting for review, `pending/agent` when it is a review verdict or anything else
-- **How to tell it worked**: within a few minutes a new comment by the loop account appears on the item
-  (a separate comment now, no longer part of the round log) and `doing/agent` has given way to the next step's label
+- **Find which dispatch was interrupted**: a dispatch first removes the label that dispatched it and then adds `doing/agent`, so in the item's label history the label the daemon removed right before it last added `doing/agent` is where that dispatch came from. Run this whole block (replace `owner/repo` with the repository and `123` with the item number; and the label names, if the project renamed them) and read its last line:
+  - `RESTORE: <label>` — the label that dispatched it. `pending/review` is a review (a first-round review of a PR whose delivery is only in its description, with no worker comment yet, as well), `pending/agent…` is a worker
+  - `NOT_STUCK: …` — the item no longer carries `doing/agent`; nothing to dispatch again
+  - `UNKNOWN: …` — it cannot be told (a read failed, no dispatch in the label history, more than one such label removed or neither of the two). Do not guess from the latest comment: check on the item page's timeline which label the daemon removed right before it last added `doing/agent`; if that cannot be told either, only remove `doing/agent`, add `pending/human` and leave the item to a person
+
+<!-- round-log-redispatch-ops:begin -->
+```bash
+(
+  REPO=owner/repo; N=123
+  LABELS="$(gh api "repos/$REPO/issues/$N" --jq '.labels[].name')" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  printf '%s\n' "$LABELS" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
+  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, .actor.login, .label.name] | @tsv')" \
+    || { echo "UNKNOWN: could not read the label history"; exit 1; }
+  printf '%s\n' "$EV" | awk -F'\t' '
+    { e[NR] = $1; a[NR] = $2; l[NR] = $3 }
+    END {
+      for (i = NR; i >= 1; i--) if (e[i] == "labeled" && l[i] == "doing/agent") break
+      if (i < 1) { print "UNKNOWN: no dispatch in the label history"; exit 1 }
+      n = 0
+      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == a[i]; j--)
+        if (l[j] == "pending/review" || l[j] == "pending/agent" || index(l[j], "pending/agent/") == 1) { n++; t = l[j] }
+      if (n != 1) { print "UNKNOWN: cannot tell which label dispatched it"; exit 1 }
+      print "RESTORE: " t
+    }'
+)
+```
+<!-- round-log-redispatch-ops:end -->
+
+- **How to dispatch it again**: in the Labels box on the item's page, remove `doing/agent` and add the label after `RESTORE:`
+- **How to tell it worked**: the item first carries `doing/agent` again (the daemon dispatched it), then a
+  new comment by the loop account appears — a review verdict or a worker delivery, a separate comment now,
+  no longer part of the round log — and `doing/agent` has given way to the next step's label. With a queue of
+  dispatches or an agent at its usage limit this can take a long time; go by these two things actually
+  showing up, not by how long it has been
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:

@@ -128,8 +128,34 @@ export const FRAME_SCRIPT = `(function () {
     for (var i = 0; i < all.length; i++) all[i].disabled = true;
     send({ cavil: 'task', entry: entry.getAttribute('data-entry'), index: Number(t.getAttribute('data-task')), checked: t.checked });
   });
+  // GitHub#653: words selected inside one text block of the discussion (an entry's text or one line comment's),
+  // inside \`within\` when given; anything else (nothing selected, a selection across blocks) is null
+  function picked(within) {
+    var s = window.getSelection ? window.getSelection() : null;
+    if (!s || s.isCollapsed || !s.rangeCount) return null;
+    var r = s.getRangeAt(0);
+    function md(n) { while (n && n.nodeType !== 1) n = n.parentNode; return n && n.closest ? n.closest('.md') : null; }
+    var a = md(r.startContainer), z = md(r.endContainer);
+    if (!a || a !== z || (within && !within.contains(a))) return null;
+    var text = s.toString();
+    return /\\S/.test(text) ? text : null;
+  }
+  // a press on the quote button may take the selection away before the click: the selection is read at the press
+  var quotePress = null;
+  document.addEventListener('mousedown', function (e) {
+    var t = e.target && e.target.closest ? e.target.closest('button[data-quote]') : null;
+    quotePress = t ? { btn: t, text: picked(t.closest('details.entry')) } : null;
+  }, true);
   document.addEventListener('click', function (e) {
-    var t = e.target && e.target.closest ? e.target.closest('button[data-edit]') : null;
+    var t = e.target && e.target.closest ? e.target.closest('button[data-quote]') : null;
+    if (t) {
+      var en = t.closest('details.entry');
+      var q = quotePress && quotePress.btn === t ? quotePress.text : picked(en);
+      quotePress = null;
+      if (en && !t.disabled) send({ cavil: 'quote', entry: en.getAttribute('data-entry'), text: q });
+      return;
+    }
+    t = e.target && e.target.closest ? e.target.closest('button[data-edit]') : null;
     if (t) {
       var entry = t.closest('details.entry');
       if (entry) send({ cavil: 'edit', entry: entry.getAttribute('data-entry') });
@@ -358,7 +384,11 @@ export const FRAME_SCRIPT = `(function () {
       if (/^[0-9]$/.test(f.key) ? (code ? dg !== f.key : k !== f.key) : alt && lt && /^[a-z]$/.test(f.key) ? lt !== f.key : kk !== f.key) continue;
       e.preventDefault();
       // GitHub#492: ⌘ and ⌃ as they were held, so the window tells ⌃⌘1 from ⌘1 by its own rule; GitHub#487: ⌥ too
-      send({ cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code, meta: !!e.metaKey, ctrl: !!e.ctrlKey });
+      // GitHub#653: the words selected in one text block go with the key — the window quotes them for its "reply" key
+      var m = { cavil: 'key', key: e.key, mod: mod, shift: sh, alt: alt, code: code, meta: !!e.metaKey, ctrl: !!e.ctrlKey };
+      var q = picked(null);
+      if (q !== null) m.quote = q;
+      send(m);
       return;
     }
   });
@@ -376,7 +406,7 @@ ${LINK_JS}
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-0Go1D+oZyUwWVvoAq7T8YQOm01AcScTOFZB+3KqDvxA='";
+export const FRAME_SCRIPT_HASH = "'sha256-WTzSB5zlTgv4ksLx7AiAEpllviv097BtBUm9rECQ7e8='";
 
 /**
  * The one script the reply preview runs (GitHub#590): web links go to the window, nothing else. Its

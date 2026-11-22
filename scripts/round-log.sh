@@ -21,6 +21,25 @@
 # show：本条（issue 或 PR 的对话评论）按单元排好，打印最新单元和它对应的完整版本；--all 打印全部单元。
 #   退出码 0 = 读到了；4 = 最新一节的完整版本对不上（不给任何当前版本）；5 = 读不全；64 = 用法不对。
 #   托管条目开了外部内容保护时不用它：受保护读取命令的输出末尾就带着同样的视图。
+#
+# ── Turning the round log off (GitHub#646); read before changing the「关掉」fold in docs/operations{,.zh}.md ──
+# The setting is read at every call of post (off → RESULT=rejected before any other check) and of the guarded
+# read outsider-read.sh (off → no split view, no delivery named); show ignores it; a session already running
+# keeps the instructions it was dispatched with. So the docs promise no safe moment to turn it off: a label
+# check cannot see an item queued for dispatch, or one being dispatched before it carries doing/agent — five
+# review rounds on PR #652 found a new variant each time, and the maintainer chose (PR #652 Q1 = A) to state
+# what can happen and how to dispatch a stopped item again. Do not bring back a "check, turn off, check again"
+# procedure or a label-check command; do not add a prompt branch that posts separately when the view is
+# missing (review round 4 on PR #652: it skips this script's staleness checks).
+# Which dispatch was interrupted is read from the item's label history, never from its latest comment: a
+# dispatch removes its trigger label and then adds doing/agent (flip_to_doing → gh_label_flip), so the label
+# the same account removed right before the last "added doing/agent" is the one to put back — a first-round
+# review whose delivery is only the PR description has no worker comment at all (PR #652 code review round 1).
+# The blocks behind <!-- round-log-check-ops / -off-ops / -on-ops:begin --> are run verbatim by
+# tests/project-config.test.sh §9 (they trust only the settings script's RESULT= word, never its exit code: a save
+# killed after the rename exits non-zero with the file written); <!-- round-log-redispatch-ops:begin --> is run
+# verbatim by tests/round-log-redispatch.test.sh, which then puts the label back and runs a real poll round.
+# Keep the two doc copies identical.
 set -uo pipefail
 
 # 用法不对（含 PR 上缺本次依据）≠ 拒收：拒收（2）是「这条照现在单独发」，用法不对（64）是「改好参数重跑，改不好就什么都不发」

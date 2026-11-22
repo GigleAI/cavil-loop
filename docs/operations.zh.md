@@ -1327,6 +1327,11 @@ agent 之间的一段来回——交方案或 PR、复审、修订、再复审�
 每次交给 agent 的交付（发完要把条目翻到复审标签、或翻回派工标签的那一条）在末尾追加一节，只写改了什么、给下一个
 agent 的交代和用量 footer；完整的当前版本（整份方案 / 完整交付说明）放在记录顶部，换成最新的。
 
+每一节折成一行，标题是「⏱️ 这一节的耗时 · worker 或复审 · 这一节正文的第一行」，点开才是全文。worker 把第一行写成一句以
+✅（交付完成）/ ❓（有要复审确认的疑问）/ ❌（没做完、有失败）开头的总结；复审的第一行就是 `## ✅ …` / `## ❌ …` 结论标题。
+第一行不以 emoji 开头时补 📝，那一轮没有用量记录时写「耗时未记录」。桌面客户端的动态列表里，这条记录那一行显示各节耗时
+之和（有节没记录时前面加「≥」）、交付和复审各几次，以及最后一节的这一句。
+
 - **照旧单独发**：所有交给人的评论、托管交合并的复审结论（合并检查只认派复审之后新建的评论里的测试记录）、daemon 的评论、
   等前置登记。中途有任何人发了新评论，这条记录就结束，下一次交付另起一条
 - **只有 loop 改它**：往返记录只由 loop 写评论的账号写、只由它改，不改任何别的评论。回复和勾选请在交人评论里，不要编辑往返
@@ -1373,9 +1378,36 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 的条目都看不出来。所以关掉之后留意一阵，发现停在半路的条目就重派一次：
 
 - **怎么认出来**：条目挂着 `doing/agent`，却好一阵没有新评论，它的 agent 会话已经停下（开了卡住检测的项目，daemon 也会自己提醒或交人）
-- **怎么重派**：在条目页面右侧的 Labels 里摘掉 `doing/agent`，再按最新一条 agent 评论挂派工标签——最新一条是 worker 的交付（等复审）就挂
-  `pending/review`，是复审结论或别的就挂 `pending/agent`
-- **怎样算救回来了**：几分钟内条目上出现一条 loop 账号的新评论（关掉之后它是单独的一条，不再进往返记录），`doing/agent` 换成了下一步的标签
+- **查出被打断的是哪次派工**：daemon 派工时先摘掉派工标签、再挂上 `doing/agent`，所以条目的标签历史里，最后一次挂 `doing/agent` 之前被 daemon 摘掉的那个标签，就是这次派工的来由。整段运行下面这一段（`owner/repo` 换成仓库名，`123` 换成条目编号；项目改过这几个标签名的一并换掉），看最后一行：
+  - `RESTORE: <标签>`：派出这次工的标签。`pending/review` 是复审（只有 PR 正文、还没有 worker 评论的首轮复审也一样），`pending/agent…` 是 worker
+  - `NOT_STUCK: …`：条目已经不挂 `doing/agent`，不用重派
+  - `UNKNOWN: …`：看不出来（读不到、标签历史里没有派工、摘掉的标签不止一个或不是这两种）。不要按最后一条评论去猜：到条目页面的时间线上自己核对 daemon 最后一次挂 `doing/agent` 前摘掉的标签；核对不出，就只摘 `doing/agent`、挂 `pending/human`，留给人处理
+
+<!-- round-log-redispatch-ops:begin -->
+```bash
+(
+  REPO=owner/repo; N=123
+  LABELS="$(gh api "repos/$REPO/issues/$N" --jq '.labels[].name')" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  printf '%s\n' "$LABELS" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
+  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, .actor.login, .label.name] | @tsv')" \
+    || { echo "UNKNOWN: could not read the label history"; exit 1; }
+  printf '%s\n' "$EV" | awk -F'\t' '
+    { e[NR] = $1; a[NR] = $2; l[NR] = $3 }
+    END {
+      for (i = NR; i >= 1; i--) if (e[i] == "labeled" && l[i] == "doing/agent") break
+      if (i < 1) { print "UNKNOWN: no dispatch in the label history"; exit 1 }
+      n = 0
+      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == a[i]; j--)
+        if (l[j] == "pending/review" || l[j] == "pending/agent" || index(l[j], "pending/agent/") == 1) { n++; t = l[j] }
+      if (n != 1) { print "UNKNOWN: cannot tell which label dispatched it"; exit 1 }
+      print "RESTORE: " t
+    }'
+)
+```
+<!-- round-log-redispatch-ops:end -->
+
+- **怎么重派**：在条目页面右侧的 Labels 里摘掉 `doing/agent`，挂上 `RESTORE:` 后面的那个标签
+- **怎样算救回来了**：条目先又挂上 `doing/agent`（daemon 已经重新派出），之后出现一条 loop 账号单独发的新评论——复审结论或 worker 交付，关掉之后它不再进往返记录——`doing/agent` 换成了下一步的标签。派工排队或 agent 撞到用量上限时会晚很久，以这两样实际出现为准，不按等了多久判断
 
 不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
 
