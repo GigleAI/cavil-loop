@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { annotateDiagrams, decodeText, diagramSources, DIAGRAM_DATA, withoutPlaceholders } from '../../src/renderer/diagramBlocks';
-import { DIAGRAM_SANDBOX, diagramCsp, helperDocument, svgDataUrl } from '../../src/renderer/diagramHost';
+import { DIAGRAM_SANDBOX, diagramCsp, drawAgain, helperDocument, svgDataUrl } from '../../src/renderer/diagramHost';
 import { previewDocument, timelineDocument, plainExcerpt } from '../../src/renderer/detailHtml';
 import type { ItemDetail } from '../../src/shared/actions';
 
@@ -120,9 +120,27 @@ describe('every place that shows GitHub\'s HTML', () => {
     expect(shown).toContain(`<img class="mmdimg" alt="流程图" src="${SVG}">`);
     expect(shown).not.toContain('Loading');
     expect(shown).toContain('.mmdbox');
+    // PR #681 review round 1, problem 1: the preview's failure line and the "web page only" line link to the item's page
+    const item = 'https://github.com/o/r/issues/1';
+    for (const why of ['failed', 'syntax', 'tooBig'] as const) {
+      const failed = previewDocument(GH, false, () => ({ ok: false, why }), item);
+      expect(failed).toMatch(new RegExp(`<div class="mmdbox" data-state="failed" data-find-skip>[^<]*下面是原文 · <a class="mmdweb" href="${item}">在 GitHub 打开</a></div>`));
+      expect(failed).toContain('<details class="mmdsrc" open>');
+      expect(failed).toContain(`<div class="enrich" data-enrich="geojson" data-find-skip>这类图只在 GitHub 网页上显示 · <a class="mmdweb" href="${item}">在 GitHub 打开</a></div>`);
+    }
     const waiting = previewDocument(GH, true);
     expect(waiting).toContain('data-state="drawing"');
     expect(waiting).not.toContain('<img');
+  });
+});
+
+describe('which answers are asked for again (PR #681 review round 1, problem 2)', () => {
+  it('never asked, or "failed" (the helper did not start / answer): asked again; a picture or a bad source: kept', () => {
+    expect(drawAgain(undefined)).toBe(true);
+    expect(drawAgain({ ok: false, why: 'failed' })).toBe(true);
+    expect(drawAgain({ ok: false, why: 'syntax' })).toBe(false);
+    expect(drawAgain({ ok: false, why: 'tooBig' })).toBe(false);
+    expect(drawAgain({ ok: true, data: SVG })).toBe(false);
   });
 });
 

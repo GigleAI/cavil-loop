@@ -370,8 +370,9 @@ ${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && p
  * coloured the same in both — and one script, PREVIEW_SCRIPT (GitHub#590: a clicked
  * web link goes to the window).
  */
-export function previewDocument(html: string, dark: boolean, drawn?: (src: string) => DrawResult | undefined): string {
+export function previewDocument(html: string, dark: boolean, drawn?: (src: string) => DrawResult | undefined, web?: string): string {
   // GitHub#680: the same diagram blocks as the discussion; the window has drawn them already (`drawn`), so the
-  // picture goes straight in and the preview's script stays links-only
-  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}"><base target="_blank"><style>${codeCss(dark)}\n${diagramCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${annotateDiagrams(html, { drawn })}<script>${PREVIEW_SCRIPT}</script></body>`;
+  // picture goes straight in and the preview's script stays links-only. `web` = the item's page on GitHub, where
+  // a diagram that was not drawn and a block only GitHub's page draws link to (the reply is not on GitHub yet)
+  return `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(PREVIEW_CSP)}"><base target="_blank"><style>${codeCss(dark)}\n${diagramCss(dark)}</style><body style="font:13px/1.5 sans-serif;margin:6px;color:${dark ? '#e6edf3' : '#1f2328'};background:${dark ? '#151b23' : '#ffffff'}">${annotateDiagrams(html, { drawn, web })}<script>${PREVIEW_SCRIPT}</script></body>`;
 }

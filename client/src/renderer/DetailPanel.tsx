@@ -6,7 +6,7 @@ import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
 import { PREVIEW_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
-import { drawDiagram, type DrawResult } from './diagramHost';
+import { drawAgain, drawDiagram, type DrawResult } from './diagramHost';
 import { diagramSources } from './diagramBlocks';
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
@@ -843,17 +843,28 @@ export function DetailPanel({
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
   const [unfold, setUnfoldRule] = useState<Unfold>('latest');
   const isDark = useDarkMode();
-  // GitHub#680: the reply preview's diagrams, drawn for the theme on screen; each answer redraws the preview with it
+  // GitHub#680: the reply preview's diagrams, drawn for the theme on screen; each answer redraws the preview with it.
+  // Asked once per preview shown (or theme): an answer kept here is reused unless it is "failed" (the helper did
+  // not start or answer), which the next preview asks again — never in a loop, the answers are not a dependency
   useEffect(() => {
     if (preview === null) return;
     let gone = false;
+    const asked: string[] = [];
     for (const src of diagramSources(preview)) {
       const key = `${isDark ? 'd' : 'l'}\n${src}`;
-      if (previewDrawn.has(key)) continue;
+      if (!drawAgain(previewDrawn.get(key))) continue;
+      asked.push(key);
       void drawDiagram(src, isDark).then((r) => {
-        if (!gone) setPreviewDrawn((m) => (m.has(key) ? m : new Map(m).set(key, r)));
+        if (!gone) setPreviewDrawn((m) => (drawAgain(m.get(key)) ? new Map(m).set(key, r) : m));
       });
     }
+    // a "failed" kept from an earlier preview shows as "drawing" again while it is asked again
+    if (asked.some((k) => previewDrawn.has(k)))
+      setPreviewDrawn((m) => {
+        const n = new Map(m);
+        for (const k of asked) if (drawAgain(n.get(k))) n.delete(k);
+        return n;
+      });
     return () => {
       gone = true;
     };
@@ -1944,7 +1955,7 @@ export function DetailPanel({
             data-testid="reply-preview"
             ref={previewRef}
             sandbox={PREVIEW_SANDBOX}
-            srcDoc={previewDocument(preview, isDark, (src) => previewDrawn.get(`${isDark ? 'd' : 'l'}\n${src}`))}
+            srcDoc={previewDocument(preview, isDark, (src) => previewDrawn.get(`${isDark ? 'd' : 'l'}\n${src}`), item.url)}
           />
         )}
         {item.kind === 'pr' && pr && (

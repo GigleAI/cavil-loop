@@ -128,6 +128,16 @@ async function ask(src: string, dark: boolean): Promise<DrawResult> {
   });
 }
 
+/**
+ * Whether a diagram whose last answer was `r` is to be asked for (again): never asked, or "failed" — the
+ * helper did not start or did not answer, which may be over by now. A picture, and a source mermaid cannot
+ * read (or too long), stay as they are. Every keeper of answers outside this file (the reply preview) asks
+ * this, so it retries exactly what `drawDiagram` itself does not keep.
+ */
+export function drawAgain(r: DrawResult | undefined): boolean {
+  return !r || (!r.ok && r.why === 'failed');
+}
+
 /** One diagram, drawn for the light or the dark theme. Never rejects. */
 export function drawDiagram(src: string, dark: boolean): Promise<DrawResult> {
   if (src.length > MAX_SOURCE) return Promise.resolve({ ok: false, why: 'tooBig' });

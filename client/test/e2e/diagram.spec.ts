@@ -141,3 +141,56 @@ test('GitHub#680: a mermaid diagram is drawn on this machine and shown as a pict
   await expect(preview.locator('body')).not.toContainText('Loading');
   expect(await helper.evaluate(() => document.body.getAttribute('data-drawn'))).toBe('4');
 });
+
+test('GitHub#680 (PR #681 review round 1): the reply preview — a diagram that failed because the helper did not start is drawn the next time the preview is shown; its failure links to the item on GitHub', async () => {
+  env.fake.state.w.comments.set(KEY, [{ id: 'C-plain', url: url('1'), createdAt: '2026-11-02T00:00:00Z', bodyHTML: '<p>没有图</p>', author: { login: 'user-3' } }]);
+  env.fake.state.w.markdownHtml = GH;
+  const { page } = await launchApp(env);
+  await page.emulateMedia({ colorScheme: 'light' });
+  await signIn(page);
+  const row = page.locator(`[data-testid="row"][data-key="${KEY}"] [data-testid="title-cell"]`).first();
+  await expect(row).toBeVisible({ timeout: 20_000 });
+  await row.click();
+  const detail = page.getByTestId('detail');
+  await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
+  // nothing in the discussion to draw: the helper is first started by the preview
+  await expect(page.getByTestId('diagram-helper')).toHaveCount(0);
+
+  // ---- 1. the helper's drawing program cannot be loaded: the helper starts without it — "failed" ----
+  let blocked = 0;
+  await page.route('**/diagram/mermaid.min.js', (r) => {
+    blocked++;
+    return r.abort();
+  });
+  await detail.getByTestId('reply-input').fill('看图');
+  const toggle = detail.getByTestId('reply-preview-toggle');
+  await toggle.click();
+  const preview = page.frameLocator('[data-testid="reply-preview"]');
+  const failed = preview.locator('.mmdbox[data-state="failed"]');
+  await expect(failed).toContainText('这张流程图没画出来，下面是原文', { timeout: 30_000 });
+  expect(blocked).toBe(1);
+  // the failure and the "web page only" line link to the item's page (the reply itself is not on GitHub yet)
+  const itemUrl = `https://github.com/${REPO}/issues/${N}`;
+  await expect(failed.locator('a.mmdweb')).toHaveAttribute('href', itemUrl);
+  await expect(preview.locator('.enrich a.mmdweb')).toHaveAttribute('href', itemUrl);
+  await expect(preview.locator('details.mmdsrc')).toHaveAttribute('open', '');
+  await expect(preview.locator('img.mmdimg')).toHaveCount(0);
+
+  // ---- 2. the program loads again; the preview shown again asks again and shows the picture ----
+  await page.unroute('**/diagram/mermaid.min.js');
+  await toggle.click();
+  await expect(page.getByTestId('reply-preview')).toHaveCount(0);
+  await toggle.click();
+  await expect(preview.locator('img.mmdimg')).toBeVisible({ timeout: 30_000 });
+  expect(await preview.locator('img.mmdimg').evaluate((i: HTMLImageElement) => i.complete && i.naturalWidth > 0)).toBe(true);
+  await expect(preview.locator('.mmdbox')).toHaveCount(0);
+  const helper = await helperOf(page);
+  await expect.poll(() => helper.evaluate(() => document.body.getAttribute('data-drawn'))).toBe('1');
+
+  // ---- 3. a picture is kept: shown a third time, nothing is drawn again ----
+  await toggle.click();
+  await toggle.click();
+  await expect(preview.locator('img.mmdimg')).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(300);
+  expect(await helper.evaluate(() => document.body.getAttribute('data-drawn'))).toBe('1');
+});
