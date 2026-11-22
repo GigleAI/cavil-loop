@@ -88,7 +88,7 @@ function line_step(line,   i, c, col, rest, k, rel, w, sp, n, wasblank, waspara)
     if (thematic_break(rest)) { ldepth = k; return 1 }
     w = list_marker(rest)
     # 同一层的段落中间：空列表项、不是从 1 开始的有序列表项都不能打断段落（「段落」下一行的「-」是标题下划线）
-    if (w > 0 && waspara && k == ldepth && (length(rest) == w || (w > 1 && substr(rest, 1, w - 1) + 0 != 1))) w = 0
+    if (w > 0 && waspara == 1 && k == ldepth && (length(rest) == w || (w > 1 && substr(rest, 1, w - 1) + 0 != 1))) w = 0
     if (w > 0) {
         ldepth = k
         while (w > 0) {
@@ -109,7 +109,10 @@ function line_step(line,   i, c, col, rest, k, rel, w, sp, n, wasblank, waspara)
     if (wasblank || !waspara || rest ~ /^[<>#]/) ldepth = k
     if (fence_open(rest, k)) { ldepth = k; return 1 }
     if (thematic_break(rest)) return 1
-    if (substr(rest, 1, 1) != "<") lpara = 1
+    # 引用里的段落（lpara = 2）在另一个容器里：下一行的列表项不算打断它，懒续行照常
+    c = substr(rest, 1, 1)
+    if (c == ">") lpara = 2
+    else if (c != "<") lpara = 1
     return 0
 }
 function alone_mark(line, m,   t) {

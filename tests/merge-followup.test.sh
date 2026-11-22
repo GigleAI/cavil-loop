@@ -591,6 +591,7 @@ chk "列表项里的围栏关上后，缩进不够的段落不是懒续行：列
 chk "段落下一行的「-」是标题下划线，不是列表项：之后制表符开头 → 没提" "$(mfp "段落\n-\n\t$MN\n")" silent
 chk "分隔线（- - -）不是嵌套列表：之后前有 4 格 → 没提" "$(mfp "- - -\n    $MN\n")" silent
 chk "引用打断列表：引用之后前有 4 格 → 没提" "$(mfp "- a\n> q\n    $MN\n")" silent
+chk "引用里的段落不挡列表项：「> q」下一行的「2. a」开新列表，它下面前有 3 格的标记算数" "$(mfp "> q\n2. a\n   $MN\n")" none
 LST=$(printf -- '<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后\n  续行说明\n<!-- merge-followup:end -->\n' \
       | (source "$REPO_DIR/scripts/_merge_followup.sh" && merge_followup_parse) | jq -c '[.s, .items]')
 chk "清单项下有缩进续行 → 清单，续行并进条目" "$LST" '["list",["谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后 续行说明"]]'
