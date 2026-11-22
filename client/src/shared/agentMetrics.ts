@@ -11,7 +11,15 @@
 
 import { outsideWords } from './i18n';
 
-const RECORD = /^<!--\s*agent-metrics\s+(.*?)-->$/;
+// GitHub#651: the one whitespace set for the machine record and the round-log markers — the six ASCII
+// whitespace characters, the same set as round_log.py's WS. JavaScript's trim() / \s and Python's
+// strip() / split() / \s disagree on Unicode spaces (U+0085 is space only to Python, U+FEFF only to
+// JavaScript), so neither side uses its default: one record read differently on the two sides showed a
+// time in the fold title and "no record" in the client's sum (PR #655 review round 2). `s` lets `.` take
+// every character, as Python's `.` does inside one line.
+const WS = '[ \\t\\n\\r\\v\\f]';
+const trimWs = (s: string) => s.replace(new RegExp(`^${WS}+|${WS}+$`, 'g'), '');
+const RECORD = new RegExp(`^<!--${WS}*agent-metrics${WS}+(.*?)-->$`, 's');
 
 /**
  * The record's `wall_secs`, or undefined when the source has no record on its last
@@ -23,15 +31,15 @@ export function wallSecsOf(source: unknown): number | undefined {
   const lines = source.split(/\r\n|\r|\n/);
   let last = '';
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].trim()) {
-      last = lines[i].trim();
+    if (trimWs(lines[i])) {
+      last = trimWs(lines[i]);
       break;
     }
   }
   const m = RECORD.exec(last);
   if (!m) return undefined;
   const values = m[1]
-    .split(/\s+/)
+    .split(new RegExp(`${WS}+`))
     .filter((t) => t.startsWith('wall_secs='))
     .map((t) => t.slice('wall_secs='.length));
   if (values.length !== 1 || !/^\d+$/.test(values[0])) return undefined;
@@ -83,7 +91,7 @@ const RL_TOP = /^<!-- cavil-round-log:top sec=([0-9a-f]{6,32}) -->$/;
 const RL_TOP_END = '<!-- cavil-round-log:top-end -->';
 const RL_SEC = /^<!-- cavil-round-log:sec id=([0-9a-f]{6,32}) role=(worker|review) at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) after=([0-9]+) of=([0-9a-f]{6,32}|-) -->$/;
 const RL_SEC_END = '<!-- cavil-round-log:sec-end -->';
-const RL_ANY = /^\s*<!-- cavil-round-log:/;
+const RL_ANY = new RegExp(`^${WS}*<!-- cavil-round-log:`);
 const RL_TITLE = /^<details><summary>(⏱️ .*)<\/summary>$/;
 
 export interface RoundLogSection {
@@ -112,7 +120,7 @@ export interface RoundLog {
 
 /** Does the source open with the round-log header (readable or not)? Such a comment never shows a single footer's time. */
 export function isRoundLog(source: unknown): boolean {
-  return typeof source === 'string' && source.replace(/\r\n/g, '\n').split('\n')[0].trim() === RL_HEAD;
+  return typeof source === 'string' && trimWs(source.replace(/\r\n/g, '\n').split('\n')[0]) === RL_HEAD;
 }
 
 const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
@@ -121,7 +129,7 @@ const unesc = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').repla
 export function roundLogSections(source: unknown): RoundLogSection[] | undefined {
   if (typeof source !== 'string') return undefined;
   const lines = source.replace(/\r\n/g, '\n').split('\n');
-  if (!lines.length || lines[0].trim() !== RL_HEAD) return undefined;
+  if (!lines.length || trimWs(lines[0]) !== RL_HEAD) return undefined;
   const secs: (RoundLogSection & { body: string })[] = [];
   let mode: 'top' | 'sec' | null = null;
   let hasTop = false;
@@ -129,7 +137,7 @@ export function roundLogSections(source: unknown): RoundLogSection[] | undefined
   let buf: string[] = [];
   let prev: string[] = [];
   for (const ln of lines.slice(1)) {
-    const s = ln.replace(/\s+$/, '');
+    const s = ln.replace(new RegExp(`${WS}+$`), '');
     if (mode === null) {
       prev = [...prev, s].slice(-3);
       if (RL_TOP.test(s)) {

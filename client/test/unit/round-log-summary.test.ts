@@ -18,6 +18,21 @@ const SCRIPTS = fileURLToPath(new URL('../../../scripts', import.meta.url));
 // the CommonMark parser vendored for the shell tests (markdown-it-py, raw HTML on) stands in for GitHub's renderer
 const VENDOR = fileURLToPath(new URL('../../../tests/lib/vendor', import.meta.url));
 /** wall_secs values both sides must judge alike: in range, the edge, past it, very long, leading zeros, not numbers */
+/**
+ * Characters around and between the record's fields (GitHub#651 review #10): the six ASCII whitespace
+ * characters count as whitespace on both sides, nothing else does — Unicode spaces that only Python
+ * (U+0085, U+001C) or only JavaScript (U+FEFF) would take, line and paragraph separators, NBSP, ideographic space.
+ */
+const SPACE_CHARS = [' ', '\t', '\v', '\f', '\r', '\x85', '\ufeff', '\u00a0', '\u2028', '\u2029', '\x1c', '\u3000'];
+const SPACE_BODIES = SPACE_CHARS.flatMap((c) => [
+  `x\n<!-- agent-metrics in=1${c}wall_secs=7 -->`,
+  `x\n<!--${c}agent-metrics wall_secs=7 -->`,
+  `x\n<!-- agent-metrics${c}wall_secs=7 -->`,
+  `x\n<!-- agent-metrics wall_secs=7 -->${c}`,
+  `x\n${c}<!-- agent-metrics wall_secs=7 -->`,
+  `x\n<!-- agent-metrics wall_secs=7 a${c}b -->`,
+  `x\n<!-- agent-metrics wall_secs=7 -->\n${c}`,
+]);
 const WALL_VALUES = ['0', '1', '9007199254740991', '9007199254740992', '99999999999999999999', '9'.repeat(5000), '00000000000000000007', '0'.repeat(5000) + '5', '-1', '1.5', '', '1e3'];
 
 interface PySection {
@@ -28,6 +43,8 @@ interface PySection {
 }
 interface Run {
   cases: Case[];
+  /** round_log.wall_secs_of and the fold title for each of SPACE_BODIES */
+  spaces: { wall: number | null; title: string }[];
   /** round_log.wall_secs_of and the fold title for each of WALL_VALUES */
   walls: { wall: number | null; title: string }[];
   /** the full record rendered to HTML */
@@ -75,10 +92,17 @@ unclosed = full.rstrip("\\n").rsplit("<!-- cavil-round-log:sec-end -->", 1)[0]
 stray = full.replace("正文", "正文\\n<!-- cavil-round-log:sec-end -->", 1)
 two_tops = full + "\\n<!-- cavil-round-log:top sec=bbbbbb000001 -->\\nx\\n<!-- cavil-round-log:top-end -->\\n"
 crlf = full.replace("\\n", "\\r\\n")
+# odd separators inside a section's record, and after a marker line (GitHub#651 review #10)
+def odd(c):
+    b1 = "❓ 一节\\n\\n<!-- agent-metrics agent=claude in=1" + c + "wall_secs=7 -->"
+    b2 = "✅ 二节\\n\\n<!-- agent-metrics agent=claude wall_secs=9 -->" + c
+    return rec(sec(1, "worker", b1), sec(2, "review", b2, of="aaaaaa000001"))
+odd_cases = [("sep-%04x" % ord(c), odd(c)) for c in ["\\x85", "\\ufeff", "\\u2028", "\\t"]]
+mark_cases = [("mark-%04x" % ord(c), full.replace("<!-- cavil-round-log:sec-end -->", "<!-- cavil-round-log:sec-end -->" + c, 1)) for c in ["\\x85", "\\ufeff", "\\t"]]
 out = []
 for name, body in [("full", full), ("partial", partial), ("none", none), ("dup", dup), ("order", order),
                    ("mixed-new-last", mixed_new_last), ("mixed-old-last", mixed_old_last), ("unclosed", unclosed),
-                   ("stray-marker", stray), ("two-tops", two_tops), ("crlf", crlf)]:
+                   ("stray-marker", stray), ("two-tops", two_tops), ("crlf", crlf)] + odd_cases + mark_cases:
     try:
         us = [u for u in r.units([{"id": 9, "author": "loop-bot", "at": "", "body": body}], r.trusted_by("loop-bot")) if u["kind"] == "section"]
         py = [{"sec": u["sec"], "role": u["role"], "wall": r.wall_secs_of(u["body"]), "title": u["title"]} for u in us]
@@ -89,17 +113,19 @@ walls = []
 for v in ${JSON.stringify(WALL_VALUES)}:
     b = "x\\n<!-- agent-metrics agent=claude wall_secs=%s in=1 -->" % v
     walls.append({"wall": r.wall_secs_of(b), "title": r.section_title("worker", b)})
-print(json.dumps({"cases": out, "walls": walls, "html": MarkdownIt("commonmark", {"html": True}).render(full)}))`;
-  return JSON.parse(execFileSync('python3', ['-I', '-c', py], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', TZ: 'Asia/Shanghai' } }));
+spaces = [{"wall": r.wall_secs_of(b), "title": r.section_title("worker", b)} for b in json.loads(sys.stdin.read())]
+print(json.dumps({"cases": out, "walls": walls, "spaces": spaces, "html": MarkdownIt("commonmark", {"html": True}).render(full)}))`;
+  return JSON.parse(execFileSync('python3', ['-I', '-c', py], { input: JSON.stringify(SPACE_BODIES), encoding: 'utf8', env: { PATH: process.env.PATH ?? '', TZ: 'Asia/Shanghai' } }));
 }
 
 const ran = run();
 const all = ran.cases;
 const byName = (n: string) => all.find((c) => c.name === n)!;
+const sectionWalls = (n: string) => roundLogSections(byName(n).record)!.map((s) => s.wallSecs ?? null);
 
 describe('round log sections: the client cuts what round_log.py cuts (GitHub#651)', () => {
   it('every record: same sections, roles, times and titles as round_log.units; unreadable on both sides together', () => {
-    expect(all.length).toBe(11);
+    expect(all.length).toBe(18);
     for (const c of all) {
       const ts = roundLogSections(c.record);
       if (c.py === null) {
@@ -110,8 +136,14 @@ describe('round log sections: the client cuts what round_log.py cuts (GitHub#651
       expect(ts!.map((s) => ({ sec: s.sec, role: s.role, wall: s.wallSecs ?? null, title: s.title ?? null })), c.name).toEqual(c.py);
     }
     // the reachable side: python read most of them
-    expect(all.filter((c) => c.py !== null).length).toBe(8);
-    expect(all.filter((c) => c.py === null).map((c) => c.name)).toEqual(['unclosed', 'stray-marker', 'two-tops']);
+    expect(all.filter((c) => c.py !== null).length).toBe(13);
+    // a marker line followed by a Unicode space is not a marker on either side; an ASCII tab after it is
+    expect(all.filter((c) => c.py === null).map((c) => c.name)).toEqual(['unclosed', 'stray-marker', 'two-tops', 'mark-0085', 'mark-feff']);
+    // and the outer sum is the sum of exactly the times python read, section for section
+    for (const c of all.filter((x) => x.py !== null && x.py.length)) {
+      const known = c.py!.filter((s) => s.wall !== null).map((s) => s.wall!);
+      expect(roundLogOf(c.record)!.total, c.name).toBe(known.length ? known.reduce((a, b) => a + b, 0) : undefined);
+    }
   });
 
   it('a section id given twice counts once (the first copy), as round_log.units keeps it', () => {
@@ -158,6 +190,26 @@ describe('round log sections: the client cuts what round_log.py cuts (GitHub#651
     });
     // the reachable side: in-range values were read, the edge included
     expect(ran.walls.filter((w) => w.wall !== null).map((w) => w.wall)).toEqual([0, 1, 9007199254740991, 7, 5]);
+  });
+
+  it('one whitespace set on both sides: odd separators and edges give the same verdict (GitHub#651 review #10)', () => {
+    expect(ran.spaces).toHaveLength(SPACE_BODIES.length);
+    SPACE_BODIES.forEach((b, i) => {
+      const ts = wallSecsOf(b);
+      const why = JSON.stringify(b);
+      expect(ts ?? null, why).toBe(ran.spaces[i].wall);
+      expect(ran.spaces[i].title.startsWith(ts === undefined ? '⏱️ 耗时未记录 · ' : `⏱️ ${formatDuration(ts)} · `), why).toBe(true);
+    });
+    // the two characters review #10 measured: no separator on either side
+    expect(wallSecsOf('x\n<!-- agent-metrics in=1\x85wall_secs=7 -->')).toBeUndefined();
+    expect(wallSecsOf('x\n<!-- agent-metrics in=1\ufeffwall_secs=7 -->')).toBeUndefined();
+    // the reachable side: the ASCII ones are read, both as separators and at the edges
+    const read = SPACE_BODIES.filter((_, i) => ran.spaces[i].wall !== null).length;
+    expect(read).toBeGreaterThanOrEqual(5 * 7 - 5);
+    expect(sectionWalls('sep-0009')).toEqual([7, 9]);
+    expect(sectionWalls('sep-0085')).toEqual([null, null]);
+    expect(sectionWalls('sep-feff')).toEqual([null, null]);
+    expect(roundLogOf(byName('sep-feff').record)!.total).toBeUndefined();
   });
 
   it('a sum past the exactly representable range is no time, never a rounded one', () => {

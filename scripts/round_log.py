@@ -25,6 +25,17 @@ import json
 import re
 import sys
 
+# 机器记录与记录标记只认这六个空白字符（与客户端 client/src/shared/agentMetrics.ts 的 WS 同一个集合）：
+# 首尾去空白、字段分隔都只用它。Python 的 strip() / split() / \s 和 JavaScript 的 trim() / \s 认的 Unicode
+# 空白不一样（U+0085 Python 认、JS 不认；U+FEFF 反过来），用各自的默认规则，同一条记录两边读出的结果会不同（PR #655 复审第 2 轮）
+WS = " \t\n\r\x0b\x0c"
+_WS_CLASS = "[ \\t\\n\\r\\x0b\\x0c]"
+
+
+def _trim(s):
+    return s.strip(WS)
+
+
 HEAD = "<!-- cavil-round-log:v1 -->"
 TOP_END = "<!-- cavil-round-log:top-end -->"
 SEC_END = "<!-- cavil-round-log:sec-end -->"
@@ -33,7 +44,7 @@ RE_SEC = re.compile(
     r"^<!-- cavil-round-log:sec id=([0-9a-f]{6,32}) role=(worker|review) "
     r"at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) after=([0-9]+) of=([0-9a-f]{6,32}|-) -->$")
 # 正文里出现任何一行像标记的东西都不许写进记录（会把记录切坏）
-RE_ANY_MARK = re.compile(r"^\s*<!-- cavil-round-log:")
+RE_ANY_MARK = re.compile("^" + _WS_CLASS + "*<!-- cavil-round-log:")
 # 复审轮次标记：第一个非空行整行就是它（不是前缀匹配，正文里举的例子、半截写法都不算）
 RE_ROUND = re.compile(r"^<!-- codex-review-round:([0-9]{1,4}) -->$")
 MAX_CHARS = 60000
@@ -57,19 +68,19 @@ class Superseded(FormatError):
 
 
 def is_record(body):
-    return (body or "").split("\n", 1)[0].strip() == HEAD
+    return _trim((body or "").split("\n", 1)[0]) == HEAD
 
 
 def parse_record(body):
     """→ (top, sections)。top = {sec, text} 或 None；sections = [{sec, role, at, after, of, body, idx}]。
     标记不成对、出现在不该出现的地方 → FormatError（调用方按「读不懂」处理，不猜）。"""
     lines = (body or "").replace("\r\n", "\n").split("\n")
-    if not lines or lines[0].strip() != HEAD:
+    if not lines or _trim(lines[0]) != HEAD:
         raise FormatError("不是往返记录")
     top, secs, cur, buf, mode = None, [], None, [], None
     prev = []   # 节外最近两行：节标记前面是「折叠标题行、空行」时，记下这一节的标题（GitHub#651）
     for ln in lines[1:]:
-        s = ln.rstrip()
+        s = ln.rstrip(WS)
         if mode is None:
             prev = (prev + [s])[-3:]
             m = RE_TOP.match(s)
@@ -247,7 +258,7 @@ INTRO = ("**agent 往返记录**：一段 agent 之间的来回（交方案 / �
 # 折叠块在节标记外面：切节只认标记，标题和 <details> 行不进节正文，周报、单 PR 统计、读取命令看到的
 # 每节内容与没有标题时完全一样。标题只在这里生成；客户端读这一行，不另写取句规则。
 
-RE_METRICS = re.compile(r"^<!--\s*agent-metrics\s+(.*?)-->$")
+RE_METRICS = re.compile("^<!--" + _WS_CLASS + "*agent-metrics" + _WS_CLASS + "+(.*?)-->$")
 RE_FOOTER_START = re.compile(r"^<details><summary>⏱️ 耗时：")
 RE_HTML_COMMENT_LINE = re.compile(r"^<!--.*-->$")
 RE_HR = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
@@ -261,13 +272,13 @@ def wall_secs_of(body):
     和客户端（client/src/shared/agentMetrics.ts wallSecsOf）、周报的读法同一条规则，测试对拍。"""
     last = ""
     for ln in reversed((body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")):
-        if ln.strip():
-            last = ln.strip()
+        if _trim(ln):
+            last = _trim(ln)
             break
-    m = RE_METRICS.match(last)
+    m = RE_METRICS.fullmatch(last)
     if not m:
         return None
-    vals = [t[len("wall_secs="):] for t in m.group(1).split() if t.startswith("wall_secs=")]
+    vals = [t[len("wall_secs="):] for t in re.split(_WS_CLASS + "+", m.group(1)) if t.startswith("wall_secs=")]
     # 有效范围与客户端相同：非负整数、不超过 2^53−1（JavaScript 能精确表示的最大整数）；越界、超长都算没有记录。
     # 先限位数再转整数：超长数字串直接 int() 会抛 ValueError（Python 的整数转换位数上限），交付就写不出标题
     if len(vals) != 1 or not re.fullmatch(r"[0-9]+", vals[0]):
@@ -444,8 +455,8 @@ def plan(inp):
 
 def _replace_top(text, new_top):
     lines = text.split("\n")
-    s = next(i for i, ln in enumerate(lines) if RE_TOP.match(ln.rstrip()))
-    e = next(i for i in range(s, len(lines)) if lines[i].rstrip() == TOP_END)
+    s = next(i for i, ln in enumerate(lines) if RE_TOP.match(ln.rstrip(WS)))
+    e = next(i for i in range(s, len(lines)) if lines[i].rstrip(WS) == TOP_END)
     # 连同包着它的 <details> 一起换掉（我们自己写的固定样子）
     if s >= 2 and lines[s - 2].startswith("<details><summary>当前完整版本") and lines[s - 1] == "":
         s -= 2
