@@ -592,9 +592,16 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   `tests/tmux-sandbox-guard.test.sh` (rules in `tests/lib/tmux_guard.py`: a literal tmux call without
   `-S` / `-L` needs the sandbox, or `export TMUX_TMPDIR=` plus a cleared `TMUX`, before it; a sandbox
   file creates nothing before sourcing it, sets no EXIT trap, deletes nothing from a clean-up
-  callback, and every `env -i` carries `TMUX_TMPDIR=` and exactly `PATH="$PATH"` (single quotes or a changed value are reported); an absolute-path tmux call
+  callback, and every `env -i` has, among the assignment words before the command name, exactly
+  `TMUX_TMPDIR="$TMUX_TMPDIR"` and `PATH="$PATH"` (or the `${…}` spelling) — the words are split by
+  shell quoting, so a value only in a comment or after the command name, an empty or changed value,
+  a later reassignment, single quotes or a default (`${TMUX_TMPDIR:-}`) are all reported (PR #660
+  review round 3: a text search let `TMUX_TMPDIR=` and a `PATH="$PATH"` comment through); the test
+  runs every form it lists through a real `env -i` child and requires that no form the lint lets
+  through gives the child a different `PATH` / `TMUX_TMPDIR`; an absolute-path tmux call
   is always reported; continuation lines are joined first). It cannot see `PATH` changed somewhere
-  else before being passed, a child that changes its own `PATH`, tmux called through a
+  else before being passed, a child that changes its own `PATH`, what an expanded argument of
+  `env -i` (`"$@"`, `${X:+$X}`) assigns, tmux called through a
   variable or a wrapper function (`"$REAL_TMUX" …`), a test that only reaches tmux through the script
   under test, or a script written out through a here-doc — the author and the reviewer check those.
   Start-up and exit are tested in `tests/tmux-sandbox.test.sh`

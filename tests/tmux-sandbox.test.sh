@@ -419,6 +419,29 @@ chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
 while read -r p; do kill -9 "$p" 2>/dev/null; done < "$T/budget.d/pids"
 [ -n "$d" ] && rm -rf "$d"
 
+echo "【17】本机没有 tmux：什么都不起，但 TMUX_TMPDIR 设上了，set -u 下 env -i 照规矩写不出错"
+NOTMUX="$T/notmux-bin"; mkdir -p "$NOTMUX"
+for d in /usr/local/bin /usr/bin /bin; do
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+        b=${f##*/}
+        [ "$b" = tmux ] || [ -e "$NOTMUX/$b" ] || ln -s "$f" "$NOTMUX/$b" 2>/dev/null
+    done
+done
+mkdir -p "$T/notmux.d"
+{ printf 'set -uo pipefail\nOUT=%q\nsource %q\n' "$T/notmux.d" "$LIB"; cat <<'EOF'; } > "$T/notmux.sh"
+unset TMUX_TMPDIR
+tmux_sandbox_start
+command -v tmux >/dev/null 2>&1 && echo HAS-TMUX
+env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" /bin/sh -c 'echo "child-ok[${TMUX_TMPDIR-unset}]"'
+echo CASE-RAN
+EOF
+( cd "$T" && env -i HOME="$T/home" PATH="$NOTMUX" LANG=C.UTF-8 bash "$T/notmux.sh" ) > "$T/notmux.out" 2>&1
+chk "退出码 0" "$?" "0"
+chk "这个 PATH 上确实找不到 tmux" "$(grep -c HAS-TMUX "$T/notmux.out")" "0"
+chk "子进程照常起来、拿到空的 TMUX_TMPDIR" "$(grep -c 'child-ok\[\]' "$T/notmux.out")" "1"
+chk "用例跑完了" "$(grep -c CASE-RAN "$T/notmux.out")" "1"
+
 echo
 echo "通过 $pass / 失败 $fail"
 report_counts "$pass" "$fail"

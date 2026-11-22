@@ -78,7 +78,7 @@ chk_lacks() {
 # 在当前 shell 里赋值再调函数，等于绕过了要测的那条链路。
 lib_eval() {   # <snippet> [VAR=VAL ...]
     local snippet="$1"; shift
-    env -i PATH="$PATH" HOME="$FAKE_HOME" TMUX_TMPDIR="${TMUX_TMPDIR:-}" \
+    env -i PATH="$PATH" HOME="$FAKE_HOME" TMUX_TMPDIR="$TMUX_TMPDIR" \
         CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
         REPO_DIR="$REPO_DIR" SNIPPET="$snippet" "$@" \
         bash -c 'source "$REPO_DIR/scripts/_lib.sh" 2>/dev/null; eval "$SNIPPET"'

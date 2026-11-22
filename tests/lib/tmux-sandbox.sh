@@ -33,9 +33,10 @@
 #    （外层 TMUX 优先于 TMUX_TMPDIR，不清等于没隔离）；在 PATH 最前面放一个 tmux 包装，
 #    每次调用都加 `-f /dev/null`——第一次起服务和中途重开都不读 /etc/tmux.conf 和用户
 #    配置；起服务并建保活会话 cavil-sandbox-keep（不带测试前缀，按前缀过滤的地方看不到
-#    它；测试杀光自己的会话时服务不跟着退出）。本机没有 tmux 时什么都不做（测试照旧
-#    按「没有 tmux」那条路走）。任何一步失败都直接以失败退出。
-#    清空环境的子进程（env -i）要带上 TMUX_TMPDIR="$TMUX_TMPDIR" 和 PATH="$PATH"。
+#    它；测试杀光自己的会话时服务不跟着退出）。本机没有 tmux 时什么都不起（测试照旧
+#    按「没有 tmux」那条路走），只把 TMUX_TMPDIR 设上（可能为空）。任何一步失败都直接以失败退出。
+#    清空环境的子进程（env -i）要带上 TMUX_TMPDIR="$TMUX_TMPDIR" 和 PATH="$PATH"，
+#    写成命令名之前的赋值参数、原样这么写（tests/lib/tmux_guard.py 只认这种）。
 #    测试中途服务退了，下一条 tmux 命令会在同一地址重开——允许（维护者在 #647 选的）。
 #
 # 退出时（尽力清理，维护者在 #647 选的 A）：
@@ -95,7 +96,12 @@ _tmux_sandbox_fail() {
 tmux_sandbox_start() {
     [ -z "$_TMUX_SANDBOX_DIR" ] || return 0
     _TMUX_SANDBOX_REAL="$(command -v tmux 2>/dev/null)" || _TMUX_SANDBOX_REAL=""
-    [ -n "$_TMUX_SANDBOX_REAL" ] || return 0
+    if [ -z "$_TMUX_SANDBOX_REAL" ]; then
+        # 本机没有 tmux：什么都不起；TMUX_TMPDIR 照样设上（可能为空），子进程统一写
+        # TMUX_TMPDIR="$TMUX_TMPDIR"，在 set -u 下也不会因为没设而出错。
+        export TMUX_TMPDIR="${TMUX_TMPDIR-}"
+        return 0
+    fi
     case "$_TMUX_SANDBOX_REAL" in
         /*) ;;
         *) _tmux_sandbox_fail "找到的 tmux 不是一个文件（$_TMUX_SANDBOX_REAL），不能当真 tmux 用" ;;
