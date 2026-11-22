@@ -10,7 +10,8 @@
 #        复审 / worker 模板的项目。主干有 → 复审含全文、worker 含自查句；主干确认没有 → 都不含；读不到
 #        （远端引用不在 / 是目录）→ 都含「未能读取」；只在本地工作区有 → 不含。继承来的派工环境一律清掉
 #   【2】收敛段送达：每份复审 prompt 都有、worker prompt 都没有；托管复审时托管规则段排在它后面
-#   【3】修复范围脚本：真实 git 仓库里造跨轮历史，docs/operations.md 两张表每行一例
+#   【3】修复范围脚本：真实 git 仓库里造跨轮历史，docs/operations.md 两张表每行一例；往返记录里的复审节
+#        （GitHub#676：记录由真实的 round-log.sh post 写出）
 #   【4】问题编号不带井号：六份成品里的编号规则、返工回应句、「只有真的 issue / PR 才写 #编号」，示例按自动链接规则对拍
 #
 # ── Problem numbers in review lists (GitHub#646); read before changing ──
@@ -574,6 +575,67 @@ check "两种 sha256 工具都没有：方案 → full read-failed（不是 edit
 out=$(scope_cmd fingerprint 502 --issue 9 --expect "$FP502" 2>/dev/null); rc=$?
 check "两种 sha256 工具都没有：fingerprint 退出码 1、不给指纹" "rc=$rc out=$out" "rc=1 out="
 unset SCOPE_PATH
+
+# ════════ 【3】往返记录里的复审结论（GitHub#676）════════
+# 记录用真实的写入命令（round-log.sh post，有状态的假 GitHub）写出来，再把那条 issue 的评论原样交给范围命令的假 gh
+echo "── 【3】往返记录里的复审结论 ──"
+RLD="$TMP/rl-gh"; mkdir -p "$RLD" "$TMP/rl-state" "$TMP/rl-wt" "$TMP/rl-proj"
+RLCONF="$TMP/rl.config"
+cat > "$RLCONF" <<CONF
+REPO="o/r"
+PROJECT_ROOT="$TMP/rl-proj"
+WORKTREE_BASE="$TMP/rl-wt"
+STATE_DIR="$TMP/rl-state"
+TMUX_PREFIX="rctest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+LABEL_AGENT_DOING="doing/agent"
+LABEL_PENDING_REVIEW="pending/review"
+GH_TOKEN="fake-token-for-test"
+ENABLE_ROUND_LOG=true
+CONF
+echo loop-bot > "$RLD/me"
+echo '{"77": {"kind": "issue", "state": "open", "title": "t", "body": "需求", "user": {"login": "maint"}}}' > "$RLD/items.json"
+echo '{"77": ["doing/agent"]}' > "$RLD/labels.json"
+echo '{"77": [{"id": 100, "body": "人的补充", "user": {"login": "maint"}, "created_at": "2026-01-01T00:00:00Z"}]}' > "$RLD/comments.json"
+RLW() { env "${CLEAN_ENV[@]}" HOME="$TMP/home" PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$RLD" FAKE_GH_REPO=o/r \
+        bash "$REPO_DIR/scripts/round-log.sh" --config "$RLCONF" "$@"; }
+rlf() { printf '%s\n' "$2" > "$TMP/rl-$1"; echo "$TMP/rl-$1"; }
+RLRES=$(RLW post 77 --role worker --to pending/review --body "$(rlf b1 '✅ 第 1 版交付')" --full "$(rlf f1 '交付说明 1')" | grep '^RESULT=')
+RL_OF=$(RLW show 77 | grep -o -- '--of [^`]*' | head -1 | cut -d' ' -f2)
+RLRES="$RLRES $(RLW post 77 --role review --of "$RL_OF" --to pending/agent \
+        --body "$(rlf r1 "<!-- codex-review-round:1 -->"$'\n'"$(code_mark "$P1")"$'\n'"## ❌ 复审未通过")" | grep '^RESULT=')"
+RLRES="$RLRES $(RLW post 77 --role worker --to pending/review --body "$(rlf b2 '✅ 第 2 版交付')" --full "$(rlf f2 '交付说明 2')" | grep '^RESULT=')"
+check "真实写入命令写出三节" "$RLRES" "RESULT=written RESULT=written RESULT=written"
+check "三节都在同一条往返记录里" "$(jq '[.["77"][] | select(.body | startswith("<!-- cavil-round-log:v1 -->"))] | length' "$RLD/comments.json")" "1"
+RLC="$TMP/rl-77-comments.json"   # 写出来的评论原样存一份，各情形从它改出交给假 gh 的那份
+jq '.["77"]' "$RLD/comments.json" > "$RLC"; cp "$RLC" "$G/repos_o_r_issues_77_comments.json"
+REC_ID=$(jq '[.[] | select(.body | startswith("<!-- cavil-round-log:v1 -->"))][0].id' "$RLC")
+set_pr 1 pr1
+check "记录里的复审节 → 找到基线，复核轮 scope 1" "$(run_scope pr 1 --round 2 --on 77)" "rc=0 scope 1"
+grep -q '^+line 5 fix$' "$TMP/scope-out" && ok "记录里的基线：差异就是这次修复" || bad "记录里的基线：差异不对" "$(cat "$TMP/scope-out")"
+# 单独的结论评论比记录里的那一节新 → 用评论的基线（审到 pr1 最新 → scope 0）；比它旧 → 用节里的
+jq --arg b "<!-- codex-review-round:2 -->"$'\n'"$(code_mark pr1)" '. + [{id: 999999, user: {login: "loop-bot"}, body: $b}]' "$RLC" > "$G/q.json"
+cp "$G/q.json" "$G/repos_o_r_issues_77_comments.json"
+check "单独评论更新 → 用评论的基线（scope 0）" "$(run_scope pr 1 --round 3 --on 77)" "rc=0 scope 0"
+jq --arg b "<!-- codex-review-round:1 -->"$'\n'"$(code_mark pr1)" '[{id: 50, user: {login: "loop-bot"}, body: $b}] + .' "$RLC" > "$G/q.json"
+cp "$G/q.json" "$G/repos_o_r_issues_77_comments.json"
+check "记录里的那一节更新 → 用节里的基线（scope 1）" "$(run_scope pr 1 --round 2 --on 77)" "rc=0 scope 1"
+# 别的账号写的同款记录不算
+jq '[.[] | .user.login = "someone"]' "$RLC" > "$G/repos_o_r_issues_77_comments.json"
+check "别的账号写的往返记录 → 不算结论（full no-baseline）" "$(run_scope pr 1 --round 2 --on 77)" "rc=0 full no-baseline"
+# 派工账号的记录标记坏了（少了一节的结束标记）→ 读取失败，不猜
+jq --argjson id "$REC_ID" '[.[] | if .id == $id then .body |= sub("<!-- cavil-round-log:sec-end -->"; "") else . end]' "$RLC" > "$G/repos_o_r_issues_77_comments.json"
+check "记录读不懂 → full read-failed" "$(run_scope pr 1 --round 2 --on 77)" "rc=0 full read-failed"
+cp "$RLC" "$G/repos_o_r_issues_77_comments.json"
+# 方案模式：本轮那条方案评论是往返记录 → full round-log，不印全文、不给指纹
+jq --argjson id "$REC_ID" '.[] | select(.id == $id) | {id: 505, user: {login: "loop-bot"}, body, issue_url: "https://api.github.com/repos/o/r/issues/9"}' "$RLC" > "$G/repos_o_r_issues_comments_505.json"
+review_comments 9 "$(plan_mark 501 "$FP501")"
+check "方案评论是往返记录 → full round-log" "$(run_scope plan 9 --round 2 --comment 505)" "rc=0 full round-log"
+check "full round-log 时不印全文和指纹" "$(wc -l < "$TMP/scope-out" | tr -d ' ')" "1"
+check "普通方案评论照旧 scope 1（同一份夹具）" "$(run_scope plan 9 --round 2 --comment 502)" "rc=0 scope 1"
 
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

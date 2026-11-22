@@ -12,14 +12,15 @@
 #       复审审完方案后确认评论还是审的那个版本（指纹取自 plan 输出的 current 行），一致才打印指纹，
 #       被改过退出码 3——那一轮不写基线标记
 #
-# 基线来自**派工账号自己发的、最近一条**复审结论评论（第一行是 codex-review-round 标记）第二行的隐藏标记：
+# 基线来自**派工账号自己发的、最近一条**复审结论（单独的评论：第一行是 codex-review-round 标记；往返记录里的复审节：
+# 第一个非空行是它，记录用 round_log.py 拆，GitHub#676）下一行的隐藏标记：
 #   <!-- review-baseline: code head=<40 位提交号> base=<目标分支> -->
 #   <!-- review-baseline: plan comment=<评论 id> sha256=<64 位指纹> -->
 #
 # 输出第一行（之后是范围内的差异）：
 #   full <原因>     全量复审。原因：first-round / read-failed / no-baseline / base-changed /
 #                   baseline-missing / history-rewritten / merge-conflict / deleted / edited / same-comment / not-own /
-#                   not-this-issue
+#                   not-this-issue / round-log（方案评论是往返记录：上一版已被替换，方案每轮全量）
 #   scope <N>       复核轮；N = 修复范围里改动的文件数（方案为 1 或 0），其后是差异全文
 # 方案模式在第一行之后还有 current sha256=<指纹> 一行和本轮方案全文（两者出自同一次读取；本轮那条评论
 # 读不到、不是派工账号发的、不在本条 issue 下时都没有）；scope 时再接上一版到这一版的差异
@@ -161,6 +162,9 @@ if [ "$mode" = plan ]; then
     issue="$num"
     rc=0; body_of "$comment" "$TMP/cur" || rc=$?
     case "$rc" in 0) ;; 5) full not-own ;; 6) full not-this-issue ;; *) full read-failed ;; esac
+    # 往返记录（GitHub#610）顶部只留最新一版完整方案，上一版已被替换、没有可比的旧文本：这一轮全量审，
+    # 不把整条记录当成方案全文印出来，也不给指纹（GitHub#676）
+    ! python3 "$(dirname "${BASH_SOURCE[0]}")/round_log.py" is-record < "$TMP/cur" 2>/dev/null || full round-log
     CURRENT=$(fp_of "$TMP/cur") || full read-failed
 fi
 
@@ -176,11 +180,18 @@ if [ -n "$has_mark" ]; then
 else
 target="$num"; [ "$mode" = plan ] || target="$on"
 gh api --paginate "repos/$repo/issues/$target/comments" \
-    --jq '.[] | {id, user: (.user.login // ""), body: (.body // "")}' > "$TMP/comments" 2>/dev/null || full read-failed
-jq -rs --arg me "$login" '
-    [ .[] | select(.user == $me) | .body | split("\n") | map(rtrimstr("\r"))
+    --jq '.[] | {id, user: {login: (.user.login // "")}, created_at, html_url, body: (.body // "")}' > "$TMP/comments" 2>/dev/null || full read-failed
+# 往返记录（GitHub#610）里的复审结论是记录里的一节：先用往返记录唯一的拆法（round_log.py expand）把派工账号写的
+# 记录换成各节、和单独的评论一起按位置排好，再取最新一个结论（GitHub#676）。记录读不懂 → 读取失败，不猜
+jq -cs --arg me "$login" '{comments: ., trusted_login: $me}' < "$TMP/comments" > "$TMP/expand-in" 2>/dev/null || full read-failed
+python3 "$(dirname "${BASH_SOURCE[0]}")/round_log.py" expand < "$TMP/expand-in" > "$TMP/units" 2>/dev/null || full read-failed
+# 单独的评论只认第一、二行；记录里的一节（编号写成「评论编号:节编号」）跳过开头的空行，与 round_log.py 认轮次标记的规矩一致
+jq -r --arg me "$login" '
+    [ .[] | select((.user.login // "") == $me)
+      | ((.body // "") | split("\n") | map(rtrimstr("\r"))) as $l
+      | if (.id | type) == "string" then ($l | until((length == 0) or (.[0] | test("[^ \t]")); .[1:])) else $l end
       | select((.[0] // "") | test("^<!-- codex-review-round:[0-9]+ -->$")) ] | last // empty
-    | .[1] // ""' < "$TMP/comments" > "$TMP/mark" 2>/dev/null || full read-failed
+    | .[1] // ""' < "$TMP/units" > "$TMP/mark" 2>/dev/null || full read-failed
 [ -s "$TMP/mark" ] || full no-baseline
 mark=$(head -1 "$TMP/mark")
 fi

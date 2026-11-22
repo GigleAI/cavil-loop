@@ -681,12 +681,14 @@ so projects that replace the whole review template get it too).
 
 What "the fix" is comes from `scripts/review-scope.sh` (managed entrypoint
 `entrypoints/review-scope.sh`, read-only). It reads the latest review verdict posted by the
-dispatch account, and checks top to bottom, stopping at the first match:
+dispatch account — a separate comment, or a review section of the round log (the one comment the
+agents' back-and-forth is written into), whichever is newer — and checks top to bottom, stopping at
+the first match:
 
 | # | Code | Output |
 |---|---|---|
 | 1 | round 1 after the last human action | `full first-round` |
-| 2 | reading the comments / the PR failed | `full read-failed` |
+| 2 | reading the comments / the PR failed, or the round log cannot be read | `full read-failed` |
 | 3 | no baseline line, or a malformed one | `full no-baseline` |
 | 4 | the PR's base branch differs from the baseline's | `full base-changed` |
 | 5 | fetch failed, or the reviewed commit is not available | `full baseline-missing` |
@@ -702,7 +704,9 @@ The merged tree is `git merge-tree --write-tree <reviewed commit> <fork point>`:
 saw last round plus whatever the base brought in since, so a plain merge of `main` into the branch
 is not counted as part of the fix.
 
-For a design proposal: round 1, an unreadable comment list or no baseline → full; the previous
+For a design proposal: round 1, an unreadable comment list or no baseline → full; this round's
+proposal is in the round log (`round-log`: the log keeps only the latest full version, so there is
+no previous text to compare) → full; the previous
 proposal comment deleted (`deleted`), edited in place since (`edited`), the same comment as this
 round's (`same-comment`), either comment not posted by the dispatch account (`not-own`) or not on
 this issue (`not-this-issue`) → full; otherwise `scope` plus the diff from the previous proposal's
