@@ -123,6 +123,8 @@ The answer carries a hidden record made by `scripts/feedback-fingerprint.sh` fro
 
 </details>
 
+When a human's comment is a question that suggests a way ("could we use X to avoid Y?"), the agent first checks whether the suggestion works. If it does, the agent treats it as a change request, and the next comment that reaches a human quotes it and reports what was adopted and how it turned out. If one of them does not work, or review overturns a suggestion already adopted, the agent answers the human and stops; the other requests of that round go into a list of deferred items, and every reply while stopped carries that list. Handed back with no new comment, it only gets a reminder; once the human comments 「继续」 ("continue"), the agent handles the listed items and any new request against their current wording, then hands the work to review as usual.
+
 > For multi-human + multi-agent workflows (label suffixes like `pending/agent/PM`, `pending/human/Alex`), see [collaboration.md](collaboration.md).
 
 ## Dispatch modes: label / greedy

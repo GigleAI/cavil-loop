@@ -123,6 +123,8 @@ PR 挂着 `pending/human`（且没有 `doing/agent` / 任何触发 label——�
 
 </details>
 
+人的话是「疑问 + 建议」（「能不能用 X 来避免 Y」）时，agent 先核实建议可不可行。可行就当作修改要求照做，到人手上的下一条评论引用原话、汇报采纳了什么、结果如何。有一条不可行，或复审推翻了已经采纳的建议，agent 先回答人、停下，同一轮的其他要求列进一张「暂缓」清单，停下期间的每条回复都带着这张清单；人不留言交回只会收到提醒，人留言「继续」后，agent 按当时最新的原文处理清单里的事和新要求，改完照常交复审。
+
 > 多人 + 多 agent 协作场景（用 `pending/agent/PM` / `pending/human/Alex` 这种 label 后缀做路由）见 [collaboration.md](collaboration.zh.md)。
 
 ## 派工模式：label / greedy

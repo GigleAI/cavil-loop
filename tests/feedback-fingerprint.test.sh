@@ -291,6 +291,13 @@ grep -A1 '^## 最新一条答复' <<<"$(snap 70)" | grep -q '^编号 705 ｜ 等
 jq -r '.[] | select(.id == 705) | .body' "$(conv_file 70)" > "$TMP/w70"
 chk "拿等继续评论比对 → need-continue" "$(verdict "$(cmp_ 70 "$TMP/w70")")" need-continue
 del_conv 70 705
+# 「疑问 + 建议」不可行时的停下答复（GitHub#654）：带暂缓清单和等继续标记，不带答复记录
+add_conv 70 706 loop-bot $'## 「能不能改用 Y」不可行，先回答、停下\n\n### 暂缓：留言「继续」后接着做\n\n- 「顺便补一条回归测试」（[原文](https://example.invalid/c701)）\n\n<!-- agent-answer-only need=continue -->'
+grep -A1 '^## 最新一条答复' <<<"$(snap 70)" | grep -q '^编号 706 ｜ 等继续记录' && ok "停下答复（带暂缓清单）被认成等继续记录" || bad "停下答复没认成等继续记录"
+grep -q '^f706' <<<"$(snap 70)" && bad "停下答复进了流程记录" || ok "停下答复不进流程记录（之后照旧绑在 f702 那一步）"
+jq -r '.[] | select(.id == 706) | .body' "$(conv_file 70)" > "$TMP/p70"
+chk "无留言交回停下答复 → need-continue（不自动接着做）" "$(verdict "$(cmp_ 70 "$TMP/p70")")" need-continue
+del_conv 70 706
 
 echo "── 9. 同标题、不同正文的复审结论：交回给出绑定那条的全文 ──"
 set_item 80 "PR 正文" pr
