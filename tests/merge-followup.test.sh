@@ -592,6 +592,16 @@ chk "段落下一行的「-」是标题下划线，不是列表项：之后制�
 chk "分隔线（- - -）不是嵌套列表：之后前有 4 格 → 没提" "$(mfp "- - -\n    $MN\n")" silent
 chk "引用打断列表：引用之后前有 4 格 → 没提" "$(mfp "- a\n> q\n    $MN\n")" silent
 chk "引用里的段落不挡列表项：「> q」下一行的「2. a」开新列表，它下面前有 3 格的标记算数" "$(mfp "> q\n2. a\n   $MN\n")" none
+# 代码复审第 2 轮问题 5–6：列表符号后的空格、制表符按同一套列数算；标题不算开着的段落（各配对照）
+chk "「- 空格 制表符 \`\`\`」开围栏 → 没提" "$(mfp "- \t$F3\n    $MN\n    $F3\n")" silent
+chk "「-制表符\`\`\`」开围栏 → 没提" "$(mfp "-\t$F3\n    $MN\n    $F3\n")" silent
+chk "「1.制表符 空格 \`\`\`」开围栏 → 没提" "$(mfp "1.\t $F3\n     $MN\n     $F3\n")" silent
+chk "「- 空格 制表符 空格 制表符」后的围栏（超过 4 格是代码）→ 没提" "$(mfp "- \t \t$F3\n        $MN\n")" silent
+chk "列表符号后空 6 格再写标记（列表项里的缩进代码）→ 没提" "$(mfp "-      $MN\n")" silent
+chk "对照：列表符号后一个制表符再写文字，下一行对齐续行 → 明确无待办" "$(mfp "-\t说明\n    $MN\n")" none
+chk "标题下一行「2. a」开新列表，它下面前有 4 格的标记 → 明确无待办" "$(mfp "# heading\n2. a\n    $MN\n")" none
+chk "标题下划线（===）之后的「2. a」同样开新列表 → 明确无待办" "$(mfp "段落\n===\n2. a\n    $MN\n")" none
+chk "对照：普通段落下一行的「2. a」仍是段落文字，前有 4 格的标记是续行 → 没提" "$(mfp "段落\n2. a\n    $MN\n")" silent
 LST=$(printf -- '<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后\n  续行说明\n<!-- merge-followup:end -->\n' \
       | (source "$REPO_DIR/scripts/_merge_followup.sh" && merge_followup_parse) | jq -c '[.s, .items]')
 chk "清单项下有缩进续行 → 清单，续行并进条目" "$LST" '["list",["谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后 续行说明"]]'
