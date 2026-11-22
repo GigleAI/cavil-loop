@@ -576,6 +576,21 @@ chk "两层列表、空行后退回外层段落，再前有 6 格 → 没提" "$
 chk "列表项里的围栏中有一行像列表项，不改列表层：之后前有 6 格 → 没提" "$(mfp "- 项\n\n  $F3\n  - 假项\n  $F3\n\n      $MN\n")" silent
 chk "缩进代码块里贴了 begin…end 示例、正文另有顶格标记 → 明确无待办" \
     "$(mfp "说明：\n\n    <!-- merge-followup:begin -->\n    - 谁做：x ｜ 做什么：y ｜ 怎么触发：z\n    <!-- merge-followup:end -->\n\n$MN\n")" none
+# 代码复审第 1 轮问题 1–3：列表项同一行开围栏、空列表项遇空行结束、列表结束时它里面的围栏一起结束（各配一条对照）
+chk "列表项同一行开围栏（- \`\`\`）→ 标记在围栏里，没提" "$(mfp "- $F3\n  $MN\n  $F3\n")" silent
+chk "有序列表项同一行开围栏 → 没提" "$(mfp "1. $F3\n   $MN\n   $F3\n")" silent
+chk "嵌套列表项同一行开围栏（- - \`\`\`）→ 没提" "$(mfp "- - $F3\n    $MN\n    $F3\n")" silent
+chk "空列表项、空行、前有 4 格 → 列表已结束，缩进代码块，没提" "$(mfp "-\n\n    $MN\n")" silent
+chk "对照：非空列表项、空行、前有 4 格 → 列表续行，明确无待办" "$(mfp "- a\n\n    $MN\n")" none
+chk "对照：空列表项下一行就是续行 → 明确无待办" "$(mfp "-\n  $MN\n")" none
+chk "列表里开的围栏没关、列表在顶格行结束 → 围栏随之结束，顶格标记算数" "$(mfp "- item\n\n  $F3\n\n$MN\n")" none
+chk "对照：同样的围栏里、仍在列表项中的标记 → 没提" "$(mfp "- item\n\n  $F3\n\n  $MN\n")" silent
+# 和 Markdown 解析器对拍时找出的同一类边界（列表在哪里结束）
+chk "列表项里的围栏关上后，缩进不够的段落不是懒续行：列表结束，之后前有 6 格 → 没提" \
+    "$(mfp "  - b\n    $F3\n    $F3\n  段落\n      $MN\n")" silent
+chk "段落下一行的「-」是标题下划线，不是列表项：之后制表符开头 → 没提" "$(mfp "段落\n-\n\t$MN\n")" silent
+chk "分隔线（- - -）不是嵌套列表：之后前有 4 格 → 没提" "$(mfp "- - -\n    $MN\n")" silent
+chk "引用打断列表：引用之后前有 4 格 → 没提" "$(mfp "- a\n> q\n    $MN\n")" silent
 LST=$(printf -- '<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后\n  续行说明\n<!-- merge-followup:end -->\n' \
       | (source "$REPO_DIR/scripts/_merge_followup.sh" && merge_followup_parse) | jq -c '[.s, .items]')
 chk "清单项下有缩进续行 → 清单，续行并进条目" "$LST" '["list",["谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后 续行说明"]]'

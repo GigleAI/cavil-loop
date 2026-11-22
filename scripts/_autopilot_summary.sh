@@ -14,15 +14,47 @@ MERGE_FOLLOWUP_END='<!-- merge-followup:end -->'
 MERGE_FOLLOWUP_NONE='<!-- merge-followup:none -->'
 # 一行算不算「独占一行、不在代码块和引用里」的标记：awk 函数文本，body_section 和 merge_followup_parse 共用。
 # 逐行先调 line_step（更新状态；返回 1 = 这一行不可能是标记），再调 alone_mark。代码块有两种（GitHub#675）：
-#   围栏  ``` / ~~~ 开头（相对缩进 < 4）开，只被同一种符号、长度不短于开头、后面只剩空白的一行关上；
-#         开头是 ``` 而后面的字里还有 ` 的不是围栏。围栏里的行不改列表状态
+#   围栏  ``` / ~~~ 开头（相对缩进 < 4，或紧跟在列表项符号后面）开，只被同一种符号、长度不短于开头、后面只剩
+#         空白的一行关上；开头是 ``` 而后面的字里还有 ` 的不是围栏
 #   缩进  相对缩进 ≥ 4 的行（制表符算到下一个 4 的倍数列）：不算标记，也不开围栏
-# 「相对缩进」= 行首缩进 − 所在列表层的内容列。列表层是一个栈，每层记一个列表项（- * + 1. 1) 接空白）
-# 内容开始的列；基准层 = 栈里内容列 ≤ 本行缩进的最深一层（没有就是第 0 层，列 0）。相对缩进 < 4 的列表项
-# 弹掉比基准层更深的层再压入自己；不是列表项的行，上一行是空行时弹掉比基准层更深的层，否则（懒续行）不动。
+# 列表项（- * + 1. 1) 接空白）是容器：栈里每层记一个列表项内容开始的列。一行的「所在层」= 内容列 ≤ 本行缩进
+# 的最深一层（没有就是第 0 层，列 0），相对缩进 = 行首缩进 − 所在层的内容列。
+#   · 列表项那一行：弹掉比所在层更深的层、压入自己；符号后面的内容再当一行看——又是列表项就再压一层，
+#     是围栏开头就开围栏（「- ```」）。符号后面什么都没有的空列表项，紧接一个空行就结束
+#   · 别的行：上一行是空行时弹掉比所在层更深的层（列表结束 / 退层），否则（懒续行）不动
+#   · 围栏记下开在哪一层；后面的行退到那一层之外（缩进不够），围栏随那个列表项一起结束，这一行照列表外处理。
+#     围栏里的行不改列表状态
 # 只认这三样，不是完整的 Markdown：段落后面紧接的深缩进行也按代码块算（读成「没提」，错在交人的一边）。
 BODY_MARK_AWK='
-function line_step(line,   i, c, col, rest, k, base, rel, w, sp, n) {
+function list_marker(s,   n) {
+    if (s ~ /^[-*+]/) n = 1
+    else if (s ~ /^[0-9]/) {
+        for (n = 1; substr(s, n + 1, 1) ~ /[0-9]/; n++) ;
+        if (n > 9 || substr(s, n + 1, 1) !~ /[.)]/) return 0
+        n++
+    } else return 0
+    return (length(s) == n || substr(s, n + 1, 1) ~ /[ \t]/) ? n : 0
+}
+function fence_open(s, d,   c, n) {
+    c = substr(s, 1, 1)
+    if (c != "`" && c != "~") return 0
+    for (n = 1; substr(s, n + 1, 1) == c; n++) ;
+    if (n < 3 || (c == "`" && index(substr(s, n + 1), "`") > 0)) return 0
+    infence = 1; fch = c; flen = n; fdepth = d
+    return 1
+}
+function thematic_break(s,   i, c, d, n) {
+    n = 0
+    for (i = 1; i <= length(s); i++) {
+        d = substr(s, i, 1)
+        if (d == " " || d == "\t") continue
+        if (n == 0) { c = d; if (c != "-" && c != "*" && c != "_") return 0 }
+        else if (d != c) return 0
+        n++
+    }
+    return n >= 3
+}
+function line_step(line,   i, c, col, rest, k, rel, w, sp, n, wasblank, waspara) {
     sub(/\r$/, "", line)
     col = 0
     for (i = 1; i <= length(line); i++) {
@@ -32,40 +64,52 @@ function line_step(line,   i, c, col, rest, k, base, rel, w, sp, n) {
         else break
     }
     rest = substr(line, i)
-    if (rest ~ /^[ \t]*$/) { lblank = 1; return 1 }
+    if (rest ~ /^[ \t]*$/) {
+        if (lfresh && !infence) ldepth--
+        lfresh = 0; lblank = 1; lpara = 0
+        return 1
+    }
+    wasblank = lblank; lblank = 0; lfresh = 0
+    waspara = lpara; lpara = 0
     for (k = ldepth; k > 0 && lcol[k] > col; k--) ;
-    base = (k > 0) ? lcol[k] : 0
-    rel = col - base
     if (infence) {
-        lblank = 0
-        if (rel < 4 && substr(rest, 1, 1) == fch) {
-            for (n = 1; substr(rest, n + 1, 1) == fch; n++) ;
-            if (n >= flen && substr(rest, n + 1) ~ /^[ \t]*$/) infence = 0
+        if (k >= fdepth) {
+            rel = col - (fdepth > 0 ? lcol[fdepth] : 0)
+            if (rel < 4 && substr(rest, 1, 1) == fch) {
+                for (n = 1; substr(rest, n + 1, 1) == fch; n++) ;
+                if (n >= flen && substr(rest, n + 1) ~ /^[ \t]*$/) infence = 0
+            }
+            return 1
         }
+        infence = 0; ldepth = k
+    }
+    rel = col - (k > 0 ? lcol[k] : 0)
+    if (rel >= 4) { if (wasblank) ldepth = k; lpara = waspara; return 1 }
+    if (thematic_break(rest)) { ldepth = k; return 1 }
+    w = list_marker(rest)
+    # 同一层的段落中间：空列表项、不是从 1 开始的有序列表项都不能打断段落（「段落」下一行的「-」是标题下划线）
+    if (w > 0 && waspara && k == ldepth && (length(rest) == w || (w > 1 && substr(rest, 1, w - 1) + 0 != 1))) w = 0
+    if (w > 0) {
+        ldepth = k
+        while (w > 0) {
+            for (sp = 0; substr(rest, w + sp + 1, 1) == " "; sp++) ;
+            ldepth++
+            if (length(rest) == w + sp) { lcol[ldepth] = col + w + 1; lfresh = 1; return 1 }
+            if (sp > 4) { lcol[ldepth] = col + w + 1; return 1 }
+            if (sp == 0) sp = 1
+            lcol[ldepth] = col + w + sp
+            col += w + sp; rest = substr(rest, w + sp + 1)
+            if (thematic_break(rest)) return 1
+            w = list_marker(rest)
+        }
+        if (!fence_open(rest, ldepth)) lpara = 1
         return 1
     }
-    if (rel >= 4) { if (lblank) ldepth = k; lblank = 0; return 1 }
-    lblank_was = lblank; lblank = 0
-    w = 0
-    if (rest ~ /^[-*+]/) w = 1
-    else if (rest ~ /^[0-9]/) {
-        for (n = 1; substr(rest, n + 1, 1) ~ /[0-9]/; n++) ;
-        if (n <= 9 && substr(rest, n + 1, 1) ~ /[.)]/) w = n + 1
-    }
-    if (w > 0 && (length(rest) == w || substr(rest, w + 1, 1) ~ /[ \t]/)) {
-        for (sp = 0; substr(rest, w + sp + 1, 1) == " "; sp++) ;
-        if (sp == 0 || sp > 4 || length(rest) == w + sp) sp = 1
-        ldepth = k + 1; lcol[ldepth] = col + w + sp
-        return 1
-    }
-    if (lblank_was) ldepth = k
-    c = substr(rest, 1, 1)
-    if (c == "`" || c == "~") {
-        for (n = 1; substr(rest, n + 1, 1) == c; n++) ;
-        if (n >= 3 && !(c == "`" && index(substr(rest, n + 1), "`") > 0)) {
-            infence = 1; fch = c; flen = n; return 1
-        }
-    }
+    # 缩进不够的行只有接在段落后面、本身又不开新块（引用、HTML、标题）时才是懒续行；否则更深的列表项到这里结束
+    if (wasblank || !waspara || rest ~ /^[<>#]/) ldepth = k
+    if (fence_open(rest, k)) { ldepth = k; return 1 }
+    if (thematic_break(rest)) return 1
+    if (substr(rest, 1, 1) != "<") lpara = 1
     return 0
 }
 function alone_mark(line, m,   t) {
