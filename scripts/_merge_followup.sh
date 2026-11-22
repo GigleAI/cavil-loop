@@ -15,7 +15,7 @@ MF_IDENT_JQ='def mf_ident: {sha: (.merge_commit_sha // ""), base: (.base.ref // 
                                           | (($r[$k] // "") != "" and $r[$k] == $i[$k]));'
 merge_followup_marks() {   # stdin：PR 正文；stdout：每个算数的标记一行「B|E|N 行号」
     awk -v b="$MERGE_FOLLOWUP_BEGIN" -v e="$MERGE_FOLLOWUP_END" -v n="$MERGE_FOLLOWUP_NONE" "$BODY_MARK_AWK"'
-        { if (fence_step($0)) next
+        { if (line_step($0)) next
           if (alone_mark($0, b)) print "B " NR
           else if (alone_mark($0, e)) print "E " NR
           else if (alone_mark($0, n)) print "N " NR }'

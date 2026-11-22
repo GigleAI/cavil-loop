@@ -164,12 +164,15 @@ mkissue 50 "" open
 mkmerged 51 feature/issue-50 "Refs #50"$'\n\n<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：\n<!-- merge-followup:end -->' 2026-03-01T10:00:00Z ""
 mkissue 52 "" open
 mkmerged 53 feature/issue-52 "Refs #52"$'\n\n```\n<!-- merge-followup:none -->\n```' 2026-03-01T10:00:00Z ""
+mkissue 54 "" open
+mkmerged 55 feature/issue-54 "Refs #54"$'\n\n正文段落\n\n    <!-- merge-followup:none -->' 2026-03-01T10:00:00Z ""
 tick
 c=$(last_comment 50)
 chk "格式不对：评论标出写法不对" "$(has "$c" '待办的写法不对')" yes
 chk "格式不对：原文照搬" "$(has "$c" '谁做：维护者 ｜ 做什么：')" yes
 chk "格式不对：提示去 PR 核对" "$(has "$c" '完整正文见 PR #51')" yes
 chk "代码块里的示例 → 算没提" "$(has "$(last_comment 52)" 'PR 没写合并后有没有待办')" yes
+chk "缩进代码块里的示例（前有 4 格）→ 算没提（GitHub#675）" "$(has "$(last_comment 54)" 'PR 没写合并后有没有待办')" yes
 
 echo "⑥ 同一 issue 先后合并两个 PR：第二条评论列全两个 PR 的待办；维护者亲手关闭后旧清单不再列"
 fresh
@@ -549,6 +552,33 @@ jset events.json '.["361"] += [{event:"unlabeled", label:{name:"pending/review"}
 jset items.json '.["361"].body = ("Refs #360\n\n" + $l)' --arg l "$LIST"
 tick
 chk "正文补读到后：issue 一条清单、PR 真的打上 Done、交接完成" "$(comments_of 360)/$(labels_of 361)/$(jq -r '.merge_followup.prs["361"].handed // "none"' "$STATE")" "1/Done/1"
+
+echo "㊲ 哪一行算标记：缩进代码块、列表续行、围栏配对（GitHub#675；直接调真实读法 merge_followup_parse）"
+mfp() {   # <正文（printf 格式）> → 读法结果里的 s
+    printf -- "$1" | (source "$REPO_DIR/scripts/_merge_followup.sh" && merge_followup_parse) | jq -r '.s'
+}
+MN='<!-- merge-followup:none -->'; F3='```'; F4='````'
+chk "段落、空行、前有 4 格的标记 → 没提" "$(mfp "正文段落\n\n    $MN\n")" silent
+chk "前有 3 格的标记 → 明确无待办" "$(mfp "   $MN\n")" none
+chk "制表符开头的标记 → 没提" "$(mfp "\t$MN\n")" silent
+chk "列表项下一行前有 2 格（续行）→ 明确无待办" "$(mfp "- 合并后：\n  $MN\n")" none
+chk "列表项下一行前有 4 格（续行）→ 明确无待办" "$(mfp "- 合并后：\n    $MN\n")" none
+chk "列表项、空行、前有 6 格（列表项里的缩进代码块）→ 没提" "$(mfp "- 示例：\n\n      $MN\n")" silent
+chk "列表在顶格段落处结束后，前有 4 格 → 没提" "$(mfp "- 一项\n\n段落\n\n    $MN\n")" silent
+chk "前有 4 格的 $F3 不开围栏：之后真围栏里的标记 → 没提" "$(mfp "段落\n\n    $F3\n\n$F3\n$MN\n$F3\n")" silent
+chk "$F4 围栏里有一行 $F3 → 标记仍在围栏里，没提" "$(mfp "$F4\n$F3\n$MN\n$F4\n")" silent
+chk "$F3 围栏里有一行 ~~~ → 没提" "$(mfp "$F3\n~~~\n$MN\n$F3\n")" silent
+chk "$F3 围栏里有一行 ${F3}md → 没提" "$(mfp "$F3\n${F3}md\n$MN\n$F3\n")" silent
+chk "用不短于开头的同种符号关上之后 → 标记照常算" "$(mfp "$F4\n$F3\n$F4\n$MN\n")" none
+chk "四层列表，最内层下前有 8 格（续行）→ 明确无待办" "$(mfp "- 外层\n  - 中层\n    - 内层\n      - 更内层\n        $MN\n")" none
+chk "同一四层列表，空行后前有 12 格（最内层里的缩进代码块）→ 没提" "$(mfp "- 外层\n  - 中层\n    - 内层\n      - 更内层\n\n            $MN\n")" silent
+chk "两层列表、空行后退回外层段落，再前有 6 格 → 没提" "$(mfp "- 外\n  - 中\n\n  退回外层\n\n      $MN\n")" silent
+chk "列表项里的围栏中有一行像列表项，不改列表层：之后前有 6 格 → 没提" "$(mfp "- 项\n\n  $F3\n  - 假项\n  $F3\n\n      $MN\n")" silent
+chk "缩进代码块里贴了 begin…end 示例、正文另有顶格标记 → 明确无待办" \
+    "$(mfp "说明：\n\n    <!-- merge-followup:begin -->\n    - 谁做：x ｜ 做什么：y ｜ 怎么触发：z\n    <!-- merge-followup:end -->\n\n$MN\n")" none
+LST=$(printf -- '<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后\n  续行说明\n<!-- merge-followup:end -->\n' \
+      | (source "$REPO_DIR/scripts/_merge_followup.sh" && merge_followup_parse) | jq -c '[.s, .items]')
+chk "清单项下有缩进续行 → 清单，续行并进条目" "$LST" '["list",["谁做：维护者 ｜ 做什么：跑 a ｜ 怎么触发：部署后 续行说明"]]'
 
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
