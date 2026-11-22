@@ -12,14 +12,13 @@ tests/tmux-sandbox-guard.test.sh 调用。对每个 tests/*.test.sh：
 3. source 了 tests/lib/tmux-sandbox.sh 的文件：source 之前不许有 mktemp / mkdir / trap /
    tmux 调用（载入时会重新执行本文件，之前建的东西会建两遍）；source 之后不许自己设
    `EXIT` trap（改用 tmux_sandbox_on_exit）；清理回调里不许 `rm`（删目录用
-   tmux_sandbox_own_dir）；每个 `env -i` 都按 env_i_problems 的规则看（见那里）。
+   tmux_sandbox_own_dir）；清空环境的子进程只能经 tmux_sandbox_env_i 起（规则见 env_i_problems）。
    续行（行尾反斜杠）接成一行再看。
 4. 任何测试文件里用绝对路径直接调 tmux（`/usr/bin/tmux ls`）都报：它绕过沙盒的包装。
 
 管不到（写在 AGENTS.md）：经变量或包装函数调用的 tmux（`"$REAL_TMUX" …`、`T()`）、
-只经被测脚本间接用 tmux 的测试、here-doc 里写出去再执行的脚本、PATH 先被别处改掉再
-原样传、子进程自己再改 PATH、`env -i` 的参数由展开得来（`"$@"`、`${X:+$X}`）时其中
-赋了什么。
+只经被测脚本间接用 tmux 的测试、here-doc 里写出去再执行的脚本、PATH 先被别处改掉、
+子进程自己再改 PATH 或清空环境、经变量调 env。
 
 用法：python3 tmux_guard.py <文件>...   每个问题打印一行「文件:行号: 原因」，有问题退出 1。
 """
@@ -40,128 +39,32 @@ SANDBOX_SRC = re.compile(r"^\s*(?:source|\.)\s+.*tmux-sandbox\.sh")
 SANDBOX_START = re.compile(r"(?:^|[;&|(]|\bthen\b)\s*tmux_sandbox_start\b")
 
 
-# ── env -i 的参数（PR #660 复审 #4，第三轮收口）─────────────────────────────────────
-# 用沙盒的文件里，清空环境的子进程必须原样拿到两样：TMUX_TMPDIR（连本次运行的专用服务）
-# 和 PATH（找到沙盒的 tmux 包装）。不再在整行里搜文字，而是把 `env -i` 之后的参数按 shell
-# 的引号规则切成词，只看命令名之前的那些赋值参数——env 真正放进子进程环境的就是它们：
-#   - 只认一种写法：`TMUX_TMPDIR="$TMUX_TMPDIR"` / `TMUX_TMPDIR="${TMUX_TMPDIR}"`，
-#     `PATH="$PATH"` / `PATH="${PATH}"`，整个词就是这样（双引号、不拼别的、不带默认值）；
-#   - 两样都要有；同一个名字在赋值参数里出现几次，每次都得是这种写法（后面的会盖掉前面的）；
-#   - 命令名之后、注释（词首的 #）里、引号里出现的不算；
-#   - 词里有展开、看不出赋的是哪个变量的（`"$1=$2"`），报；切词失败（引号没配对）也报。
-# 多报不少报：`PATH=$PATH`（不加引号）、`"${TMUX_TMPDIR:-}"` 实际效果一样，也报，改成上面的写法。
-# 看不出来的：参数由展开得来时（`"$@"`、`${X:+$X}`）其中赋了什么——写在 AGENTS.md。
-ENV_I = re.compile(r"(?:^|[\s;&|(])env\s+-i\b")
-NAME_EQ = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=")
-WANT = {
-    "PATH": ('PATH="$PATH"', 'PATH="${PATH}"'),
-    "TMUX_TMPDIR": ('TMUX_TMPDIR="$TMUX_TMPDIR"', 'TMUX_TMPDIR="${TMUX_TMPDIR}"'),
-}
-ENV_OPT_ARG = {"-u", "--unset", "-C", "--chdir"}
-ENV_OPT = {"-i", "--ignore-environment", "-", "-0", "--null", "-v", "--debug"}
-
-
-def shell_words(text):
-    """按 shell 的引号规则切词，到第一个不在引号里的命令分隔符（; & | ) < > 换行）或注释
-    （词首的 #）为止。返回原样的词（引号保留）；引号或 $( ) 没配对返回 None。"""
-    words, cur, i, n = [], "", 0, len(text)
-    while i < n:
-        c = text[i]
-        if c in " \t":
-            if cur:
-                words.append(cur)
-                cur = ""
-            i += 1
-            continue
-        if c in ";&|)<>\n":
-            break
-        if c == "#" and not cur:
-            break
-        if c == "\\":
-            cur += text[i:i + 2]
-            i += 2
-            continue
-        if c == "'":
-            j = text.find("'", i + 1)
-            if j < 0:
-                return None
-            cur += text[i:j + 1]
-            i = j + 1
-            continue
-        if c == '"':
-            j = i + 1
-            while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
-            if j >= n:
-                return None
-            cur += text[i:j + 1]
-            i = j + 1
-            continue
-        if text.startswith("$(", i):
-            depth, j = 1, i + 2
-            while j < n and depth:
-                if text[j] == "(":
-                    depth += 1
-                elif text[j] == ")":
-                    depth -= 1
-                j += 1
-            if depth:
-                return None
-            cur += text[i:j]
-            i = j
-            continue
-        cur += c
-        i += 1
-    if cur:
-        words.append(cur)
-    return words
-
-
-def unquoted(word):
-    return re.sub(r"""["']""", "", word)
+# ── 清空环境的子进程（PR #660 复审 #4，第四轮改设计）────────────────────────────────
+# 前三版都想从文字里看出「env -i 实际收到了哪些赋值」：先是整行搜文字，后来按引号切词，
+# 每一版都被复审找出新的 shell 写法绕过（空值、注释、命令名之后、重定向之后……）。改成
+# 不再判断：用沙盒的文件里，空环境子进程只能经 tests/lib/tmux-sandbox.sh 的
+# tmux_sandbox_env_i 起——PATH 和 TMUX_TMPDIR 由它在运行时原样加上，调用方再给这两样就
+# 拒绝（真实子进程的行为在 tests/tmux-sandbox.test.sh【18】测）。这里只管「文件里没有别的
+# 写法」，而且只多报不少报：
+#   - 一行里出现 env 后面跟着以 - 开头的词，就报——唯一放过的是只带若干个
+#     `-u 变量名` 的写法（`env -u A -u B 命令`，它保留原环境，不清空）；
+#   - `exec -c`（bash 自己清空环境再执行）也报；
+#   - 写在引号里、行尾注释里的也照报（不区分），改措辞即可。
+# 看不出来的：经变量调 env（`"$ENV" -i`）、子进程自己再清空环境——写在 AGENTS.md。
+ENV_DASH = re.compile(r"""(?:^|[\s;&|()`'"=/])env\s+-""")
+ENV_U_ONLY = re.compile(r"""env(?:\s+-u\s+[A-Za-z_][A-Za-z0-9_]*)+\s+(?!-)\S""")
+EXEC_C = re.compile(r"(?:^|[\s;&|(])exec\s+-[A-Za-z]*c")
 
 
 def env_i_problems(line):
     out = []
-    for m in ENV_I.finditer(line):
-        start = line.index("env", m.start())
-        words = shell_words(line[start:])
-        if words is None:
-            out.append("env -i 这一行切不出参数（引号没配对，或写在引号里）；写成一行普通的 env -i 命令")
-            continue
-        i = 1
-        while i < len(words) and words[i].startswith("-"):
-            if words[i] in ENV_OPT_ARG:
-                i += 2
-            elif words[i] in ENV_OPT:
-                i += 1
-            elif words[i] == "--":
-                i += 1
-                break
-            else:
-                out.append("env -i 带了看不懂的选项 %s" % words[i])
-                break
-        seen = {k: [] for k in WANT}
-        while i < len(words):
-            w = words[i]
-            mm = NAME_EQ.match(unquoted(w))
-            if not mm:
-                # 不是赋值就是命令名；等号之前就有展开的，看不出赋的是哪个变量
-                if "=" in w and "$" in w.split("=", 1)[0]:
-                    out.append("env -i 的参数 %s 由展开得来，看不出赋的是哪个变量" % w)
-                break
-            name = mm.group(1)
-            if name in seen:
-                seen[name].append(w)
-            i += 1
-        for name, forms in WANT.items():
-            got = seen[name]
-            if not got:
-                out.append("env -i 的赋值参数里没有 %s（只认 %s），子进程%s" % (
-                    name, forms[0], "会连到别的 tmux 服务" if name == "TMUX_TMPDIR" else "会绕过沙盒的 tmux 包装"))
-            for w in got:
-                if w not in forms:
-                    out.append("env -i 的 %s 没原样传过去：写的是 %s，只认 %s" % (name, w, forms[0]))
+    for m in ENV_DASH.finditer(line):
+        at = line.index("env", m.start())
+        if not ENV_U_ONLY.match(line, at):
+            out.append("清空环境的子进程要用 tmux_sandbox_env_i 起（它原样带上 PATH 和 TMUX_TMPDIR），"
+                       "不要直接写 env 加选项（注释、引号里写的也算）")
+    if EXEC_C.search(line):
+        out.append("exec -c 清空了环境，子进程会连到别的 tmux 服务；改用 tmux_sandbox_env_i")
     return out
 
 

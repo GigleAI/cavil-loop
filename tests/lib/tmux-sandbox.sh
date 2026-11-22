@@ -35,9 +35,13 @@
 #    配置；起服务并建保活会话 cavil-sandbox-keep（不带测试前缀，按前缀过滤的地方看不到
 #    它；测试杀光自己的会话时服务不跟着退出）。本机没有 tmux 时什么都不起（测试照旧
 #    按「没有 tmux」那条路走），只把 TMUX_TMPDIR 设上（可能为空）。任何一步失败都直接以失败退出。
-#    清空环境的子进程（env -i）要带上 TMUX_TMPDIR="$TMUX_TMPDIR" 和 PATH="$PATH"，
-#    写成命令名之前的赋值参数、原样这么写（tests/lib/tmux_guard.py 只认这种）。
+#    清空环境的子进程一律用 ⑤ 起，不直接写 `env -i`（tests/lib/tmux_guard.py 拦）。
 #    测试中途服务退了，下一条 tmux 命令会在同一地址重开——允许（维护者在 #647 选的）。
+# ⑤ tmux_sandbox_env_i [名字=值 ...] <命令> [参数 ...]：在空环境里起子进程，只带调用方
+#    给的赋值，外加本次运行的 TMUX_TMPDIR 和 PATH（放在最后、原样传，子进程连的是专用
+#    服务、找到的是包装）。调用方给的参数里，命令名之前凡是带等号的都按赋值看（env 就是
+#    这么认的），其中有 PATH / TMUX_TMPDIR / TMUX / TMUX_PANE 就拒绝；带 env 选项（以 - 开头）
+#    也拒绝；拒绝时不起子进程，返回 125。重定向由 bash 先处理掉，不进参数。
 #
 # 退出时（尽力清理，维护者在 #647 选的 A）：
 #   1. 依次跑登记的清理（各自的子 shell，失败只记一条）；
@@ -164,6 +168,30 @@ tmux_sandbox_own_dir() {
     esac
     [ -d "$1" ] || _tmux_sandbox_fail "要登记删除的目录不存在：$1"
     _TMUX_SANDBOX_OWNED+=("$1")
+}
+
+tmux_sandbox_env_i() {
+    local -a assigns=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -*)
+                echo "tmux 沙盒：tmux_sandbox_env_i 不接受 env 选项：$1" >&2
+                return 125 ;;
+            *=*)
+                case "${1%%=*}" in
+                    PATH|TMUX_TMPDIR|TMUX|TMUX_PANE)
+                        echo "tmux 沙盒：tmux_sandbox_env_i 不接受调用方给的 ${1%%=*}（由沙盒原样传）" >&2
+                        return 125 ;;
+                esac
+                assigns+=("$1"); shift ;;
+            *) break ;;
+        esac
+    done
+    if [ "$#" -eq 0 ]; then
+        echo "tmux 沙盒：tmux_sandbox_env_i 没给命令" >&2
+        return 125
+    fi
+    env -i ${assigns[@]+"${assigns[@]}"} TMUX_TMPDIR="${TMUX_TMPDIR-}" PATH="$PATH" "$@"
 }
 
 _tmux_sandbox_rm() {   # <目录>：删掉并核对真的没了；失败返回 1 并说明

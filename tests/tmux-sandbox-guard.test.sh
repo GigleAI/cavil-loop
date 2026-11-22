@@ -125,10 +125,10 @@ tmux_sandbox_start
 TMP=$(mktemp -d) || exit 1
 tmux_sandbox_own_dir "$TMP"
 tmux new-session -d -s x 'sleep 3'
-env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
-env -i HOME="$H" PATH="$PATH" \
-    TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
-env -i PATH="${PATH}" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
+tmux_sandbox_env_i HOME="$H" bash -c 'tmux ls'
+tmux_sandbox_env_i HOME="$H" \
+    A=1 bash -c 'tmux ls' > "$OUT/x" 2>&1
+env -u FOO -u BAR HOME="$H" bash -c 'tmux ls'
 EOF
 case_from "带 -S / -L 的调用" ok <<'EOF'
 tmux -S "$SOCK" kill-server 2>/dev/null || true
@@ -157,45 +157,32 @@ for f in reap-finished-workers session-isolation poll-pace pending-human-conflic
         < <(grep -v -e 'tmux-sandbox\.sh' -e 'tmux_sandbox_start' -e 'tmux_sandbox_on_exit' "$TEST_DIR/$f.test.sh")
 done
 
-echo "【4】env -i 的参数：守卫的判断对照真实子进程拿到的环境（PR #660 复审 #4）"
-# 每行一个参数写法：期望守卫（ok / report）、期望子进程环境（same = PATH 和 TMUX_TMPDIR 都
-# 原样拿到 / diff）、写法本身（{CMD} 处换成打印两个变量的命令）。守卫放行而子进程环境不对，
-# 就是守卫漏了；守卫多报（写法效果对、但不是唯一认的那种）单独列出，判成要改写法。
-# 外层 bash 带 --norc 且 stdin 接 /dev/null：stdin 是套接字时 bash 会去读 bashrc，改掉 PATH。
-CMD="/bin/sh -c 'printf \"%s|%s\" \"\$PATH\" \"\$TMUX_TMPDIR\"'"
-SB_PATH="$T/sb/bin:/usr/bin:/bin"; SB_DIR="$T/sb/s"
-miss=0; m=0
-env_case() {   # <名字> <守卫期望> <环境期望> <写法>
-    local line="${4//\{CMD\}/$CMD}" f got env_got out
-    m=$((m+1)); f="$T/env$m.test.sh"
-    printf 'source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"\ntmux_sandbox_start\nenv -i %s\n' "$line" > "$f"
-    if python3 "$GUARD" "$f" >/dev/null 2>&1; then got=ok; else got=report; fi
-    out="$(env -i PATH="$SB_PATH" TMUX_TMPDIR="$SB_DIR" /bin/bash --norc --noprofile -c "env -i $line" 2>/dev/null </dev/null)"
-    if [ "$out" = "$SB_PATH|$SB_DIR" ]; then env_got=same; else env_got=diff; fi
-    chk "$1：守卫判 $2" "$got" "$2"
-    chk "$1：子进程环境 $3" "$env_got" "$3"
-    [ "$got" = ok ] && [ "$env_got" = diff ] && miss=$((miss+1))
-    return 0
+echo "【4】清空环境的子进程：用沙盒的文件里只认 tmux_sandbox_env_i（PR #660 复审 #4）"
+# 前几轮各被找出一种让子进程拿错 PATH / TMUX_TMPDIR 的 env -i 写法，这里全部保留；现在
+# 不再判断 env -i 的参数对不对，一律报，改用 tmux_sandbox_env_i（它在运行时原样带上两样，
+# 行为在 tests/tmux-sandbox.test.sh【18】用真实子进程测）。
+form() {   # <名字> <期望 ok / report> <这一行>
+    case_from "$1" "$2" \
+        < <(printf 'source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"\ntmux_sandbox_start\n%s\n' "$3")
 }
-env_case "标准写法"                 ok     same 'PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" {CMD}'
-env_case "花括号写法、顺序反过来"   ok     same 'TMUX_TMPDIR="${TMUX_TMPDIR}" HOME=/h PATH="${PATH}" {CMD}'
-env_case "续行"                     ok     same 'PATH="$PATH" \
-    TMUX_TMPDIR="$TMUX_TMPDIR" {CMD}'
-env_case "带 -u 选项"               ok     same '-u HOME PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" {CMD}'
-env_case "TMUX_TMPDIR= 空值"        report diff 'PATH="$PATH" TMUX_TMPDIR= {CMD}'
-env_case "TMUX_TMPDIR=\"\" 空值"    report diff 'PATH="$PATH" TMUX_TMPDIR="" {CMD}'
-env_case "正确的 PATH 只在注释里"   report diff 'PATH=/usr/bin:/bin TMUX_TMPDIR="$TMUX_TMPDIR" {CMD} # PATH="$PATH"'
-env_case "正确的 TMUX_TMPDIR 只在注释里" report diff 'PATH="$PATH" {CMD} # TMUX_TMPDIR="$TMUX_TMPDIR"'
-env_case "两样都写在命令名之后"     report diff '{CMD} PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR"'
-env_case "单引号 PATH"              report diff "PATH='\$PATH' TMUX_TMPDIR=\"\$TMUX_TMPDIR\" {CMD}"
-env_case "PATH 前面拼了目录"        report diff 'PATH="/opt/bin:$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" {CMD}'
-env_case "TMUX_TMPDIR 后面拼了路径" report diff 'PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR/x" {CMD}'
-env_case "后面又赋了一次 PATH"      report diff 'PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" PATH=/usr/bin:/bin {CMD}'
-env_case "带引号的整词赋值盖掉前面" report diff 'PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" "TMUX_TMPDIR=/x" {CMD}'
-env_case "两个赋值粘在一起"         report diff 'PATH="$PATH"TMUX_TMPDIR="$TMUX_TMPDIR" {CMD}'
-env_case "多报：不加引号"           report same 'PATH=$PATH TMUX_TMPDIR=$TMUX_TMPDIR {CMD}'
-env_case "多报：带默认值"           report same 'PATH="$PATH" TMUX_TMPDIR="${TMUX_TMPDIR:-}" {CMD}'
-chk "没有守卫放行、子进程环境却不对的写法" "$miss" "0"
+C="bash -c 'command -v tmux'"
+form "第 2 轮：单引号 PATH"                    report "env -i TMUX_TMPDIR=\"\$TMUX_TMPDIR\" PATH='\$PATH' $C"
+form "第 2 轮：PATH 前面拼了目录"              report "env -i TMUX_TMPDIR=\"\$TMUX_TMPDIR\" PATH=\"/opt/bin:\$PATH\" $C"
+form "第 3 轮：TMUX_TMPDIR= 空值"              report "env -i PATH=\"\$PATH\" TMUX_TMPDIR= $C"
+form "第 3 轮：正确的 PATH 只在注释里"         report "env -i PATH=/usr/bin:/bin TMUX_TMPDIR=\"\$TMUX_TMPDIR\" $C # PATH=\"\$PATH\""
+form "第 4 轮：重定向之后又赋了 PATH"          report "env -i PATH=\"\$PATH\" TMUX_TMPDIR=\"\$TMUX_TMPDIR\" >/dev/null PATH=/usr/bin:/bin $C"
+form "两样都原样带上也报（只认 tmux_sandbox_env_i）" report "env -i PATH=\"\$PATH\" TMUX_TMPDIR=\"\$TMUX_TMPDIR\" $C"
+form "选项连写 -iu"                            report "env -iu X PATH=\"\$PATH\" $C"
+form "先 -u 再 -i"                             report "env -u X -i PATH=\"\$PATH\" $C"
+form "长选项 --ignore-environment"             report "env --ignore-environment PATH=\"\$PATH\" $C"
+form "单独一个 -"                              report "env - PATH=\"\$PATH\" $C"
+form "绝对路径 /usr/bin/env -i"                report "/usr/bin/env -i PATH=\"\$PATH\" $C"
+form "写在 bash -c 的引号里"                   report "bash -c 'env -i PATH=/usr/bin tmux ls'"
+form "exec -c 清空环境"                        report "( exec -c bash -c 'tmux ls' )"
+form "多报：行尾注释里提到 env -i"             report "tmux_sandbox_env_i A=1 $C # env -i starts the child"
+form "tmux_sandbox_env_i 带重定向"             ok     "tmux_sandbox_env_i A=1 >/dev/null B=2 $C"
+form "只带 -u 的 env（保留原环境）"            ok     "env -u FOO -u BAR A=1 $C"
+form "printenv 不是 env"                       ok     "printenv -0 >/dev/null"
 
 echo "【5】仓库里全部测试文件"
 out="$(cd "$TEST_DIR/.." && python3 "$GUARD" tests/*.test.sh 2>&1)"; rc=$?

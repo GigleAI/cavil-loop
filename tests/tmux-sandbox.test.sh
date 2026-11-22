@@ -333,10 +333,10 @@ chk "关门标记写不了：退出码 1" "$CASE_RC" "1"
 chk "关门标记写不了：报了出来" "$(grep -c '写不了关门标记' "$T/nogate.out")" "1"
 [ -n "$d" ] && { chmod 700 "$d"; rm -rf "$d"; }
 
-echo "【14】清空环境的子进程带着原样的 PATH：用的是沙盒的 tmux 包装"
+echo "【14】tmux_sandbox_env_i 起的空环境子进程带着原样的 PATH：用的是沙盒的 tmux 包装"
 run_case childpath <<'EOF'
 tmux_sandbox_start
-env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'command -v tmux' > "$OUT/which"
+tmux_sandbox_env_i bash -c 'command -v tmux' > "$OUT/which"
 echo "$TMUX_TMPDIR" > "$OUT/dir"
 EOF
 chk "子进程找到的是包装" "$(w=$(cat "$T/childpath.d/which"); d=$(cat "$T/childpath.d/dir"); [ "$w" = "${d%/s}/bin/tmux" ] && echo wrapper || echo "$w")" "wrapper"
@@ -419,7 +419,7 @@ chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
 while read -r p; do kill -9 "$p" 2>/dev/null; done < "$T/budget.d/pids"
 [ -n "$d" ] && rm -rf "$d"
 
-echo "【17】本机没有 tmux：什么都不起，但 TMUX_TMPDIR 设上了，set -u 下 env -i 照规矩写不出错"
+echo "【17】本机没有 tmux：什么都不起，但 TMUX_TMPDIR 设上了，set -u 下 tmux_sandbox_env_i 照常起子进程"
 NOTMUX="$T/notmux-bin"; mkdir -p "$NOTMUX"
 for d in /usr/local/bin /usr/bin /bin; do
     [ -d "$d" ] || continue
@@ -433,7 +433,7 @@ mkdir -p "$T/notmux.d"
 unset TMUX_TMPDIR
 tmux_sandbox_start
 command -v tmux >/dev/null 2>&1 && echo HAS-TMUX
-env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" /bin/sh -c 'echo "child-ok[${TMUX_TMPDIR-unset}]"'
+tmux_sandbox_env_i /bin/sh -c 'echo "child-ok[${TMUX_TMPDIR-unset}]"'
 echo CASE-RAN
 EOF
 ( cd "$T" && env -i HOME="$T/home" PATH="$NOTMUX" LANG=C.UTF-8 bash "$T/notmux.sh" ) > "$T/notmux.out" 2>&1
@@ -441,6 +441,42 @@ chk "退出码 0" "$?" "0"
 chk "这个 PATH 上确实找不到 tmux" "$(grep -c HAS-TMUX "$T/notmux.out")" "0"
 chk "子进程照常起来、拿到空的 TMUX_TMPDIR" "$(grep -c 'child-ok\[\]' "$T/notmux.out")" "1"
 chk "用例跑完了" "$(grep -c CASE-RAN "$T/notmux.out")" "1"
+
+echo "【18】tmux_sandbox_env_i：子进程环境只有给的赋值加原样的 PATH / TMUX_TMPDIR，想改这两样的一律拒绝"
+run_case envi <<'EOF'
+tmux_sandbox_start
+printf '%s\n%s\n' "$PATH" "$TMUX_TMPDIR" > "$OUT/parent"
+tmux_sandbox_env_i A=1 B='x y' env > "$OUT/env.ok"; echo "$?" > "$OUT/rc.ok"
+tmux_sandbox_env_i A=1 bash -c 'command -v tmux' > "$OUT/which"
+# 重定向在中间（复审第 4 轮的写法）：bash 先处理掉重定向，PATH= 照样进参数 → 拒绝
+tmux_sandbox_env_i A=1 >/dev/null PATH=/usr/bin:/bin bash -c ': > "$1/ran.redir"' _ "$OUT"; echo "$?" > "$OUT/rc.redir"
+tmux_sandbox_env_i TMUX_TMPDIR= bash -c ': > "$1/ran.empty"' _ "$OUT"; echo "$?" > "$OUT/rc.empty"
+tmux_sandbox_env_i "TMUX_TMPDIR=/x" bash -c ': > "$1/ran.quoted"' _ "$OUT"; echo "$?" > "$OUT/rc.quoted"
+tmux_sandbox_env_i TMUX=/x,1,0 bash -c ': > "$1/ran.tmux"' _ "$OUT"; echo "$?" > "$OUT/rc.tmux"
+set -- HOME=/h PATH=/usr/bin
+tmux_sandbox_env_i "$@" bash -c ': > "$1/ran.expand"' _ "$OUT"; echo "$?" > "$OUT/rc.expand"
+set --
+tmux_sandbox_env_i -u HOME bash -c ': > "$1/ran.opt"' _ "$OUT"; echo "$?" > "$OUT/rc.opt"
+tmux_sandbox_env_i A=1; echo "$?" > "$OUT/rc.nocmd"
+# 命令名之后的 PATH= 是给命令的参数，不进环境
+tmux_sandbox_env_i A=1 bash -c 'printf "%s" "$PATH"' _ PATH=/usr/bin > "$OUT/after"; echo "$?" > "$OUT/rc.after"
+EOF
+D="$T/envi.d"
+p_path=$(sed -n 1p "$D/parent"); p_dir=$(sed -n 2p "$D/parent")
+chk "退出码 0" "$CASE_RC" "0"
+chk "正常起：退出码 0" "$(cat "$D/rc.ok")" "0"
+chk "子进程环境恰好是 A、B、TMUX_TMPDIR、PATH 四项" "$(cut -d= -f1 "$D/env.ok" | sort | tr '\n' ' ')" "A B PATH TMUX_TMPDIR "
+chk "PATH 原样" "$(sed -n 's/^PATH=//p' "$D/env.ok")" "$p_path"
+chk "TMUX_TMPDIR 原样（本次运行的专用服务）" "$(sed -n 's/^TMUX_TMPDIR=//p' "$D/env.ok")" "$p_dir"
+chk "带空格的值原样" "$(sed -n 's/^B=//p' "$D/env.ok")" "x y"
+chk "子进程找到的是包装" "$(w=$(cat "$D/which"); [ "$w" = "${p_dir%/s}/bin/tmux" ] && echo wrapper || echo "$w")" "wrapper"
+for k in redir empty quoted tmux expand opt; do
+    chk "拒绝（$k）：返回 125" "$(cat "$D/rc.$k")" "125"
+    chk "拒绝（$k）：命令没跑" "$([ -e "$D/ran.$k" ] && echo ran || echo no)" "no"
+done
+chk "没给命令：返回 125" "$(cat "$D/rc.nocmd")" "125"
+chk "命令名之后的 PATH= 是参数：照常跑" "$(cat "$D/rc.after")" "0"
+chk "命令名之后的 PATH= 不进环境" "$(cat "$D/after")" "$p_path"
 
 echo
 echo "通过 $pass / 失败 $fail"
