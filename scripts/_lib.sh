@@ -10954,6 +10954,46 @@ ASSET_PUBLISH_MARKER='本项目的公网出图地址：'
 ASSET_PUBLISH_HOWTO_PREFIX='- **怎么出图**：'
 ASSET_PUBLISH_STANDARD_PREFIX='- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：'
 
+# ── Which projects show images in comments: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Which projects show images in comments (GitHub#602: the per-project `WEEKLY_REPORT_ASSET_ROOT_URL=`
+# line in `~/.config/cavil-loop/<key>.conf`, the two bullets after "没配出图地址" in the three worker
+# templates — private-repository files are never embedded as images, public images hold only public
+# content — and the matching criteria in review step 2L ① / ④; the add / check / revert steps in
+# `docs/operations{,.zh}.md` behind `<!-- asset-url-ops:*:begin -->`) →
+# `tests/reply-layout-prompts.test.sh` (the bullets in every entry point, rendered by the real
+# dispatch scripts with and without an address) and `tests/asset-url-ops.test.sh` (~1 s; the doc steps
+# run verbatim with only HOME and PATH against a fake config). Turning a project on makes its
+# screenshots public: it is decided per project by a person, never by a fallback to the machine's
+# address. Add writes the address it added to `<key>.conf.asset-url-added`; revert compares with that
+# record — never with the source project's current address, which may have changed since (PR #605
+# review round 1) — removes only the added line, only when it is the one line and still equals the
+# record, and stops when there is no record. Every combination of address lines × record × failed
+# write has one documented outcome and next step (PR #605 review round 2, the third variant of this
+# root cause): a record with no address line is a leftover (a failed add, or a revert that removed the
+# line but not the record) — add rewrites it, revert clears it; the config file is only ever replaced
+# whole — add and revert write the complete new file next to it, check it, copy the old file's
+# permissions, and only then rename it over (PR #605 review round 3: an append cut short by a size
+# limit left half an address line that neither add nor revert could get past; the test makes that
+# short write for real with `prlimit --fsize`); a file that is not writable is `FAILED` before
+# anything is written; each block takes one snapshot first (add: the backup) and makes every decision
+# — how many address lines, which value — and the new file from that snapshot alone (PR #605 review
+# round 5: revert checked the address on one read and built the result from another, and deleted an
+# address changed in between) — right before the swap the file must still equal it (else `STOP`,
+# nothing changed), and the replaced file, kept through a hard link taken just before the rename, must
+# still equal it right after (else `CONFLICT`, that file is kept and named) — the same "compare once
+# more right before the rename, state what cannot be prevented" rule as `project-config.sh` (PR #605
+# review round 4: a save between read and rename was overwritten; the test pins both windows with
+# `chmod` / `mv` wrappers); not caught: an editor's own rename in the instant between the last check
+# and the swap — after six review rounds of variants the maintainer chose (PR #605 Q1 = A) to keep
+# this design and accept that window, stated in the docs, rather than route every writer of the file
+# through one lock (which still could not cover a person's editor) or drop the scripted steps; add and
+# revert of one project hold one lock, `<key>.conf.asset-url.lock` (`flock -w 60`), from the first
+# read to the last write, so they never interleave (re-dispatch review round 1: a revert that read
+# zero address lines deleted the record of an add that finished in between); revert reports `REVERTED`
+# only when the record is really gone, `PARTIAL` when the line is gone and the record is not; an
+# unreadable file is `STOP`. Never copy a backup back over the file (a later token change would be
+# lost). Keep the two doc copies identical
+#
 # 本项目的 key = 调度器给它的那份 <key>.conf 的名字。环境里没有直接给，所以看配置目录：
 # CODING_AGENT_CONFIG 指向本项目配置的那份（比真实路径）。正好一份才算数；没有或不止一份输出空。
 asset_project_key() {
