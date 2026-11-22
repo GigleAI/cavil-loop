@@ -188,9 +188,10 @@ CONF
         local r; for r in 1 2 3; do
             if [ "$side" = old ]; then RR="$SANDBOX/old"; else RR="$ROOT"; fi
             : > "$CALLS"; env POLL_FAKE_NOW=$((T0 + r * 400)) CODING_AGENT_CONFIG="$CONF" bash "$RR/scripts/agent-poll.sh" >/dev/null 2>&1
-            cp "$CALLS" "$SANDBOX/off-$side-calls-$r.log"
+            # 合并后交接（GitHub#656）在合并清理关着时也读已合并列表、写已清理列表：按新规则做，用 compat.sh 里同一套写法去掉
+            compat_merge_calls < "$CALLS" > "$SANDBOX/off-$side-calls-$r.log"
         done
-        jq -S . "$STATE" > "$SANDBOX/off-$side-state.json"
+        jq -S "$COMPAT_MERGE_STATE_JQ" "$STATE" > "$SANDBOX/off-$side-state.json"
         labels_of 10 > "$SANDBOX/off-$side-labels"
     done
     local same=same r

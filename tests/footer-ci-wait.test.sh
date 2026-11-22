@@ -165,7 +165,9 @@ footer() {
 summary() { printf '%s\n' "$1" | sed -n 's/^<details><summary>\(.*\)<\/summary>$/\1/p'; }
 marker()  { printf '%s\n' "$1" | grep -v '^$' | tail -1; }
 field()   { marker "$1" | grep -o " $2=[^ ]*" | sed "s/^ $2=//"; }
-at()      { date -d "@$(( START + $1 ))" '+%H:%M:%S'; }
+# 和 footer 同一条规则：和开始同一天只写时分秒，跨了天写全日期（不然每晚跨零点前后两个小时这里会对不上）
+at()      { if [ "$(date -d "@$(( START + $1 ))" +%F)" = "$(date -d "@$START" +%F)" ]; then date -d "@$(( START + $1 ))" '+%H:%M:%S'
+            else date -d "@$(( START + $1 ))" '+%Y-%m-%d %H:%M:%S'; fi; }
 # 总览各段（秒）相加是否等于总耗时
 sums_ok() {
     python3 - "$(summary "$1")" <<'PY'

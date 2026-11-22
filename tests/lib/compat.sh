@@ -90,7 +90,8 @@ compat_feedback_fp_patch() {
 # 对列表一律原样答 `[]`，改动前的脚本按行读、把它当成编号为「[]」的 PR（读它的正文、给它打标签、记进已清理），
 # 现在按 JSON 读、没有这个 PR——这些对「[]」的调用和记录与要比的功能无关，去掉。
 compat_merge_calls() {   # stdin：调用记录；stdout：统一后的调用记录
-    grep -vE '^gh pr list --repo [^ ]+ --state merged |^gh pr view \[\] |/issues/\[\]( |/|$)' || true
+    # 记录里命令名可以写也可以不写（有的假 gh 只记参数）
+    grep -vE '^(gh )?pr list --repo [^ ]+ --state merged |^(gh )?pr view \[\] |/issues/\[\]( |/|$)' || true
 }
 # state.json 一侧：去掉「[]」那条假 PR（已清理列表里的、各重试队列里以「[]」为键的）；已清理列表是空的（只是首轮
 # bootstrap 写下的）就整项去掉
