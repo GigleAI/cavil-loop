@@ -23,6 +23,11 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 本次运行独用一个 tmux 服务，跑完收掉（GitHub#647）。必须在建任何东西之前载入。
+# shellcheck source=lib/tmux-sandbox.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_on_exit '[ -z "${SANDBOX:-}" ] || { [ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"; }'
+tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
@@ -30,16 +35,6 @@ REPO_DIR="$(dirname "$TEST_DIR")"
 source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d)
-cleanup() {
-    local s
-    for s in $(tmux ls -F '#{session_name}' 2>/dev/null | grep -E '^cftest-' || true); do
-        tmux kill-session -t "=$s" 2>/dev/null || true
-    done
-    [ -n "${KEEP_SANDBOX:-}" ] && { echo "SANDBOX=$SANDBOX"; return 0; }
-    rm -rf "$SANDBOX"
-}
-trap cleanup EXIT
-
 mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
 REAL_GIT=$(command -v git)
 export HOME="$SANDBOX/home"
@@ -396,6 +391,35 @@ CONF
     chk "没写任何 PR 引用" "$("$REAL_GIT" -C "$W/project" for-each-ref | grep -c pull || true)" 0
     chk "origin/main 没被挪动" "$("$REAL_GIT" -C "$W/project" rev-parse origin/main)" "$T0"
 }
+
+# ── 真会话建在本次运行的专用服务上（GitHub#647）──
+# 本文件现有的场景都不建真会话（它和 tmux 的关系只有按前缀清会话、被测代码读会话列表），
+# 所以单独建一个：会话名用被测代码自己的命名函数，再用被测代码自己的列表函数读回来。
+# 当场关掉，免得后面的轮询把它当成 worker 去回收、打乱调用计数。
+echo "【沙盒】真会话建在本次运行的专用 tmux 服务上"
+if command -v tmux >/dev/null 2>&1; then
+    mkdir -p "$SANDBOX/sbprobe/state"
+    cat > "$SANDBOX/sbprobe/conf" <<CONF
+REPO="example/none"
+PROJECT_ROOT="$SANDBOX/sbprobe"
+WORKTREE_BASE="$SANDBOX/sbprobe/wt"
+STATE_DIR="$SANDBOX/sbprobe/state"
+TMUX_PREFIX="cftest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+CONF
+    sb_lib() { env CODING_AGENT_CONFIG="$SANDBOX/sbprobe/conf" bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; eval "$2"' _ "$REPO_DIR" "$1"; }
+    sb_name=$(sb_lib 'tmux_session_name 990')
+    tmux new-session -d -s "$sb_name" 'sleep 300'
+    chk "$sb_name 建在本次运行的专用服务上" \
+        "$(tmux -S "$(tmux_sandbox_socket)" has-session -t "=$sb_name" 2>/dev/null && echo yes || echo no)" "yes"
+    chk "被测代码列出的 worker 会话来自专用服务" "$(sb_lib list_worker_sessions | grep -cx "$sb_name")" "1"
+    tmux kill-session -t "=$sb_name" 2>/dev/null
+else
+    echo "  ⏭  跳过（本机没有 tmux）"
+fi
 
 echo "═══ 正式版 ═══"
 run_scenarios "$REPO_DIR/scripts"
