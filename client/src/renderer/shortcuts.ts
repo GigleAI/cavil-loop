@@ -117,7 +117,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: 'tabAt', scope: 'global', keys: DIGITS.map((key) => ({ key, mod: true })), range: true, label: zhKey('切到第几个标签页（1 是首页，9 是最后一个；只有首页时不做事）') },
   { id: 'labels', scope: 'detail', keys: [{ key: 'l' }], label: zhKey('设置标签') },
   { id: 'milestone', scope: 'detail', keys: [{ key: 'm' }], label: zhKey('设置里程碑') },
-  { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: zhKey('跳到回复框') },
+  { id: 'reply', scope: 'detail', keys: [{ key: 'r' }], label: zhKey('跳到回复框；选中了讨论里的文字时，引用进回复框') },
   // GitHub#413 / #433: the three buttons next to "发送". They take ⌘⇧ (Ctrl+Shift), so they also act
   // from the reply box (a ⌘ key is never typing, see `resolve`) and are forwarded by the discussion
   // frame (FRAME_FORWARD); the letters are the maintainer's choice in #433.
