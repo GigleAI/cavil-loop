@@ -18,6 +18,7 @@ import type { EditMark, Item } from '../../src/shared/types';
 import type { WriteAction } from '../../src/shared/actions';
 import { noteEditOf, stepNoteEdits } from '../../src/renderer/noteEdits';
 import { createTone } from '../../src/shared/noticeTone';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -91,11 +92,7 @@ const storedEdits = () => {
   return ((cache.loadSnapshots().get(EDITS_KEY) as any)?.edits ?? null) as any[] | null;
 };
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 1000; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 
 beforeEach(async () => {

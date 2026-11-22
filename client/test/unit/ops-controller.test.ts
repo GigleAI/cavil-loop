@@ -14,6 +14,7 @@ import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { opAutoDismissable, opButtons, opDraftLeft, opLockOf, opPhase, opResendConfirm, opReusableDraft, opText, opTone, type OpRecord } from '../../src/shared/ops';
 import type { Item } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const REPO = 'GigleAI/cavil-loop';
@@ -65,11 +66,7 @@ const opOf = (c: Controller, id: string): OpRecord => {
   return r;
 };
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 /** every job of the controller is through (requests, re-reads, evidence) */
 const idle = async (c: Controller) => {

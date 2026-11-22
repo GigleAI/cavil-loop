@@ -13,6 +13,7 @@ import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const APP_TOKEN = 'ghu_boundaryapptoken000000000000000001';
 const APP_REFRESH = 'ghr_boundaryrefresh0000000000000000001';
@@ -33,11 +34,7 @@ afterEach(async () => {
 });
 
 async function until(c: Controller, pred: (s: AppState) => boolean) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error('timeout');
+  await waitUntil(() => pred(c.getState()), '条件成立', () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 function backend(clock: { t: number }) {

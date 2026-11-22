@@ -20,6 +20,8 @@ import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { nodeIdOf } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { Item } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
+import { ManualTimers } from '../support/timers';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -55,6 +57,8 @@ interface Opts {
   project?: boolean;
   repo?: boolean;
   followUpSyncMs?: number;
+  /** GitHub#649: hand-stepped timers (the follow-up round then runs only when the test fires it) */
+  timers?: ManualTimers;
   intercept?: (cmd: string, args: any) => unknown;
 }
 
@@ -69,7 +73,7 @@ async function ready(opts: Opts = {}) {
   const harness = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {} });
   backends.push(harness);
   const backend: Backend = opts.intercept ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) } : harness;
-  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: opts.followUpSyncMs ?? NEVER });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', followUpSyncMs: opts.followUpSyncMs ?? NEVER, ...(opts.timers ? { timers: opts.timers } : {}) });
   controllers.push(c);
   if (opts.project !== false) c.addSource(PROJECT_URL);
   if (opts.repo !== false) c.addSource(REPO);
@@ -132,13 +136,10 @@ const count = (what: 'rounds' | 'refresh' | 'closing') =>
         ? l.operation === 'CavilItemRefresh'
         : l.operation === 'CavilClosingIssues',
   ).length;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(20);
-  }
-  throw new Error(`timeout: ${what}`);
+/** GitHub#649: the follow-up delay in tests that step their timers by hand (never fires on its own) */
+const FOLLOW = 7_777;
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 
 async function mergeIt(c: Controller, n = PR) {
@@ -344,14 +345,19 @@ describe('one more sync round after a change', () => {
   });
 
   it('three changes in a row: exactly one more round, after the last', async () => {
-    const { c } = await ready({ followUpSyncMs: 1500 });
+    const timers = new ManualTimers();
+    const { c } = await ready({ followUpSyncMs: FOLLOW, timers });
     const rounds = count('rounds');
     for (const label of ['a', 'b', 'c']) expect((await c.act({ kind: 'addLabel', key: K(ISSUE), label })).ok).toBe(true);
     expect(count('rounds')).toBe(rounds);
+    // each change pushed the round back: one is queued, not three
+    expect(timers.queued(FOLLOW)).toBe(1);
+    expect(timers.fire(FOLLOW)).toBe(1);
     await waitFor(() => count('rounds') > rounds && !c.getState().sync.syncing, 'one round');
-    await sleep(2500);
-    // a round reads both sources once: one round = two first reads
+    await c.settled();
+    // a round reads both sources once: one round = two first reads; nothing else is queued
     expect(count('rounds') - rounds).toBe(2);
+    expect(timers.queued(FOLLOW)).toBe(0);
   });
 
   it('done with a warning (the new issue could not join the board) still counts as a change', async () => {
@@ -365,32 +371,44 @@ describe('one more sync round after a change', () => {
   });
 
   it('refused before sending / refused by GitHub: no extra round (and the allowed change next to it does get one)', async () => {
-    const { c } = await ready({ followUpSyncMs: 200 });
+    const timers = new ManualTimers();
+    const { c } = await ready({ followUpSyncMs: FOLLOW, timers });
     const rounds = count('rounds');
     const refused = await c.act({ kind: 'setMilestone', key: K(ISSUE), title: 'no such milestone' });
     expect(refused.ok).toBe(false);
     fake.state.w.readOnlyRepos.add('gigleai/cavil-loop');
     const denied = await c.act({ kind: 'addLabel', key: K(ISSUE), label: 'bug' });
     expect(denied.ok).toBe(false);
-    await sleep(700);
+    await c.settled();
+    // no round was queued for either, and none ran
+    expect(timers.queued(FOLLOW)).toBe(0);
     expect(count('rounds')).toBe(rounds);
     fake.state.w.readOnlyRepos.clear();
     expect((await c.act({ kind: 'addLabel', key: K(ISSUE), label: 'bug' })).ok).toBe(true);
+    expect(timers.fire(FOLLOW)).toBe(1);
     await waitFor(() => count('rounds') > rounds, 'round after the allowed change');
   });
 
   it('signed out before the round is due: it never runs, nothing is sent', async () => {
-    const { c } = await ready({ followUpSyncMs: 1500 });
+    const timers = new ManualTimers();
+    const { c } = await ready({ followUpSyncMs: FOLLOW, timers });
     expect((await c.act({ kind: 'addLabel', key: K(ISSUE), label: 'bug' })).ok).toBe(true);
+    // the change did queue its round (reachability) …
+    expect(timers.queued(FOLLOW)).toBe(1);
     await c.logout();
     const sent = fake.log.length;
-    await sleep(2000);
+    // … and signing out took it back; anything still queued, run now, sends nothing
+    expect(timers.queued(FOLLOW)).toBe(0);
+    timers.fire(FOLLOW);
+    await c.settled();
     expect(fake.log.length).toBe(sent);
   });
 
   it('signed out and signed in again before the round is due: the old round does not run in the new session', async () => {
-    const { c } = await ready({ followUpSyncMs: 3000 });
+    const timers = new ManualTimers();
+    const { c } = await ready({ followUpSyncMs: FOLLOW, timers });
     expect((await c.act({ kind: 'addLabel', key: K(ISSUE), label: 'bug' })).ok).toBe(true);
+    expect(timers.queued(FOLLOW)).toBe(1);
     await c.logout();
     c.setClientId(fake.state.oauthClientId);
     const login = c.startLogin();
@@ -402,14 +420,17 @@ describe('one more sync round after a change', () => {
     // the new sign-in's own first round did run (reachability) …
     const rounds = count('rounds');
     expect(rounds).toBeGreaterThan(0);
-    // … and nothing more once the old change's round would have been due
-    await sleep(3500);
+    // … and the old change's round is no longer queued; whatever is queued, run now, starts no round
+    expect(timers.queued(FOLLOW)).toBe(0);
+    timers.fire(FOLLOW);
+    await c.settled();
     expect(count('rounds')).toBe(rounds);
   });
 
   it('a change that answers only after a sign-out: no re-read, no round', async () => {
     openPair();
-    const { c } = await ready({ followUpSyncMs: 200 });
+    const timers = new ManualTimers();
+    const { c } = await ready({ followUpSyncMs: FOLLOW, timers });
     const d = await c.loadDetail(K(PR));
     if (!d.ok) throw new Error(d.error);
     const release = fake.hold(`/pulls/${PR}/merge`);
@@ -421,7 +442,9 @@ describe('one more sync round after a change', () => {
     await p;
     // the merge itself did reach GitHub and was answered
     await waitFor(() => fake.log.some((l) => l.path.includes(`/pulls/${PR}/merge`) && l.status === 200), 'merge answered');
-    await sleep(600);
+    // the controller's own work after the answer is over, and no follow-up round was queued
+    await c.settled();
+    expect(timers.queued(FOLLOW)).toBe(0);
     // the merge's own answer is the only request after the sign-out
     expect(fake.log.slice(sent).filter((l) => l.operation === 'CavilItemRefresh' || l.operation === 'CavilClosingIssues')).toEqual([]);
     expect(fake.log.length).toBe(sent);

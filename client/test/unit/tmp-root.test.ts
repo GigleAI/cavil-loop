@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MASTER, leftovers } from '../support/tmp-root.mjs';
 import { tempDir } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LAUNCHER = join(root, 'scripts', 'with-tmp.mjs');
@@ -26,12 +27,8 @@ const LEAKY_CONFIG = join(root, 'test', 'fixtures', 'tmp-root', 'vitest.config.t
 /** a shell single-quoted word */
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(what: string, ok: () => boolean, ms = 20_000) {
-  const end = Date.now() + ms;
-  while (!ok()) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
+async function until(what: string, ok: () => boolean) {
+  await waitUntil(ok, what);
 }
 const alive = (pid: number) => {
   try {

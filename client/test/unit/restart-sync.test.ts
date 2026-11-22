@@ -17,6 +17,7 @@ import { HarnessBackend } from '../support/harness';
 import type { Backend } from '../../src/backend/backend';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const REPO_KEY = 'repo:gigleai/cavil-loop';
@@ -98,12 +99,8 @@ const rounds = () => fake.log.filter(isFirstPage).length;
 /** open-issue pages after the first, across all rounds */
 const laterPages = () => fake.log.filter((l) => isOpenList(l) && /[?&]page=\d/.test(l.path)).length;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 /** hold the next first page of the open-issue list (later ones go through) */
 function holdNextRead(): () => void {

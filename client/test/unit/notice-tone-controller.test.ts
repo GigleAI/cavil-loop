@@ -21,6 +21,7 @@ import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { opAutoDismissable, opButtons, opPhase, opText, opTone, type OpRecord } from '../../src/shared/ops';
 import { createFailures, createTone, editsTone } from '../../src/shared/noticeTone';
 import type { CreateJob, EditMark } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -61,11 +62,7 @@ async function ready() {
 }
 
 async function until(pred: () => boolean, what: string) {
-  for (let i = 0; i < 3000; i++) {
-    if (pred()) return;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error(`timeout waiting for: ${what}`);
+  await waitUntil(pred, what);
 }
 const idle = async (c: Controller) => {
   for (const j of [...((c as any).opJobs as Map<string, Promise<void>>).values()]) await j;

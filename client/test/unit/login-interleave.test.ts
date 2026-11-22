@@ -14,6 +14,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
+import { waitUntil } from '../support/wait';
 
 let fake: FakeGitHub;
 let dir: string;
@@ -104,7 +105,7 @@ describe('a sign-in committing while a cancel or sign-out lands', () => {
       store.lockDbOnSet = true;
       const b = backend(store);
       const { run, finish } = await approvedLogin(b);
-      for (let i = 0; i < 400 && !store.holder; i++) await tick(10);
+      await waitUntil(() => !(!store.holder), '不再满足：!store.holder');
       // "something did happen": the token really reached the keychain and the database really is locked
       expect(store.wrote.length).toBe(1);
       expect(store.holder).not.toBeNull();

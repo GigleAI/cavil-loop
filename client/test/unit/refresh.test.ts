@@ -65,11 +65,7 @@ async function make(store: FileStore, clock: { t: number }) {
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 /** Sign in through the device flow as a GitHub App would: expiring token + refresh token. */
@@ -231,7 +227,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     clock.t += 9 * HOUR;
     const release = fake.hold('/login/oauth/access_token');
     const round = c.syncNow();
-    for (let i = 0; i < 200 && refreshes().length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(refreshes().length === 0), '不再满足：refreshes().length === 0');
     expect(refreshes()).toHaveLength(1);
     await c.logout();
     release();
@@ -253,7 +249,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
     clock.t += 9 * HOUR;
     store.hold = true;
     const round = c.syncNow();
-    for (let i = 0; i < 200 && store.writes.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    await waitUntil(() => !(store.writes.length === 0), '不再满足：store.writes.length === 0');
     expect(store.writes).toHaveLength(1); // the refreshed token reached the store
     const out = c.logout();
     store.writes[0].release();
@@ -313,6 +309,7 @@ describe('GitHub App sign-in: expiring tokens are refreshed', () => {
 
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { waitUntil } from '../support/wait';
 
 describe('how a refresh answer is classified (HTTP status × body shape)', () => {
   // the back end's own refresh call, against a server that answers exactly `status` + `body`

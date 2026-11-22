@@ -38,6 +38,7 @@ import { PendingTracker } from '../../src/data/pending';
 import { buildGraph } from '../../src/data/graph';
 import { loopKnown } from '../../src/data/loopBlocked';
 import type { Item, SourceSnapshot } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const shared = { handBack: DEFAULT_HAND_BACK, blockedLabels: DEFAULT_BLOCKED_LABELS };
 const label = (name: string) => ({ name, color: 'ededed' });
@@ -417,7 +418,7 @@ async function make(script: (cmd: string, args: Record<string, unknown>) => Rena
 }
 
 const until = async (f: () => boolean) => {
-  for (let i = 0; i < 200 && !f(); i++) await new Promise((r) => setTimeout(r, 10));
+  await waitUntil(() => !(!f()), '不再满足：!f()');
   expect(f()).toBe(true);
 };
 

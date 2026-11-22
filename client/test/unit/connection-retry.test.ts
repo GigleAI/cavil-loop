@@ -15,6 +15,7 @@ import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FIXTURE_NOW, tempDir } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const APP_TOKEN = 'ghu_retryapptoken00000000000000000001';
 const APP_REFRESH = 'ghr_retryapprefresh0000000000000000001';
@@ -27,11 +28,7 @@ const controllers: Controller[] = [];
 const backends: HarnessBackend[] = [];
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 async function signedIn(beforeLogin: () => void = () => {}) {

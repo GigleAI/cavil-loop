@@ -18,6 +18,7 @@ import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { AppState } from '../../src/shared/types';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const HOUR = 3_600_000;
@@ -83,11 +84,7 @@ async function app(store: FileStore, clock = { t: FIXTURE_NOW }) {
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what} (${JSON.stringify(c.getState().loginReason)})`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 /** a signed-in profile with one synced source */
@@ -141,7 +138,7 @@ describe('signing out when the database refuses to clear the trust list', () => 
       // login page can be up a moment before clear() is entered. Wait for both (GitHub#295
       // code review round 1: asserting clearStarted right after the page switch was flaky).
       await until(c, (s) => s.phase === 'login', 'login page');
-      for (let i = 0; i < 1500 && !store.clearStarted; i++) await new Promise((r) => setTimeout(r, 10));
+      await waitUntil(() => !(!store.clearStarted), '不再满足：!store.clearStarted');
       // "something did happen": the delete really started, and is still held by the gate
       expect(store.clearStarted).toBe(true);
       expect(c.getState().phase).toBe('login');

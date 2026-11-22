@@ -15,6 +15,7 @@ import { FIXTURE_NOW, tempDir } from './helpers';
 import { saidText } from '../../src/shared/i18n';
 import type { AppState } from '../../src/shared/types';
 import { CJK } from '../i18n/scan';
+import { waitUntil } from '../support/wait';
 
 const HOUR = 3_600_000;
 const REPO = 'GigleAI/cavil-loop';
@@ -34,11 +35,7 @@ class FlakyStore extends FileStore {
 }
 
 async function until(c: Controller, pred: (s: AppState) => boolean, what: string) {
-  for (let i = 0; i < 1500; i++) {
-    if (pred(c.getState())) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error(`timeout: ${what}`);
+  await waitUntil(() => pred(c.getState()), what, () => ({ phase: c.getState().phase, login: c.getState().login }));
 }
 
 async function signInAsApp(store: FileStore, clock: { t: number }) {

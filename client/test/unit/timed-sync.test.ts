@@ -21,6 +21,7 @@ import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, type FakeGitHub, type LoggedRequest } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -173,12 +174,8 @@ const rounds = () => fake.log.filter(isFirstPage).length;
 const viewerAsks = () => fake.log.filter((l) => l.operation === 'user').length;
 const boardReads = () => fake.log.filter((e) => e.operation === 'CavilProjectItems' && (e.variables?.after ?? null) === null).length;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(pred: () => boolean, what: string, ms = 10_000) {
-  for (const end = Date.now() + ms; Date.now() < end; ) {
-    if (pred()) return;
-    await sleep(10);
-  }
-  throw new Error(`timeout: ${what}`);
+async function waitFor(pred: () => boolean, what: string) {
+  await waitUntil(pred, what);
 }
 /** hold the next first page of the repository's open-issue list */
 function holdNextRead(which: (e: LoggedRequest) => boolean = isFirstPage): () => void {
@@ -616,7 +613,7 @@ describe('the alarm of a timed round', () => {
     fake.state.nextGrant = { token: FAKE_TOKEN };
     c.setClientId(fake.state.oauthClientId);
     const login = c.startLogin();
-    for (let i = 0; i < 500 && c.getState().login.status !== 'waiting'; i++) await sleep(10);
+    await waitUntil(() => !(c.getState().login.status !== 'waiting'), '不再满足：c.getState().login.status !== "waiting"');
     fake.resolveGrant('approved');
     await login;
     await settle(c);
