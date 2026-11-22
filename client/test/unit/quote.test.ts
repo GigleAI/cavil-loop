@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
-import { hasWords, htmlComments, parses, quoteText, selectionMarkdown, trimSelection, withQuote, withoutHidden } from '../../src/data/quote';
+import { emptied, hasWords, htmlComments, parses, quoteText, selectionMarkdown, trimSelection, withQuote, withoutHidden } from '../../src/data/quote';
 import { buildTimeline } from '../../src/data/detail';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -81,6 +81,11 @@ const CORPUS: Record<string, string> = {
   strike: '~<!-- hidden -->~text~~',
   autolink: 'https://exa<!-- hidden -->mple.com',
   tablePipe: '| a | b |\n|---|---|\n| c <!-- d | e --> | f |\n',
+  // PR #659 code review round 3: whitespace inside <pre> is visible
+  preBlank: '<pre>\nA\n<!-- hidden -->\nB\n</pre>\n',
+  preTrailing: '<pre>\nA\n\n<!-- hidden -->',
+  quoteMultiLine: '> before\n> <!-- one\n> two -->\n> after\n',
+  itemMultiLine: '- item\n  <!-- one\n  two -->\n  more\n',
 };
 
 describe('withoutHidden: every comment emptied, everything else as it was', () => {
@@ -94,32 +99,49 @@ describe('withoutHidden: every comment emptied, everything else as it was', () =
     }
   });
 
-  it('the hidden words are gone; empty comments stand where comments stood', () => {
+  it('the hidden words are gone; an empty comment stands where each comment stood, with its own line breaks', () => {
     expect(withoutHidden(CORPUS.twoParagraphs)).toBe('First\n<!-- -->\nSecond');
     expect(withoutHidden(CORPUS.twoLists)).toBe('- first\n<!-- -->\n- second');
     expect(withoutHidden(CORPUS.taskBox)).toBe('- [<!-- -->x] item');
     expect(withoutHidden(CORPUS.strike)).toBe('~<!-- -->~text~~');
     expect(withoutHidden(CORPUS.autolink)).toBe('https://exa<!-- -->mple.com');
     expect(withoutHidden(CORPUS.inline)).toBe('前 <!-- --> 后\n');
-    expect(withoutHidden(CORPUS.multiLine)).toBe('a\n\n<!-- -->\n\nb\n');
+    expect(withoutHidden(CORPUS.multiLine)).toBe('a\n\n<!--\n\n-->\n\nb\n');
     expect(withoutHidden(CORPUS.attribute)).toBe('<span title="<!-- literal -->">visible</span><!-- --> text\n');
+    expect(withoutHidden(CORPUS.preBlank)).toBe('<pre>\nA\n<!-- -->\nB\n</pre>\n');
+    expect(withoutHidden(CORPUS.preTrailing)).toBe('<pre>\nA\n\n<!-- -->');
+    expect(withoutHidden(CORPUS.quoteMultiLine)).toBe('> before\n> <!--\n> -->\n> after\n');
+    expect(withoutHidden(CORPUS.itemMultiLine)).toBe('- item\n  <!--\n  -->\n  more\n');
+    expect(withoutHidden(CORPUS.usageFold)).toBe(CORPUS.usageFold.replace('<!-- agent-metrics wall_secs=60 -->', '<!-- -->'));
     expect(htmlComments('<a title=\'x <!-- y\'>z</a><!-- real -->')).toEqual([[25, 38]]);
+    expect(emptied('<!-->')).toBe('<!-- -->');
+    // emptying an emptied comment changes nothing
+    for (const c of ['<!-- -->', '<!--\n\n-->', '<!--\n> -->', '<!--\n  -->']) expect(emptied(c)).toBe(c);
+  });
+
+  it('no line is deleted anywhere: every character outside comments is where it was, line for line', () => {
+    for (const [name, s] of Object.entries(CORPUS)) {
+      const out = withoutHidden(s);
+      if (out === null || out === '' || out === s) continue;
+      expect(out.split('\n').length, name).toBe(s.split('\n').length);
+      const outside = (x: string) => x.replace(/<!--[\s\S]*?-->/g, '');
+      // outside comments (and the comment-looking attribute value, which stays as is) nothing changed
+      expect(outside(out), name).toBe(outside(s));
+    }
   });
 
   it('what is not a comment stays as written: code, an attribute value, a cell a table row splits', () => {
     for (const k of ['commentAsCode', 'tablePipe', 'foldAlike', 'indentedOnly', 'edgesBlank']) expect(withoutHidden(CORPUS[k])).toBe(CORPUS[k]);
-    expect(withoutHidden(CORPUS.fencedBlanks)).toBe('说明\n\n```\na\n\n\n\nb\n```\n');
   });
 
-  it('whole lines go only inside raw HTML that has more in it, and at the very start and end', () => {
-    // the usage record under the fold's closing tag (raw HTML with more in it)
-    expect(withoutHidden(CORPUS.usageFold)).toBe(CORPUS.usageFold.replace('<!-- agent-metrics wall_secs=60 -->\n', ''));
-    // the start: a comment first, indented code next — the code stays code
-    expect(withoutHidden(CORPUS.commentThenCode)).toBe('    code line\n      more\n');
-    // the end: no empty quote lines after the words
-    expect(withoutHidden('a\n\n<!-- x -->\n')).toBe('a\n');
-    expect(withoutHidden('a\n\n<!-- x -->')).toBe('a\n');
-    // nothing but comments: nothing to quote
+  it('a comment whose words decide where raw HTML ends: not quoted whole (emptying it would move that end)', () => {
+    const s = '<pre>\nA\n<!-- </pre> -->\nafter, a paragraph\n';
+    expect(withoutHidden(s)).toBeNull();
+    // a detail entry with it gets no whole-quote button; its words can still be selected and quoted
+    expect(buildTimeline({ item: { __typename: 'Issue', id: 'I', number: 1, title: 't', url: 'u', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', bodyHTML: '<pre>A</pre>', body: s, author: { login: 'a' }, labels: { nodes: [] } }, comments: [], reviews: [] } as never)[0].quoteSource).toBeUndefined();
+  });
+
+  it('nothing but comments and blanks: nothing to quote', () => {
     expect(withoutHidden('<!-- a -->\n\n<!-- b -->\n')).toBe('');
   });
 
@@ -149,7 +171,7 @@ describe('withoutHidden: every comment emptied, everything else as it was', () =
     const out = sameRender(long);
     // the render check above parses with micromark itself, not through the quote module: only the quote's own parses count
     expect(parses.n - before).toBeLessThanOrEqual(3);
-    expect(out.split('<!-- -->').length - 1).toBe(199);
+    expect(out.split('<!-- -->').length - 1).toBe(200);
     expect(out).not.toContain('marker');
     const t0 = performance.now();
     withoutHidden(long);

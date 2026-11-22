@@ -8,16 +8,16 @@
 //
 // The box itself is changed by one function in the detail panel (typing goes through it too).
 //
-// A whole entry keeps its markdown; only what is inside HTML comments goes. Those hold the loop's
+// A whole entry keeps its markdown; only the words inside HTML comments go. Those hold the loop's
 // hidden markers, and they must not come along: the daemon takes `<!-- agent-blocked-by: … -->`
-// from anywhere in a collaborator's comment, quoted or not. A comment is not deleted but emptied —
-// `<!-- -->` stands where it stood — so the parser meets a comment at the same place and nothing
-// around it can join, split, or turn into something else (a task box, a strikethrough, a longer
-// autolink, two lists made one: each was found once while comments were being deleted). Whole lines
-// go only where nothing can depend on them: comment lines inside a block of raw HTML that has more
-// in it, and comment lines at the very start or end of the text. Where comments are is read by
-// micromark with GitHub's extensions, the same parser the client renders with; the result is
-// checked against the source's token structure, and a text the check refuses is not quoted whole.
+// from anywhere in a collaborator's comment, quoted or not. A comment is not deleted but emptied in
+// place, keeping its own line breaks — `<!-- -->` stands where it stood — so the parser meets a comment
+// at the same place, every other character of the text stays where it was, and nothing around it can
+// join, split, or turn into something else (a task box, a strikethrough, a longer autolink, two lists
+// made one, a blank line inside <pre> gone: each was found once while comments or their lines were
+// being deleted). No line is deleted, anywhere. Where comments are is read by micromark with GitHub's
+// extensions, the same parser the client renders with; the result is checked against the source's
+// token structure, and a text the check refuses is not quoted whole.
 
 import { parse as mmParse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
@@ -78,21 +78,33 @@ function events(s: string): ['enter' | 'exit', Tok][] {
   return ev.map(([k, tok]) => [k, tok as unknown as Tok]);
 }
 
-const stripComments = (s: string) => {
+/**
+ * What an emptied comment keeps: its own line breaks, each with the prefix the next line opened with (a
+ * blockquote's `>`, a list item's indentation), so every line around it starts and ends where it did.
+ * `<!-- a -->` becomes `<!-- -->`; a comment over three lines inside a quote keeps three quoted lines.
+ */
+export function emptied(comment: string): string {
+  const inner = comment.replace(/^<!--/, '').replace(/-->$/, '');
+  const breaks = inner.match(/\n[ \t>]*/g) ?? [];
+  // on one line: `<!-- -->`; over several: only the breaks (emptying an emptied comment changes nothing)
+  return breaks.length ? `<!--${breaks.join('')}-->` : '<!-- -->';
+}
+
+const emptyComments = (s: string) => {
   let out = '';
   let at = 0;
   for (const [a, b] of htmlComments(s)) {
-    out += s.slice(at, a);
+    out += s.slice(at, a) + emptied(s.slice(a, b));
     at = b;
   }
   return out + s.slice(at);
 };
-const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
 
 /**
- * What a text is made of, comments aside: every token in order (lists with their tight / loose
- * flag), the text of text and code exactly, raw HTML with its comments out and its whitespace as a
- * browser shows it, and nothing for line endings, indentation prefixes or blank lines between blocks.
+ * What a text is made of, the words inside comments aside: every token in order (lists with their tight
+ * / loose flag), the exact text of text, code and raw HTML — raw HTML with each comment emptied — and
+ * nothing for line endings, indentation prefixes or blank lines between blocks (those are compared through
+ * the tokens they make). Nothing is squashed: inside `<pre>` every space and line counts.
  */
 function structure(s: string): string {
   const out: string[] = [];
@@ -110,10 +122,7 @@ function structure(s: string): string {
     }
     if (whole) {
       skip++;
-      if (tok.type === 'htmlFlow' || tok.type === 'htmlText') {
-        const v = squash(stripComments(slice()));
-        if (v) out.push(`${tok.type}:${v}`);
-      } else out.push(`${tok.type}:${slice()}`);
+      out.push(`${tok.type}:${tok.type.startsWith('html') ? emptyComments(slice()) : slice()}`);
       continue;
     }
     if (/^(lineEnding|lineEndingBlank|linePrefix|whitespace|blockQuotePrefixWhitespace)$/.test(tok.type)) continue;
@@ -128,97 +137,38 @@ function structure(s: string): string {
   return JSON.stringify(out);
 }
 
-/** what stands where a comment was */
-const PLACEHOLDER = '<!-- -->';
-
 /**
- * `source` with every HTML comment emptied (hidden markers out), rendering to what `source` renders
- * to; `null` when that cannot be made sure of (then the entry is not quoted whole — words selected in
- * it still can be). A comment is one where micromark with GitHub's extensions reads HTML (the same
- * characters in code are code; inside a tag they are an attribute value; a `|` of a table row splits
- * it before it could be one). Whole lines go in two places only: a line of nothing but comments inside
- * a block of raw HTML that has more in it, and lines of nothing but comments and blanks at the very
- * start or end. With no comment the result is `source` itself.
+ * `source` with the words inside every HTML comment taken out (hidden markers gone), and every other
+ * character where it was: each comment is emptied in place, keeping its line breaks (`emptied`); no line
+ * is deleted, no whitespace touched. A comment is one where micromark with GitHub's extensions reads HTML
+ * (the same characters in code are code; inside a tag they are an attribute value; a `|` of a table row
+ * splits it before it could be one). The result must have the source's token structure — a comment whose
+ * words decided where a block of raw HTML ends (a `</pre>` written inside it) would fail that — and is
+ * `null` then: the entry is not quoted whole (words selected in it still can be). `''` when nothing but
+ * comments and blanks is there; with no comment, `source` itself.
  */
 export function withoutHidden(source: string): string | null {
   const cut: [number, number][] = [];
-  const flows: { a: number; b: number; comments: [number, number][] }[] = [];
   for (const [k, tok] of events(source)) {
     if (k !== 'enter' || (tok.type !== 'htmlFlow' && tok.type !== 'htmlText')) continue;
     const a = tok.start.offset;
-    const b = tok.end.offset;
-    const mine = htmlComments(source.slice(a, b)).map(([x, y]) => [a + x, a + y] as [number, number]);
-    cut.push(...mine);
-    if (tok.type === 'htmlFlow' && mine.length) flows.push({ a, b, comments: mine });
+    for (const [x, y] of htmlComments(source.slice(a, tok.end.offset))) cut.push([a + x, a + y]);
   }
   if (!cut.length) return source;
-  const inComment = new Uint8Array(source.length);
-  for (const [x, y] of cut) inComment.fill(1, x, y);
-  const blank = (i: number) => /\s/.test(source[i]);
-  // the lines [start, end) of the text; `end` is at the line break (or the end of the text)
-  const lines: [number, number][] = [];
-  for (let s = 0; s <= source.length; ) {
-    let e = source.indexOf('\n', s);
-    if (e < 0) e = source.length;
-    lines.push([s, e]);
-    if (e === source.length) break;
-    s = e + 1;
+  cut.sort((x, y) => x[0] - y[0]);
+  let out = '';
+  let at = 0;
+  let visible = false;
+  for (const [a, b] of cut) {
+    const between = source.slice(at, a);
+    if (/\S/.test(between)) visible = true;
+    out += between + emptied(source.slice(a, b));
+    at = b;
   }
-  const onlyHidden = ([s, e]: [number, number]) => {
-    let any = false;
-    for (let i = s; i < e; i++) {
-      if (inComment[i]) any = true;
-      else if (!blank(i)) return null;
-    }
-    return any;
-  };
-  const drop = new Uint8Array(source.length + 1);
-  const dropLine = ([s, e]: [number, number]) => drop.fill(1, s, Math.min(e + 1, source.length));
-  // a block of raw HTML with more in it than comments: its comment-only lines go
-  for (const f of flows) {
-    let more = false;
-    for (let i = f.a; i < f.b && !more; i++) if (!inComment[i] && !blank(i)) more = true;
-    if (!more) continue;
-    for (const ln of lines) if (ln[0] >= f.a && ln[1] <= f.b && onlyHidden(ln) === true) dropLine(ln);
-  }
-  // the very start and end: lines of nothing but comments and blanks
-  const firstWord = lines.findIndex((ln) => onlyHidden(ln) === null);
-  if (firstWord < 0) return '';
-  for (let i = 0; i < firstWord; i++) dropLine(lines[i]);
-  let lastWord = lines.length - 1;
-  while (onlyHidden(lines[lastWord]) !== null) lastWord--;
-  if (lastWord < lines.length - 1) {
-    // the last line with words keeps its line break; after it, nothing
-    drop.fill(1, Math.min(lines[lastWord][1] + 1, source.length), source.length);
-  }
-  const build = (dropping: boolean) => {
-    let out = '';
-    let ci = 0;
-    const sorted = [...cut].sort((x, y) => x[0] - y[0]);
-    for (let i = 0; i < source.length; ) {
-      if (dropping && drop[i]) {
-        i++;
-        continue;
-      }
-      while (sorted[ci] && sorted[ci][1] <= i) ci++;
-      const c = sorted[ci];
-      // a comment (or what is left of one whose first lines went) becomes one empty comment
-      if (c && c[0] <= i) {
-        out += PLACEHOLDER;
-        i = c[1];
-        continue;
-      }
-      out += source[i];
-      i++;
-    }
-    return out;
-  };
-  const want = structure(source);
-  for (const dropping of [true, false]) {
-    const out = build(dropping);
-    if (structure(out) === want) return out;
-  }
-  return null;
+  if (/\S/.test(source.slice(at))) visible = true;
+  out += source.slice(at);
+  if (!visible) return '';
+  return structure(out) === structure(source) ? out : null;
 }
 
 /** Is there anything to quote at all? */

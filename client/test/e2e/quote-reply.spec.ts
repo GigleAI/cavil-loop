@@ -17,7 +17,7 @@ const N = 139;
 const KEY = `gigleai/cavil-loop#${N}`;
 
 // a comment the way the loop writes them: words, a hidden marker of its own, a usage fold with its hidden record
-// (the marker is emptied; the record under the fold's closing tag goes with its line)
+// (the marker and the record are emptied in place: no line of the comment goes)
 const LOOP_SOURCE = [
   '## 方案已更新',
   '',
@@ -53,6 +53,7 @@ const LOOP_QUOTED = [
   '> - 开始 07:00',
   '>',
   '> </details>',
+  '> <!-- -->',
 ].join('\n');
 
 let env: AppEnv;
