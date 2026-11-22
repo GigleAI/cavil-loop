@@ -115,6 +115,8 @@ test('GitHub#653: 引用回复 quotes an entry without its hidden markers, or th
   env.fake.state.w.comments.set(KEY, [
     { id: 'C-loop', url: `https://github.com/${REPO}/issues/${N}#c1`, createdAt: '2026-11-02T01:00:00Z', bodyHTML: '', body: LOOP_SOURCE, author: { login: 'user-3' } },
     { id: 'C-plain', url: `https://github.com/${REPO}/issues/${N}#c2`, createdAt: '2026-11-02T02:00:00Z', bodyHTML: '', body: '另一条评论：只想回应这一句。还有别的话。', author: { login: 'user-4' } },
+    // PR #659 code review round 1, problem 4: words that look like markdown, shown as plain words
+    { id: 'C-md', url: `https://github.com/${REPO}/issues/${N}#c4`, createdAt: '2026-11-02T00:30:00Z', bodyHTML: '', body: '看 \\[draft\\](notes.md) 和 \\*\\*ready\\*\\* 两处 @luosky #12', author: { login: 'user-4' } },
     // rendered only, no source read: nothing to quote whole, so no button
     { id: 'C-html', url: `https://github.com/${REPO}/issues/${N}#c3`, createdAt: '2026-11-02T03:00:00Z', bodyHTML: '<p>只有渲染结果</p>', author: { login: 'user-4' } },
   ]);
@@ -127,7 +129,7 @@ test('GitHub#653: 引用回复 quotes an entry without its hidden markers, or th
   await expect(page.getByTestId('timeline-frame')).toHaveAttribute('data-ready', 'yes', { timeout: 15_000 });
   await detail.getByTestId('unfold-toggle').click();
   const frameLoc = page.frameLocator('[data-testid="timeline-frame"]');
-  await expect(frameLoc.locator('details.entry[open]')).toHaveCount(4);
+  await expect(frameLoc.locator('details.entry[open]')).toHaveCount(5);
   const frame = await frameOf(page);
   const reply = detail.getByTestId('reply-input');
   const quoteBtn = (id: string) => frameLoc.locator(`details.entry[data-entry="${id}"] button[data-quote]`);
@@ -221,6 +223,26 @@ test('GitHub#653: 引用回复 quotes an entry without its hidden markers, or th
     await expect(reply).toHaveValue(want);
     await reply.fill('');
   }
+
+  // ---- 7b. selected words that look like markdown: quoted so that they show exactly as selected, by both ways in ----
+  env.fake.state.w.markdownRender = true;
+  const SHOWN = '[draft](notes.md) 和 **ready** 两处 @luosky #12';
+  await expect(frameLoc.locator('details.entry[data-entry="C-md"] .md')).toContainText(SHOWN);
+  const ESCAPED = '> \\[draft\\]\\(notes\\.md\\) 和 \\*\\*ready\\*\\* 两处 \\@luosky \\#12\n\n';
+  for (const how of ['r', 'button'] as const) {
+    await frameLoc.locator('details.entry[data-entry="C-md"] .md').click();
+    await select(frame, { id: 'C-md', words: SHOWN });
+    if (how === 'r') await page.keyboard.press('r');
+    else await quoteBtn('C-md').click();
+    await expect(reply).toHaveValue(ESCAPED);
+    await detail.getByTestId('reply-preview-toggle').click();
+    const preview = page.frameLocator('[data-testid="reply-preview"]');
+    await expect(preview.locator('blockquote')).toHaveText(SHOWN, { timeout: 15_000 });
+    await expect(preview.locator('a, strong, em, code')).toHaveCount(0);
+    await detail.getByTestId('reply-preview-toggle').click();
+    await reply.fill('');
+  }
+  env.fake.state.w.markdownRender = false;
 
   // ---- 8. offline: the button is off and says why; R with a selection does not touch the box ----
   env.fake.state.offline = true;

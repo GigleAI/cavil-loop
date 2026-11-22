@@ -8,7 +8,7 @@ import { pickMergeMethod } from '../shared/mergePrefs';
 import { PREVIEW_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
-import { hasWords, quoteText, trimSelection, withQuote } from '../data/quote';
+import { hasWords, quoteText, selectionMarkdown, withQuote } from '../data/quote';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
 import { labelStyle, useDarkMode } from './colors';
@@ -984,7 +984,7 @@ export function DetailPanel({
     quoteCaret.current = true;
   };
   const quoteEntry = (entryId: unknown, selected: unknown) => {
-    if (typeof selected === 'string' && hasWords(selected)) return quoteIn(trimSelection(selected));
+    if (typeof selected === 'string' && hasWords(selected)) return quoteIn(selectionMarkdown(selected));
     const e = detail?.timeline.find((x) => x.id === entryId);
     if (e?.quoteSource !== undefined) quoteIn(e.quoteSource);
   };
@@ -1191,7 +1191,7 @@ export function DetailPanel({
     // GitHub#653: R with words selected in the discussion quotes them (the frame sends them with the key)
     reply: () => {
       const q = takeFrameQuote();
-      if (q !== null) quoteIn(trimSelection(q));
+      if (q !== null) quoteIn(selectionMarkdown(q));
       else focusReply();
     },
     // GitHub#397: Esc goes back to the home tab; this tab stays open and keeps its unsent text, so a
