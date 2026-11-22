@@ -176,6 +176,7 @@ for f in autopilot-worker autopilot-worker-pr; do
         && ok "$f：写了「疑问 + 建议」停下的例外" || bad "$f：缺「疑问 + 建议」例外"
 done
 grep -qF '在那一条里写明「推翻人的建议」并附人的原话链接' "$TMP/review.md" && ok "复审：推翻已采纳的建议要点明并附原话链接" || bad "复审缺「推翻人的建议」要求"
+grep -qF '这里接一小段「人的建议与结果」：原话 → 采纳了什么 → 结果 → 复审有没有推翻' "$TMP/review.md" && ok "复审交人骨架带「人的建议与结果」" || bad "复审交人骨架缺「人的建议与结果」"
 grep -qF '⑥ worker 交付里「人的建议与采纳情况」有已采纳的人的建议' "$TMP/review.md" \
     && grep -qF '里的建议现状和最新一版交付说明对不上' "$TMP/review.md" && ok "复审 2L 有 ⑥（缺「人的建议与结果」就打回）" || bad "复审 2L 缺 ⑥"
 
