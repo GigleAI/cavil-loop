@@ -505,6 +505,35 @@ tick
 chk "标签 Done + 提醒；记让位；兜底不涉及；交接收敛" "$(labels_of 331)/$(jq -r '.merge_followup.prs["331"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["331"].handed // "none"' "$STATE")" "Done,pending/human/true/1"
 chk "  → 到达性：日志写明新一轮" "$(grep -c 'PR #331 合并之后又挂上了流程标签' "$W/state/poll.log")" "1"
 
+echo "㉞ 写完读回时 PR 的来源仓库变了、同时有人挂上新流程标签 → 先认身份：不记让位、不记处理；下一轮身份对不上也不写"
+fresh
+mkissue 340 "" open
+mkmerged 341 feature/issue-340 "Refs #340"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q items.json > i.tmp && mv i.tmp items.json && jq %q labels.json > l.tmp && mv l.tmp labels.json && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["341"].head.repo.full_name = "someone/fork"' '.["341"] += ["pending/agent"]' \
+    '.["341"] += [{event:"labeled", label:{name:"pending/agent"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}]' \
+    > "$GD/hook_DELETE_issues_341_labels_1"
+tick
+chk "这一轮：没记让位、没记标签已处理、没记交接完成" "$(jq -r '.merge_followup.prs["341"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["341"].pr_labeled // false' "$STATE")/$(jq -r '.merge_followup.prs["341"].handed // "none"' "$STATE")" "false/false/none"
+chk "  → 到达性：日志写明读回身份对不上" "$(grep -c 'PR #341 写完读回的身份和写前对不上' "$W/state/poll.log")" "1"
+cp "$GD/labels.json" "$W/l1"
+tick
+chk "下一轮：身份和记录对不上，标签不动、仍没记让位" "$(cmp -s "$GD/labels.json" "$W/l1" && echo same)/$(jq -r '.merge_followup.prs["341"].pr_superseded // false' "$STATE")" "same/false"
+
+echo "㉟ 兜底时 PR 上有新一轮的流程标签 → 标签不动、不算送达，留在兜底队列；新一轮标签摘掉后送达"
+fresh
+mkmerged 351 chore/misc null 2026-03-01T10:00:00Z ""
+jset labels.json '.["351"] = ["pending/review"]'
+jset events.json '.["351"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}]'
+for _ in $(seq 1 31); do tick; done
+chk "31 轮后：兜底评论一条、PR 标签原样、没记送达" "$(comments_of 351)/$(labels_of 351)/$(jq -r '.merge_followup.prs["351"].fb.sent // false' "$STATE")" "1/pending/review/false"
+tick
+chk "再一轮：仍在兜底队列里重试（读了 PR 事件），零次标签写入" "$(grep -c 'issues/351/events' "$CALLS" | awk '{print ($1>0)?"yes":"no"}')/$(grep -c 'issues/351/labels' "$CALLS")" "yes/0"
+jset labels.json '.["351"] = []'
+jset events.json '.["351"] += [{event:"unlabeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-03T00:00:00Z"}]'
+tick
+chk "新一轮标签摘掉后：Done + 提醒、记送达、评论仍一条" "$(labels_of 351)/$(jq -r '.merge_followup.prs["351"].fb.sent // false' "$STATE")/$(comments_of 351)" "Done,pending/human/true/1"
+
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]

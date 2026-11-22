@@ -503,6 +503,9 @@ mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位（见 MF_PR_LABEL_R
     # 写完读回：和起步用同一个判定（mf_pr_verdict）。最后一步挂了提醒时，它那条「加上」事件必须已经读得到、而且是这次
     # 新出现的（不在写之前的事件清单里）——读不到就是判不了，挂提醒的人不是写入账号就是新一轮
     cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || { log "  合并后交接：PR #$pr 写完读不回，本轮不记完成"; return 1; }
+    # 先认身份：已合并、五项身份和写前一样，才轮到标签判定（让位也只对认得出的那个 PR 记）
+    printf '%s\n%s\n' "$cur" "$expect" | jq -es '.[0].merged == true and .[0].ident == .[1].ident' >/dev/null 2>&1 \
+        || { log "  合并后交接：PR #$pr 写完读回的身份和写前对不上，本轮不记完成也不记让位"; return 1; }
     if [ "$last" = "add:$LABEL_PENDING_HUMAN" ]; then
         printf '%s\n%s\n' "$cur" "$expect" | jq -es --arg H "$LABEL_PENDING_HUMAN" '.[0] as $c | .[1] as $e
             | ($c.last[$H].id // null) as $i | $i != null and ([$e.lev[].id] | index($i)) == null' >/dev/null 2>&1 \
@@ -516,13 +519,15 @@ mf_pr_labels() {   # <PR> <true|false>；0 = 写成或让位（见 MF_PR_LABEL_R
     else
         mf_pr_state_same "$cur" "$expect" "" || { log "  合并后交接：PR #$pr 写完读回和期望对不上，本轮不记完成"; return 1; }
     fi
+    mf_set 'del(.prs[$p].pr_superseded)' --arg p "$pr" || return 1
     MF_PR_LABEL_RESULT=done
 }
 mf_pr_verdict_act() {   # <PR> <判定>：new → 记让位（return 0）；unknown / 其他 → return 1；ok → return 0
     case "$2" in
         ok) return 0 ;;
         new) log "  合并后交接：PR #$1 合并之后又挂上了流程标签（新一轮），它的标签不动"
-             mf_set '.prs[$p].pr_superseded = true' --arg p "$1" || true; MF_PR_LABEL_RESULT=superseded; return 0 ;;
+             mf_set '.prs[$p].pr_superseded = true' --arg p "$1" || { log "  合并后交接：PR #$1 的让位记不下，本轮不算处理"; return 1; }
+             MF_PR_LABEL_RESULT=superseded; return 0 ;;
         unknown) log "  合并后交接：PR #$1 有流程标签判不了是谁、什么时候挂的（缺事件、缺时间、读不出写入账号或挂的人），本轮不动"; return 1 ;;
         *) return 1 ;;
     esac
@@ -625,14 +630,14 @@ mf_target_tick() {   # <目标> [兜底 PR]
         if ! mf_pr_labels "$n" "$(printf '%s' "$c1" | jq -r .reminder)"; then mf_try_fail "$n" "PR #$n 的标签没写成"; return 1; fi
         mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
         if [ -n "$fb" ]; then
-            # 兜底送达：只认这次收尾按同一判定读回确认的提醒（MF_PR_LABEL_RESULT=done）。新一轮接手时提醒不算送达：
-            # 记下让位、不再重试（PR 已在别人手里），fb.sent 保持 false，之后合并的 PR 照旧不说「完成」
+            # 兜底送达：只认这次收尾按同一判定读回确认的提醒（MF_PR_LABEL_RESULT=done）。新一轮的流程标签在场时
+            # 标签一个不动、不算送达，照常计一次失败留在兜底队列里：前 30 轮每轮再看，之后每 30 轮一次，
+            # 新一轮的标签摘掉之后就能送达；没送达之前，之后合并的 PR 照旧不说「完成」
             if [ "$MF_PR_LABEL_RESULT" = done ]; then
                 mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || return 1
                 log "  合并后交接：PR #$fb 的兜底提醒已送达"
             else
-                mf_set '.prs[$p].fb.label = "superseded" | .prs[$p].fb.superseded = true' --arg p "$fb" || return 1
-                log "  合并后交接：PR #$fb 已有新一轮接手，兜底提醒不算送达（之后合并的 PR 仍不说「完成」）"
+                mf_try_fail "$n" "PR #$fb 上有新一轮的流程标签，兜底提醒先不挂"; return 1
             fi
         fi
     fi
