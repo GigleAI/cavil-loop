@@ -175,7 +175,7 @@ describe('the back end and the daemon\'s real script', () => {
     expect(byName(c, 'MAX_CONCURRENT_WORKERS')).toMatchObject({ value: '1', editable: true, min: 1, max: 16 });
     expect(byName(c, 'DISPATCH_MODE')).toMatchObject({ mode: 'show', value: 'label', editable: false });
     // every registered setting is in the template setup.sh writes, as a plain literal: all "edit" rows are inputs
-    expect(c.fields.filter((f) => f.mode === 'edit' && !f.editable).map((f) => f.name)).toEqual([]);
+    expect(c.fields.filter((f) => f.mode === 'edit' && !f.editable).map((f) => `${f.name}: ${f.reason}`)).toEqual([]);
     const all = JSON.stringify(r);
     for (const secret of ['GH_TOKEN', 'WORKTREE_SETUP_CMD', 'PR_CREATED_HOOK', 'npm ci', 'dangerously']) expect(all, secret).not.toContain(secret);
   });
