@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# kind: e2e
+# 合并后的交接：PR 正文登记的待办、issue 上的清单评论和标签、机器人结果通知的依据 —— GitHub#656。
+#
+# 跑法：bash tests/merge-followup.test.sh
+# 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py，FAKE_GH_LISTS=1
+# 打开 issue / PR 列表）+ 假 tmux，HOME 指向临时目录。每一轮都**真的**起 agent-poll.sh 子进程，
+# 评论、标签、state.json 都从假 GitHub 和状态文件里读，不读源码。
+#
+# 这块错了的方向都不报错：
+#   · 待办读错（代码块里的示例当成登记、格式不对当成没提）→ 人看不到该做的事
+#   · 每个 PR 各发各的、或者只列最后一个 PR 的 → 前一个 PR 的待办从 issue 上消失
+#   · 清理没成功就先发评论、翻标签 → 和主干「清理成功后才处理 issue」的顺序不一致
+#   · 评论发出但读回不到时重发 → 同一份清单两条
+#   · 维护者亲手关闭之后还一直列旧清单 / 被合并带关就算结束 → 清单要么永远不消失、要么提前消失
+set -uo pipefail
+# shellcheck source=lib/report.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$TEST_DIR")"
+
+SANDBOX=$(mktemp -d)
+trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
+mkdir -p "$SANDBOX/bin" "$SANDBOX/home"
+export HOME="$SANDBOX/home"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export TZ=UTC
+unset CODING_AGENT_RELEASE_ROOT LABEL_AUTOPILOT GH_TOKEN WRITE_GH_TOKEN GITHUB_TOKEN
+export FAKE_GH_LISTS=1 FAKE_GH_REPO="example/mf"
+
+bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
+# 假 tmux：$FAKE_TMUX_BUSY 存在时，任何 session 都「在」且杀不掉 → cleanup-issue.sh 失败
+cat > "$SANDBOX/bin/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${FAKE_TMUX_BUSY:-}" ] && [ -f "$FAKE_TMUX_BUSY" ]; then
+    case "$1" in has-session) exit 0 ;; kill-session) exit 1 ;; capture-pane) exit 0 ;; esac
+fi
+case "$1" in has-session) exit 1 ;; ls|list-sessions) exit 1 ;; esac
+exit 0
+SH
+chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/tmux"
+
+pass=0; fail=0
+chk() {
+    if [ "$2" = "$3" ]; then echo "  ✅ $1"; pass=$((pass+1))
+    else echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
+}
+
+W="$SANDBOX/run"; R="repos/example/mf"
+fresh() {
+    rm -rf "$W"; mkdir -p "$W/state" "$W/wt" "$W/gh"
+    git init -q -b main "$W/project" 2>/dev/null
+    GD="$W/gh"; export FAKE_GH_DIR="$GD"; CALLS="$GD/calls.log"; STATE="$W/state/state.json"
+    export FAKE_TMUX_BUSY="$W/tmux-busy"
+    CONF="$W/cavil-loop.config"
+    cat > "$CONF" <<CONF
+REPO="example/mf"
+PROJECT_ROOT="$W/project"
+WORKTREE_BASE="$W/wt"
+STATE_DIR="$W/state"
+TMUX_PREFIX="mftest"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+LABEL_PENDING_BLOCKED=""
+LABEL_PENDING_LATER=""
+LABEL_PENDING_PR="pending/PR"
+LABEL_AGENT_DOING="doing/agent"
+LABEL_PENDING_REVIEW="pending/review"
+LABEL_DONE="Done"
+POST_MERGE_RETROSPECTIVE=false
+PENDING_HUMAN_CONFLICT_CHECK=false
+POLL_BACKOFF_LADDER=""
+PRICE_AUTO_FETCH=0
+MAX_CONCURRENT_WORKERS=0
+PATH="$SANDBOX/bin:\$PATH"
+GH_TOKEN="fake-token-for-test"
+CONF
+    echo '{}' > "$GD/items.json"; echo '{}' > "$GD/labels.json"; echo '{}' > "$GD/events.json"
+    echo '{}' > "$GD/comments.json"; echo '{"maint":"admin"}' > "$GD/perms.json"; echo loop-bot > "$GD/me"
+    echo '{"cleaned_prs":[],"cleaned_issues":[]}' > "$STATE"
+}
+jset() { local f="$GD/$1" e="$2"; shift 2; jq "$@" "$e" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; }
+mkissue() {   # <n> <labels_csv> <open|closed>
+    jset items.json '.[$n] = {kind:"issue", state:$s, state_reason:(if $s == "closed" then "completed" else null end),
+            title:"需求", body:"需求", user:{login:"maint"}, updated_at:"2026-01-01T00:00:00Z"}' --arg n "$1" --arg s "$3"
+    jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$2"
+    jset events.json '.[$n] = [$l | split(",")[] | select(. != "") | {event:"labeled", label:{name:.}, actor:{login:"maint", type:"User"}, created_at:"2026-01-01T00:00:00Z"}]' \
+        --arg n "$1" --arg l "$2"
+}
+mkmerged() {   # <n> <分支> <正文（"null" = 正文字段异常）> <合并时间> <labels_csv>
+    jset items.json '.[$n] = {kind:"pr", state:"closed", merged:true, title:("PR " + $n), body:(if $b == "null" then null else $b end),
+            merged_at:$t, merge_commit_sha:("c" * 40), user:{login:"loop-bot"}, updated_at:"2026-01-01T00:00:00Z",
+            head:{sha:"1111111111111111111111111111111111111111", ref:$r, repo:{full_name:"example/mf"}}, base:{ref:"main"}}' \
+        --arg n "$1" --arg r "$2" --arg b "$3" --arg t "$4"
+    jset labels.json '.[$n] = ($l | split(",") | map(select(. != "")))' --arg n "$1" --arg l "$5"
+}
+close_by() {   # <issue> <账号> <时间> [commit]：issue 被关闭，记一条 closed 事件
+    jset items.json '.[$n].state = "closed" | .[$n].state_reason = "completed"' --arg n "$1"
+    jset events.json '.[$n] += [{event:"closed", actor:{login:$a, type:"User"}, created_at:$t, commit_id:(if $c == "" then null else $c end)}]' \
+        --arg n "$1" --arg a "$2" --arg t "$3" --arg c "${4:-}"
+}
+tick() { : > "$CALLS"; env CODING_AGENT_CONFIG="$CONF" bash "$REPO_DIR/scripts/agent-poll.sh" >/dev/null 2>&1; }
+labels_of() { jq -r --arg n "$1" '(.[$n] // []) | sort | join(",")' "$GD/labels.json"; }
+comments_of() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("cavil-loop:merge-followup"))] | length' "$GD/comments.json"; }
+last_comment() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("cavil-loop:merge-followup"))] | last | .body // ""' "$GD/comments.json"; }
+has() { printf '%s' "$1" | grep -qF -- "$2" && echo yes || echo no; }
+
+LIST=$'<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：在生产库执行 `migrate-x.sql` ｜ 怎么触发：部署完成后手动执行\n<!-- merge-followup:end -->'
+LIST2=$'<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：人工验收登录页 ｜ 怎么触发：部署后打开页面\n<!-- merge-followup:end -->'
+NONE='<!-- merge-followup:none -->'
+
+echo "① Refs #N 的 PR 登记了待办，issue 开着 → 一条清单评论 + pending/human；PR 打 Done"
+fresh
+mkissue 10 "pending/PR" open
+mkmerged 11 feature/issue-10 "Refs #10"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+tick
+c=$(last_comment 10)
+chk "issue 上一条清单评论" "$(comments_of 10)" 1
+chk "评论里列出了待办原文" "$(has "$c" '在生产库执行 `migrate-x.sql`')" yes
+chk "评论标题说还有待办" "$(has "$c" '还有 1 个 PR 的待办没确认做完')" yes
+chk "issue 翻 pending/human、摘 pending/PR" "$(labels_of 10)" "pending/human"
+chk "PR 打 Done、摘流程标签" "$(labels_of 11)" "Done"
+chk "记为已清理" "$(jq -c '.cleaned_prs' "$STATE")" "[11]"
+tick
+chk "下一轮不重发" "$(comments_of 10)" 1
+
+echo "② Closes #N 合并带关 issue、PR 有待办 → 评论写明已关闭但还有待办，Done + pending/human"
+fresh
+mkissue 20 "pending/PR" open
+mkmerged 21 feature/issue-20 "Closes #20"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+close_by 20 loop-bot 2026-03-01T10:00:00Z cccc
+tick
+c=$(last_comment 20)
+chk "issue 上一条清单评论" "$(comments_of 20)" 1
+chk "评论写明已关闭、待办还没做完" "$(has "$c" '已关闭，但下面的待办还没确认做完')" yes
+chk "issue 打 Done 并挂 pending/human 提醒" "$(labels_of 20)" "Done,pending/human"
+
+echo "③ Closes #N 合并带关 issue、PR 写明没有待办 → 不发评论，只打 Done（与主干相同）"
+fresh
+mkissue 30 "pending/PR" open
+mkmerged 31 feature/issue-30 "Closes #30"$'\n\n'"$NONE" 2026-03-01T10:00:00Z ""
+close_by 30 loop-bot 2026-03-01T10:00:00Z cccc
+tick
+chk "不发评论" "$(comments_of 30)" 0
+chk "issue 只打 Done" "$(labels_of 30)" "Done"
+chk "PR 打 Done" "$(labels_of 31)" "Done"
+
+echo "④ Refs #N、PR 没提待办 → 评论说没写，翻 pending/human"
+fresh
+mkissue 40 "pending/PR" open
+mkmerged 41 feature/issue-40 "Refs #40" 2026-03-01T10:00:00Z ""
+tick
+c=$(last_comment 40)
+chk "一条评论" "$(comments_of 40)" 1
+chk "说 PR 没写合并后有没有待办" "$(has "$c" 'PR 没写合并后有没有待办')" yes
+chk "翻 pending/human" "$(labels_of 40)" "pending/human"
+
+echo "⑤ 写法不对 → 原文照搬进评论、标出来；代码块里的示例不算登记"
+fresh
+mkissue 50 "" open
+mkmerged 51 feature/issue-50 "Refs #50"$'\n\n<!-- merge-followup:begin -->\n- 谁做：维护者 ｜ 做什么：\n<!-- merge-followup:end -->' 2026-03-01T10:00:00Z ""
+mkissue 52 "" open
+mkmerged 53 feature/issue-52 "Refs #52"$'\n\n```\n<!-- merge-followup:none -->\n```' 2026-03-01T10:00:00Z ""
+tick
+c=$(last_comment 50)
+chk "格式不对：评论标出写法不对" "$(has "$c" '待办的写法不对')" yes
+chk "格式不对：原文照搬" "$(has "$c" '谁做：维护者 ｜ 做什么：')" yes
+chk "格式不对：提示去 PR 核对" "$(has "$c" '完整正文见 PR #51')" yes
+chk "代码块里的示例 → 算没提" "$(has "$(last_comment 52)" 'PR 没写合并后有没有待办')" yes
+
+echo "⑥ 同一 issue 先后合并两个 PR：第二条评论列全两个 PR 的待办；维护者亲手关闭后旧清单不再列"
+fresh
+mkissue 60 "" open
+mkmerged 61 feature/issue-60 "Refs #60"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+tick
+mkmerged 62 feature/issue-60 "Refs #60"$'\n\n'"$LIST2" 2026-03-02T10:00:00Z ""
+tick
+c=$(last_comment 60)
+chk "两条评论（每次合并一条，第二条覆盖两个 PR）" "$(comments_of 60)" 2
+chk "第二条仍列第一个 PR 的待办" "$(has "$c" 'migrate-x.sql')" yes
+chk "第二条也列第二个 PR 的待办" "$(has "$c" '人工验收登录页')" yes
+chk "第二条标出两个 PR" "$(has "$c" 'covers=61,62')" yes
+close_by 60 maint 2026-03-03T10:00:00Z
+mkmerged 63 feature/issue-60 "Refs #60"$'\n\n'"$NONE" 2026-03-04T10:00:00Z ""
+tick
+chk "维护者亲手关闭之后合并、写明没有待办的第三个 PR：不再发评论（旧清单已结束）" "$(comments_of 60)" 2
+chk "issue 打 Done（关闭、没有待办 → 不挂提醒）" "$(labels_of 60)" "Done"
+chk "前两个 PR 记为已结束" "$(jq -c '[.merge_followup.prs["61","62"].ended]' "$STATE")" '["yes","yes"]'
+mkmerged 64 feature/issue-60 "Refs #60"$'\n\n'"$LIST2" 2026-03-05T10:00:00Z ""
+tick
+c=$(last_comment 60)
+chk "之后再合并带待办的 PR：只列它自己的待办" "$(has "$c" '人工验收登录页')$(has "$c" 'migrate-x.sql')" "yesno"
+chk "关着的 issue 挂上提醒" "$(labels_of 60)" "Done,pending/human"
+
+echo "⑦ 清理失败：等清理成功之后评论和标签一起交付；等的轮次不算重试"
+fresh
+mkissue 70 "pending/PR" open
+mkmerged 71 feature/issue-70 "Refs #70"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+touch "$W/tmux-busy"
+tick; tick
+chk "清理失败期间没有评论" "$(comments_of 70)" 0
+chk "清理失败期间 issue 标签不动" "$(labels_of 70)" "pending/PR"
+chk "清理失败期间 PR 不打 Done" "$(labels_of 71)" ""
+chk "等的轮次不计重试" "$(jq -r '.merge_followup.targets["70"].tries // 0' "$STATE")" 0
+rm -f "$W/tmux-busy"
+tick
+chk "清理成功后：一条评论" "$(comments_of 70)" 1
+chk "清理成功后：pending/human" "$(labels_of 70)" "pending/human"
+chk "清理成功后：PR Done" "$(labels_of 71)" "Done"
+
+echo "⑧ 评论发出但调用报失败 → 下一轮按标记找到、不重发"
+fresh
+mkissue 80 "" open
+mkmerged 81 feature/issue-80 "Refs #80"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+touch "$GD/F_post_comment_lost"
+tick
+rm -f "$GD/F_post_comment_lost"
+tick
+chk "只有一条评论" "$(comments_of 80)" 1
+chk "标签收敛" "$(labels_of 80)" "pending/human"
+
+echo "⑨ 正文字段读不到、分支名认得出目标 → 清单里写「正文读不到」；补读到之后发新的完整评论"
+fresh
+mkissue 90 "" open
+mkmerged 91 feature/issue-90 null 2026-03-01T10:00:00Z ""
+tick
+c=$(last_comment 90)
+chk "评论写正文读不到" "$(has "$c" '正文读不到，有没有待办无法确认')" yes
+chk "pending/human" "$(labels_of 90)" "pending/human"
+jset items.json '.["91"].body = $b' --arg b "Refs #90"$'\n\n'"$LIST"
+tick
+c=$(last_comment 90)
+chk "补读到后：新评论列出真实待办" "$(has "$c" 'migrate-x.sql')" yes
+chk "补读到后：两条评论" "$(comments_of 90)" 2
+
+echo "⑩ 迁移：主干旧的合并后标签条目 → 接管成记录，照新规则交接"
+fresh
+mkissue 100 "pending/PR" open
+mkmerged 101 feature/issue-100 "Refs #100"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "Done"
+echo '{"cleaned_prs":[101],"cleaned_issues":[],"merged_label_queue":{"100":{"pr":"101","tries":1}}}' > "$STATE"
+tick
+chk "旧条目已删" "$(jq -c '.merged_label_queue' "$STATE")" "{}"
+chk "接管后发了清单评论" "$(comments_of 100)" 1
+chk "issue 翻 pending/human" "$(labels_of 100)" "pending/human"
+
+echo "⑪ 正文读不到、分支名也认不出属于哪个 issue → 不清理本机；30 轮后在 PR 本身上交人兜底"
+fresh
+mkmerged 111 chore/misc null 2026-03-01T10:00:00Z ""
+tick
+chk "第 1 轮：不清理、不记已清理" "$(jq -c '.cleaned_prs' "$STATE")/$(jq -r '.merge_followup.prs["111"].cleanup' "$STATE")" "[]/ended"
+chk "第 1 轮：PR 上还没有兜底评论" "$(comments_of 111)" 0
+for _ in $(seq 2 31); do tick; done
+c=$(last_comment 111)
+chk "30 轮后：PR 上一条兜底评论" "$(comments_of 111)" 1
+chk "兜底评论写正文读不到、本机没清理" "$(has "$c" '正文读不到')/$(has "$c" '合并扫描没有为这个 PR 清理本机工作区')" "yes/yes"
+chk "PR 挂 Done + pending/human" "$(labels_of 111)" "Done,pending/human"
+chk "兜底送达记为是" "$(jq -r '.merge_followup.prs["111"].fb.sent' "$STATE")" true
+tick
+chk "之后不再重发" "$(comments_of 111)" 1
+
+echo "⑫ 给机器人的结果评论（表 2）：只在证据齐全时写「需求已完成」"
+nt() { printf '%s' "$1" | python3 -B "$REPO_DIR/scripts/merge_followup.py" notice | jq -r '"\(.row) \(.done)"'; }
+B='"pr":"5","title":"t","base":"main","sha":"abc"'
+chk "有待办 → 第 1 行，不写完成" "$(nt '{'"$B"',"conc":{"followups":true,"fu":[]},"own_s":"list","guard":false,"target_state":"closed","maintainer_closed":true}')" "1 false"
+chk "有更早的正文读不到、兜底没送达 → 第 2 行" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"none","guard":true,"target_state":"closed","maintainer_closed":true}')" "2 false"
+chk "这个 PR 没提 → 第 3 行" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"silent","guard":false,"target_state":"closed","maintainer_closed":true}')" "3 false"
+chk "写明没有待办、维护者亲手关闭 → 第 4 行「需求已完成」" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"none","guard":false,"target_state":"closed","maintainer_closed":true}')" "4 true"
+chk "写明没有待办、被合并带关（不是维护者亲手关）→ 第 5 行" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"none","guard":false,"target_state":"closed","maintainer_closed":false}')" "5 false"
+chk "写明没有待办、目标还开着 → 第 5 行" "$(nt '{'"$B"',"conc":{"followups":false,"fu":[]},"own_s":"none","guard":false,"target_state":"open","maintainer_closed":false}')" "5 false"
+chk "旧评论说过完成、现在不是完成 → 更正开头" "$(printf '%s' '{'"$B"',"conc":{"followups":true,"fu":[]},"own_s":"list","guard":false,"target_state":"open","correction":true}' | python3 -B "$REPO_DIR/scripts/merge_followup.py" notice | jq -r .body | head -1)" "## 更正：上一条『需求已完成』不准确"
+
+report_counts "$pass" "$fail"
+echo "正式版：$pass 通过 / $fail 失败"
+[ "$fail" -eq 0 ]

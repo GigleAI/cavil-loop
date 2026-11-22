@@ -80,7 +80,12 @@ while i < len(args):
     if a in ("-X", "--method"):
         method = args[i + 1]; i += 2; continue
     if a in ("-f", "-F"):
-        fields.append(args[i + 1]); i += 2; continue
+        kv = args[i + 1]
+        k, _, v = kv.partition("=")
+        if a == "-F" and v.startswith("@"):   # 真 gh：-F key=@文件 读文件内容当值（大正文经文件传，GitHub#426 / #656）
+            with open(v[1:], encoding="utf-8") as fh:
+                kv = k + "=" + fh.read()
+        fields.append(kv); i += 2; continue
     if a == "--paginate":
         paginate = True
     elif a == "--slurp":
@@ -171,7 +176,12 @@ if args[:2] == ["pr", "list"] and "--label" not in args:
         merged = bool(it.get("merged"))
         if (state == "merged" and merged) or (state == "open" and st_ == "open") \
                 or ("is:unmerged" in search and st_ == "closed" and not merged):
-            rows.append({"number": it["number"], "headRefName": it.get("head_ref", f"feature/issue-{it['number']}")})
+            rows.append({"number": it["number"], "headRefName": it.get("head_ref", f"feature/issue-{it['number']}"),
+                         # 合并后交接（GitHub#656）读的几项
+                         "title": it.get("title", ""), "body": it.get("body", ""),
+                         "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
+                         "mergeCommit": {"oid": "0123456789abcdef0123"} if merged else None,
+                         "baseRefName": it.get("base_ref", "main"), "headRefOid": it.get("head_sha", "")})
     emit(rows)
 if args and args[0] in ("pr", "issue"):
     emit([])

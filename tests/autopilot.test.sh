@@ -2109,7 +2109,7 @@ mutate req-deny-pr-only _lib.sh '    autopilot_place_read "$pr" "$pj" "PR #$pr" 
     pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
     if [ -n "$AUTOPILOT_PR_COPY" ]; then'
 mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
-mutate po-merge-note-issue _lib.sh '        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '        if false; then n="$pr"; where="本 PR 上"'
+mutate po-merge-note-issue _lib.sh '    if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '    if false; then n="$pr"; where="本 PR 上"'
 mutate po-no-label-body-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        actor-*|binding|closed) ;;'
 mutate po-section-inactive _lib.sh ' || [[ "${DISPATCH_AUTOPILOT_PR:-}" =~ ^[0-9]+$ ]]; }' '; }'
 mutate po-worker-issue-file _lib.sh '    elif [ -n "$pr_only" ]; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"' '    elif false; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"'

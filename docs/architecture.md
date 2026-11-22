@@ -51,7 +51,37 @@ An issue that already had one `Refs` PR merged with work remaining gets its rema
 
 1. After you confirm B, the worker (`issue-comment.template.md` § A-split) creates each sub-issue, links it under the parent via the sub-issue API, and copies priority / Project iteration from the parent. Sub-issues with no prerequisite get `pending/agent` right away; ones that depend on another get `pending/human` — label them once the prerequisite merges. With the waiting label on (the default unless `LABEL_PENDING_BLOCKED` is set to an empty value) they get `pending/blocked` plus a prerequisite marker instead, and the daemon flips them to `pending/agent` by itself once the prerequisite merges
 2. A sub-issue skips the design round: `dispatch-new-issue.sh` renders the development prompt (`issue-comment` + `sub-issue.template.md`) instead of the design one, **only if** all three hold — GitHub says it has a parent in this repo, its body carries `<!-- agent-split-from: #<parent> -->` naming that parent, and it was created by the write identity (bot). Any check failing (or erroring) falls back to the normal design round
-3. The merge hook **unconditionally enqueues** the merged PR's issue (`state.json` `split_rollup_queue`) — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error; every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own label (`Done` if closed, `pending/human` if still open) follows the same rule: if its state cannot be read, no label is written and it goes to `merged_label_queue` — it is never guessed as OPEN
+3. The merge hook **unconditionally enqueues** the merged PR's issue (`state.json` `split_rollup_queue`) — whether it is actually closed is read by the rollup itself, because the hook's own state read falls back to OPEN on error; every tick drains the queue through `sub_issue_rollup`. The queue exists because the merged PR is already in `cleaned_prs` and will never be rescanned — a transient failure on the last sub-issue would otherwise leave the parent un-summarised forever. Any read or write failure keeps the entry for the next tick (up to `SUB_ISSUE_ROLLUP_MAX_TRIES`, default 30). Comment and label are tracked separately (`split_rollup_commented` / `split_rollups`), so a retry after a failed label flip does not post the comment twice. "All closed" is only concluded from a list known to be complete: it must contain the sub-issue that just closed, and its length must equal the parent's own `sub_issues_summary.total` — otherwise it is treated as not refreshed yet and retried. The merged issue's own comment and labels come from the merge hand-over (next section), which also never guesses a state it could not read
+
+</details>
+
+### After a merge: what is left to do, and who does it
+
+A PR body says what still has to happen after the merge — a data migration after deploy, a manual check, a switch to turn on — between two marker lines, one item per line with who, what and how it is triggered:
+
+```text
+<!-- merge-followup:begin -->
+- 谁做：维护者 ｜ 做什么：run `scripts/migrate-x.sql` on production ｜ 怎么触发：by hand once this PR is deployed
+<!-- merge-followup:end -->
+```
+
+or a single line `<!-- merge-followup:none -->` when nothing is left. Workers are told to write it on every PR and reviewers check it. After the merge the daemon posts **one** comment on the issue the PR belongs to (on the PR itself when it belongs to no issue), listing every follow-up of that issue that has not ended, and hands it to a human (`pending/human`; a closed issue gets `Done` plus `pending/human` as a reminder). A follow-up ends only when a maintainer closes the issue by hand after that PR's merge — being closed by the merge itself does not count. The external requester bot is told "需求已完成" only when the evidence says nothing is left; otherwise it is told the request still has follow-ups, or that a maintainer will confirm.
+
+| What the merged PR's body says | Issue still open | Issue closed |
+|---|---|---|
+| Follow-ups listed (or the markers are written wrong — the original text is quoted for a human to check) | Checklist comment, `pending/human` | Checklist comment, `Done` + `pending/human` |
+| `merge-followup:none` | "Merged, no follow-ups; closing is your call", `pending/human` | `Done`, no comment |
+| Nothing written | "Merged, the PR did not say", `pending/human` | `Done`, no comment |
+
+<details><summary>Details: how the hand-over runs</summary>
+
+- **Markers count only on a line of their own**, outside code blocks and quotes — an example pasted in a code block is not a registration. Anything other than one well-formed list or one `none` (both, two begins, an item missing a field) is "written wrong": every marker's surrounding text is quoted (at most 4000 characters) with a pointer to the PR body.
+- **One comment per issue, covering every PR**: each new merge on the same issue produces a new comment that lists the follow-ups of every earlier PR that has not ended, newest merge first. Nothing is posted twice: every comment carries a marker with a fingerprint of its content, and a comment whose post call failed is found by that marker on the next round instead of being posted again.
+- **The local clean-up comes first**, as before: the comment and the labels wait until the merged PR's worktree and session are cleaned up (or the clean-up is given up because the PR has left the last 30 merged PRs). Rounds spent waiting are not counted as failures.
+- **A PR whose body cannot be read** is listed as "body unreadable, follow-ups unknown" and re-read every round for 30 rounds, then every 30 rounds; once read, a new full comment follows. If its branch name does not tell which issue it belongs to either, after 30 rounds the reminder goes on the PR itself (comment + `pending/human`), its worktree is not cleaned up (check what is left by hand), and until the reminder is confirmed no later PR's bot notice says "完成".
+- **Labels** are written one at a time, re-reading the issue before each write and checking it after; an issue that already carries a new round's workflow label keeps its labels (the comment is still posted). An autopilot merge posts its description (the PR's summary block and the merge basis) as part of the same comment.
+- **The bot notice** is computed from the same conclusion as the comment, twice from fresh reads, and sent only when both agree; it waits until the issue's comment and labels are confirmed.
+- Every step that cannot read what it needs writes nothing and is retried next round; after 30 failed rounds the issue is set aside until another PR is merged into it.
 
 </details>
 

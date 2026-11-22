@@ -156,6 +156,13 @@ def list_cmd():
             continue
         out.append({"number": int(n), "title": it.get("title", "t"),
                     "headRefName": it.get("head", {}).get("ref", ""),
+                    # 合并后交接（GitHub#656）读的几项：正文（items 里写 "body": null = 正文字段异常）、合并时间、
+                    # 合并提交、目标分支、分支最新提交
+                    "body": it["body"] if "body" in it else "",
+                    "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
+                    "mergeCommit": {"oid": it.get("merge_commit_sha", "")} if merged else None,
+                    "baseRefName": it.get("base", {}).get("ref", "main"),
+                    "headRefOid": it.get("head", {}).get("sha", ""),
                     "labels": [{"name": l} for l in ls],
                     "stateReason": (it.get("state_reason") or "").upper(),
                     "updatedAt": it.get("updated_at", "2026-01-01T00:00:00Z")})
@@ -787,6 +794,8 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
         fail("gh: Head branch was modified. Review and try the merge again. (HTTP 409)")
     it["merged"] = True
     it["state"] = "closed"
+    it.setdefault("merged_at", now_iso())
+    it.setdefault("merge_commit_sha", "m" * 40)
     save("items.json", items)
     # merge_closes 文件存在时（GitHub#461）：和真 GitHub 合进默认分支一样，正文里关闭关键词指向的本仓库 issue
     # 随合并关掉（state_reason = completed），并记一条 closed 事件。没有这个文件时照旧不动 issue
@@ -799,7 +808,7 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
                 items[_n]["state"] = "closed"
                 items[_n]["state_reason"] = "completed"
                 _evs.setdefault(_n, []).append({"event": "closed", "actor": {"login": me(), "type": me_type()},
-                                                "created_at": now_iso()})
+                                                "commit_id": "m" * 40, "created_at": now_iso()})
         save("items.json", items)
         save("events.json", _evs)
     emit({"merged": True, "sha": "m" * 40})

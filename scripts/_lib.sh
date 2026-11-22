@@ -3379,11 +3379,6 @@ sub_issue_rollup_parent() {   # <父号> <state_file> [触发的子号]
     return 0
 }
 
-# 合并后给 PR 对应的 issue 打标签：CLOSED（Closes #N 自动关）→ Done；OPEN（Refs #N / 手开 PR）
-# → pending/human 等人 triage。返回 0 = 定了；1 = 状态读不到或加标签失败，一个错标签都不留、
-# 由调用方入 merged_label_queue 下轮再判。**读不到绝不能当成 OPEN**：那会给已关闭的 issue
-# 打上「待人工」，而 PR 已记入 cleaned_prs，没有第二次机会纠正。
-# 摘旧标签仍走 gh_label_flip 的 `|| true`（与此前行为一致：「本来就不在」是常态）。
 # 本轮已经停手的 issue（GitHub#461，PR #478 复审第 3、4 轮）：合并即关的交接或关闭清扫这一轮没定下来——读不到、
 # 对不上、有人改动、写失败——同一次轮询里后面的入口（合并后标签重试队列、关闭清扫）一律不再碰它，下一轮从头现读
 # 再判。记号由两个入口函数在返回失败时统一打上，不靠某个分支记得打。只在本进程内有效，不落盘
@@ -3391,73 +3386,8 @@ ISSUE_HALTED_THIS_ROUND=" "
 issue_halt_round() { ISSUE_HALTED_THIS_ROUND="${ISSUE_HALTED_THIS_ROUND}$1 "; }
 issue_halted_round() { case "$ISSUE_HALTED_THIS_ROUND" in *" $1 "*) return 0 ;; esac; return 1; }
 
-merged_issue_label() {
-    local issue="$1" prnum="${2:-?}" state hissue
-    if issue_halted_round "$issue"; then
-        log "  issue #$issue 本轮已因有人改动而停手，合并后标签留到下一轮"; return 1
-    fi
-    # 托管合并的 PR（GitHub#233）：交接另有一套（不动新一轮的标签、补发合并说明）
-    hissue=$(jq -r --arg p "$prnum" '.autopilot.handoff[$p].issue // empty' "${STATE_FILE:-$STATE_DIR/state.json}" 2>/dev/null) || hissue=""
-    if [ -n "$hissue" ]; then
-        autopilot_merged_handoff "$hissue" "$prnum"; return $?
-    fi
-    state=$(run_gh_capture "读取 issue #$issue 状态" \
-        gh api "repos/$REPO/issues/$issue" --jq .state) || return 1
-    case "$state" in
-        closed)
-            run_gh "auto-cleanup label issue #$issue → Done" \
-                gh_label_flip "$issue" \
-                --add "$LABEL_DONE" \
-                --remove "$LABEL_PENDING_PR" "$LABEL_PENDING_HUMAN" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
-            log "  PR #$prnum → Done；issue #$issue CLOSED (Closes #N) → Done"
-            ;;
-        open)
-            run_gh "auto-cleanup label issue #$issue → pending/human" \
-                gh_label_flip "$issue" \
-                --add "$LABEL_PENDING_HUMAN" \
-                --remove "$LABEL_PENDING_PR" "${LABEL_PENDING_AGENT_DEFAULT:-}" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "$LABEL_AGENT_DOING" || return 1
-            log "  PR #$prnum → Done；issue #$issue OPEN (Refs #N) → pending/human"
-            ;;
-        *)
-            log "  ⚠️ issue #$issue 状态异常（'$state'），不打标签，下轮再判"
-            return 1
-            ;;
-    esac
-}
-
-# merged_label_queue[<issue>] = {pr, tries}；上限同 SUB_ISSUE_ROLLUP_MAX_TRIES。
-merged_label_enqueue() {
-    local issue="$1" prnum="$2" state_file="$3" tmp
-    tmp=$(mktemp)
-    jq --arg i "$issue" --arg p "$prnum" \
-        '.merged_label_queue = ((.merged_label_queue // {}) + {($i): {pr: $p, tries: (((.merged_label_queue // {})[$i].tries) // 0)}})' \
-        "$state_file" > "$tmp" && mv "$tmp" "$state_file"
-    log "  issue #$issue 的合并后标签暂未定（状态读不到或写失败），下轮重试"
-}
-
-merged_label_drain() {
-    local state_file="$1" cap="${SUB_ISSUE_ROLLUP_MAX_TRIES:-30}" issue prnum tries tmp
-    for issue in $(jq -r '(.merged_label_queue // {}) | keys[]' "$state_file" 2>/dev/null); do
-        [[ "$issue" =~ ^[0-9]+$ ]] || continue
-        prnum=$(jq -r --arg i "$issue" '.merged_label_queue[$i].pr // "?"' "$state_file")
-        # 卡住检测停住的 issue（GitHub#339）：先不打标签，留在队列里、不计重试次数。功能关着时恒为否。
-        if stuck_frozen "$issue"; then stuck_skip_note "合并后给 issue 打标签" "$issue"; continue; fi
-        # 本轮已因有人改动停手（GitHub#461）：留到下一轮，不算一次重试
-        if issue_halted_round "$issue"; then continue; fi
-        tmp=$(mktemp)
-        if merged_issue_label "$issue" "$prnum"; then
-            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
-            continue
-        fi
-        tries=$(jq -r --arg i "$issue" '(.merged_label_queue[$i].tries // 0) + 1' "$state_file")
-        if [ "$tries" -ge "$cap" ]; then
-            log "⚠️ issue #$issue 合并后标签连续 $tries 次没定下来 → 放弃（请手动给它打 Done / pending/human）"
-            jq --arg i "$issue" 'del(.merged_label_queue[$i])' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
-        else
-            jq --arg i "$issue" --argjson n "$tries" '.merged_label_queue[$i].tries = $n' "$state_file" > "$tmp" && mv "$tmp" "$state_file"
-        fi
-    done
-}
+# 合并后 issue 的标签和评论由合并后的交接统一做（GitHub#656，_merge_followup.sh 的 mf_handover_tick）；
+# 主干旧的 merged_label_queue 条目由它的迁移接管（mf_migrate）。
 
 # ── 人手动关闭（已完成）的 issue 打 Done（GitHub#159）──
 # 合并路径只给「合并的 PR」和「被 Closes #N 带关的 issue」打 Done；人在网页上直接关掉、选「已完成」
@@ -4515,7 +4445,7 @@ requester_bot_done_enqueue() {   # <PR> <merged|closed> <state_file>
     requester_bot_enabled || return 0
     tmp=$(mktemp)
     jq --arg p "$pr" --arg k "$kind" \
-        '.requester_bot_done_queue = ((.requester_bot_done_queue // {}) + {($p): {kind: $k, tries: (((.requester_bot_done_queue // {})[$p].tries) // 0)}})' \
+        '.requester_bot_done_queue = ((.requester_bot_done_queue // {}) + {($p): ({kind: $k, tries: (((.requester_bot_done_queue // {})[$p].tries) // 0)} + (if $k == "merged" then {v: 2} else {} end))})' \
         "$state_file" > "$tmp" && mv "$tmp" "$state_file"
 }
 
@@ -4567,22 +4497,44 @@ requester_bot_done_notify() {   # <PR> <merged|closed>
     # 只认本身份发过的标记评论：别人在评论里写同样的文字，不能挡掉通知
     me="$REQUESTER_BOT_ME"
     marks=$(gh api --paginate "repos/$REPO/issues/$origin/comments?per_page=100" \
-        --jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body // \"\") | scan(\"<!-- $REQUESTER_BOT_DONE_TAG pr=[0-9]+ kind=[a-z]+ -->\")") \
+        --jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body // \"\") | scan(\"<!-- $REQUESTER_BOT_DONE_TAG pr=[0-9]+ kind=[a-z]+(?: v=[0-9]+)? -->\")") \
         || { log "  读不到 issue #$origin 的评论，PR #$pr 的结果通知下轮再试"; return 1; }
     if [ "$kind" = closed ] && printf '%s\n' "$marks" | grep -q 'kind=merged'; then
         log "  issue #$origin 已由别的 PR 合并完成并通知过，PR #$pr 关闭不再通知"
         return 0
     fi
     mark="<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=$kind -->"
-    if ! printf '%s\n' "$marks" | grep -qxF "$mark"; then
-        if [ "$kind" = merged ]; then
-            body=$(printf '## 需求已完成：PR #%s 已合并\n\nPR #%s（%s）已合并进 `%s`，合并提交 `%s`。这条需求到此完成。\n\n%s\n' \
-                "$pr" "$pr" "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.title // ""')" \
-                "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '.base.ref // "?"')" \
-                "$(printf '%s' "$REQUESTER_BOT_PR_JSON" | jq -r '(.merge_commit_sha // "?")[0:12]')" "$mark")
-        else
-            body=$(printf '## PR #%s 已关闭，没有合并\n\n这条需求的改动没有落地。后续是否继续，由维护者决定。\n\n%s\n' "$pr" "$mark")
+    if [ "$kind" = merged ]; then
+        # 合并结果（GitHub#656）：只按合并后交接的共用结论说话（表 2）。依据现算两次、逐字一致才发；
+        # 不成立 = 表 2 第 0 行：不发、不写等待标签、不唤醒，下轮再判
+        local b1 b2 nb old_sent=no
+        if [ "$(jq -r --arg p "$pr" '.requester_bot_done_queue[$p].legacy // false' "${STATE_FILE:-$STATE_DIR/state.json}" 2>/dev/null)" = true ] \
+           && printf '%s\n' "$marks" | grep -qxF "$mark"; then
+            old_sent=yes   # 升级前已发过旧的「需求已完成」评论（当前写身份发的、带旧标记）
         fi
+        if ! b1=$(mf_notice_basis "$pr") || ! b2=$(mf_notice_basis "$pr") || [ "$b1" != "$b2" ]; then
+            log "  PR #$pr 的合并后交接还没收敛（或依据有变化），结果通知下轮再判"
+            return 1
+        fi
+        nb=$(printf '%s' "$b1" | jq -c --arg c "$old_sent" '. + {correction: ($c == "yes")}' | python3 -B "$MERGE_FOLLOWUP_PY" notice) || return 1
+        mark="<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=merged v=$(printf '%s' "$b1" | jq -r .version) -->"
+        if printf '%s\n' "$marks" | grep -qE "^<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=merged v=[0-9]+ -->\$"; then
+            :   # 新结果评论已发过（之后目标又出新版本也不改已发评论、不重新绑定）
+        elif [ "$old_sent" = yes ] && [ "$(printf '%s' "$nb" | jq -r .done)" = true ]; then
+            :   # 旧评论说的「完成」仍然成立：不再发，只补等待标签和唤醒
+        else
+            # 正文带着待办清单，大小没有上限：经文件交给 gh，不经命令行参数（GitHub#426）
+            local nf
+            nf=$(mktemp) || return 1
+            printf '%s\n%s\n' "$(printf '%s' "$nb" | jq -r .body)" "$mark" > "$nf"
+            if ! run_gh "issue #$origin 发 PR #$pr 的结果评论" \
+                gh_write api -X POST "repos/$REPO/issues/$origin/comments" -F "body=@$nf"; then
+                rm -f "$nf"; return 1
+            fi
+            rm -f "$nf"
+        fi
+    elif ! printf '%s\n' "$marks" | grep -qxF "$mark"; then
+        body=$(printf '## PR #%s 已关闭，没有合并\n\n这条需求的改动没有落地。后续是否继续，由维护者决定。\n\n%s\n' "$pr" "$mark")
         run_gh "issue #$origin 发 PR #$pr 的结果评论" \
             gh_write api -X POST "repos/$REPO/issues/$origin/comments" -f "body=$body" || return 1
     fi
@@ -6375,45 +6327,25 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
     # 剩下的窗口只有「这次重判」到「合并请求到达 GitHub」之间——daemon 消除不了。合并请求带的提交号
     # 能挡住其中的新推送；要连检查一起由服务端兜底，请给目标分支开「必须通过的检查」。
 
+    # 合并请求之前先预存核准身份和合并说明（GitHub#656 方案 T1）：请求没有响应、GitHub 其实已合并时依据不丢。
+    # 说明不再在这里发：合并后的交接把「托管说明 + 要人做的 + 待办清单」并成一条发在目标上（T7）
+    if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"
+    elif [ "$AUTOPILOT_AUTH_KIND" = pr ]; then where=" PR #$pr 上"
+    elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
+    else where="本 issue "; fi
+    local bf=""
+    if ! bf=$(mktemp 2>/dev/null) || ! autopilot_merged_desc "$pr" "${head:0:7}" "$base" "$where" > "$bf" \
+       || ! mf_ap_prestore "$pr" "$n" "$kind" "$head" "$base" "${AP_TITLE:-}" "$bf"; then
+        [ -z "$bf" ] || rm -f "$bf"
+        log "托管：PR #$pr 预存合并依据失败，本轮不合并"
+        return 0
+    fi
+    rm -f "$bf"
     if out=$(gh_write api -X PUT "repos/$REPO/pulls/$pr/merge" -f "sha=$head" -f "merge_method=$AUTOPILOT_MERGE_METHOD" 2>&1); then
         AUTOPILOT_ACTED=1
         short="${head:0:7}"
         log "✅ 托管：PR #$pr 已自动合并（提交 $short → ${base}，授权 $AUTOPILOT_ACTOR @ $(autopilot_auth_where)）"
-        # 说明发在绑定的 issue 上；没绑 issue（GitHub#142）就发在 PR 上
-        if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"
-        elif [ "$AUTOPILOT_AUTH_KIND" = pr ]; then where=" PR #$pr 上"
-        elif [ "$AUTOPILOT_AUTH_KIND" = parent ]; then where="$(autopilot_auth_where) 上"
-        else where="本 issue "; fi
-        # 合并会不会让 GitHub 关掉 issue（GitHub#461）：正文写着关闭关键词（绑定已保证只关 #N），且合进的是默认分支——
-        # GitHub 只在合进默认分支时按关键词关 issue。默认分支读不到时按「会关」记：交接会等 GitHub 关掉它
-        local closes="" defb
-        if [ "$kind" = issue ] && printf '%s' "$AP_BODY" | autopilot_body_has_close; then
-            defb=$(gh api "repos/$REPO" --jq '.default_branch // ""' 2>/dev/null) || defb=""
-            if [ -z "$defb" ] || [ "$defb" = "$base" ]; then closes=closes; fi
-        fi
-        body=$(autopilot_merged_comment "$pr" "$kind" "$short" "$base" "$where" "$head" "$closes")
-        # 说明里照搬了 PR 正文的总结段，大小没有上限：经文件交给 jq 和 gh，不经命令行参数（GitHub#426）
-        local bf=""
-        if ! bf=$(mktemp 2>/dev/null) || ! printf '%s' "$body" > "$bf"; then
-            [ -z "$bf" ] || rm -f "$bf"; bf=""
-            log "  ⚠️ 托管：PR #$pr 已合并，但写不出合并说明的临时文件；说明$( [ "$kind" = issue ] && echo "改由交接补发（短版）" || echo "这次没发")"
-        fi
-        if [ "$kind" = issue ]; then
-            # 合并后的交接（GitHub#233）：issue 留着、翻 pending/human 给人验收。先记下要做的事和评论全文，
-            # 评论发不出去、标签没翻好，都由合并后的清理那一步（merged_issue_label → autopilot_merged_handoff）接着做
-            # closes = true：合并会关掉 issue，交接收敛到「已关闭 + Done + pending/human」（GitHub#461）；没有这个字段的记录照旧
-            if [ -n "$bf" ]; then
-                autopilot_state_set "$sf" '.handoff[$p] = ({issue: $n, body: $b} + (if $c == "" then {} else {closes: true} end))' \
-                    --arg p "$pr" --arg n "$n" --rawfile b "$bf" --arg c "$closes" || true
-            else
-                autopilot_state_set "$sf" '.handoff[$p] = ({issue: $n, body: ""} + (if $c == "" then {} else {closes: true} end))' \
-                    --arg p "$pr" --arg n "$n" --arg c "$closes" || true
-            fi
-        fi
-        if [ -n "$bf" ] && run_gh "托管合并说明评论 (#$n)" gh_write api -X POST "repos/$REPO/issues/$n/comments" -F "body=@$bf"; then
-            [ "$kind" != issue ] || autopilot_state_set "$sf" '.handoff[$p].commented = true' --arg p "$pr" || true
-        fi
-        [ -z "$bf" ] || rm -f "$bf"
+        mf_ap_requested "$pr" || true   # 写不进去也不要紧：保持「预存」，下轮由结果确认现读（T2 / T3）
         autopilot_state_set "$sf" 'del(.prs[$p])' --arg p "$pr" || true
         return 0
     fi
@@ -6430,28 +6362,19 @@ autopilot_merge_one() {   # <state_file> <PR 编号>
 # 照搬 worker 写在 PR 正文里的总结段（AUTOPILOT_SUMMARY_BEGIN / _END 之间，各自折叠），合并依据折叠在最后。
 # 读的是 autopilot_permit 刚现读的 PR 正文（AP_BODY）和标题（AP_TITLE）。最后一行是标记，重发前按它去重。
 # 标记和截取规则放在 _autopilot_summary.sh，和 PR 正文检查命令共用（GitHub#644）
-# shellcheck source=_autopilot_summary.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_autopilot_summary.sh"
-autopilot_merged_comment() {   # <PR> <issue|pr> <短提交号> <目标分支> <授权在哪（给人看）> <完整提交号> [closes]
-    local pr="$1" kind="$2" short="$3" base="$4" where="$5" head="$6" closes="${7:-}" summary todo
+# shellcheck source=_merge_followup.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_merge_followup.sh"
+autopilot_merged_desc() {   # <PR> <短提交号> <目标分支> <授权在哪（给人看）>：说明里照搬的总结段 + 合并依据
+    local pr="$1" short="$2" base="$3" where="$4" summary
     summary=$(printf '%s\n' "$AP_BODY" | autopilot_summary_extract)
     [ -n "$summary" ] || summary="⚠️ PR #$pr 的正文里没有总结段（背景 / 采用的方案 / 排除的方案和原因），细节请看 PR #${pr}。"
-    if [ "$kind" = issue ] && [ "$closes" = closes ]; then
-        # 合并即关（GitHub#461）：issue 已随合并关闭，daemon 打 Done、挂 pending/human 提醒人看
-        todo="要人做的：本 issue 已随合并关闭，挂着 \`$LABEL_PENDING_HUMAN\` 提醒人看。看过满意就摘掉 \`$LABEL_PENDING_HUMAN\`（\`$LABEL_DONE\` 留着）；要返工就重开本 issue、摘掉 \`$LABEL_DONE\` 和 \`$LABEL_PENDING_HUMAN\`、打 \`$LABEL_PENDING_AGENT_DEFAULT\`。"
-    elif [ "$kind" = issue ]; then
-        todo="要人做的：看过之后满意就关闭本 issue（关成「已完成」会自动打 \`$LABEL_DONE\`）；要返工就打 \`$LABEL_PENDING_AGENT_DEFAULT\`。"
-    else
-        todo="本条不需要人做任何事；要撤回就在 GitHub 上 revert 这个 PR。"
-    fi
-    printf '## ✅ 托管：已自动合并 PR #%s：%s\n\n%s\n\n%s\n\n<details><summary>合并依据</summary>\n\n复审通过的提交 `%s` 已用 %s 方式合进 `%s`。依据：`%s` 在%s打的托管标签 `%s`；复审贴了测试重跑记录；自动检查%s；与 `%s` 无冲突。合并后的清理和标签照常由 daemon 处理。要撤回就在 GitHub 上 revert 这个 PR。\n\n</details>\n\n%s\n<!-- cavil-loop:autopilot-merged pr=%s head=%s -->' \
-        "$pr" "${AP_TITLE:-}" "$todo" "$summary" "$short" "$AUTOPILOT_MERGE_METHOD" "$base" "$AUTOPILOT_ACTOR" \
+    printf '%s\n\n<details><summary>合并依据</summary>\n\n复审通过的提交 `%s` 已用 %s 方式合进 `%s`。依据：`%s` 在%s打的托管标签 `%s`；复审贴了测试重跑记录；自动检查%s；与 `%s` 无冲突。合并后的清理和标签照常由 daemon 处理。要撤回就在 GitHub 上 revert 这个 PR。\n\n</details>\n' \
+        "$summary" "$short" "$AUTOPILOT_MERGE_METHOD" "$base" "$AUTOPILOT_ACTOR" \
         "$where" "$LABEL_AUTOPILOT" \
-        "$( [ "$AP_CHECKS" = none ] && echo '：仓库没有配置' || echo '全部通过' )" "$base" \
-        "$(autopilot_daemon_sig)" "$pr" "$head"
+        "$( [ "$AP_CHECKS" = none ] && echo '：仓库没有配置' || echo '全部通过' )" "$base"
 }
 
-# 托管合并后 issue 的交接（GitHub#233，由 merged_issue_label 在这个 PR 有交接记录时调用）。
+# 合并后 issue 的标签收敛（GitHub#233；GitHub#656 起合并后的交接 mf_target_tick 对每个 issue 目标都用它，交接记录带 mf: true）。
 # 目标：issue 上有合并说明；issue 仍打开 → 翻 pending/human、摘 pending/PR，留给人验收、关闭；人先关了 → 打 Done。
 # 但人可能已经接着动了：issue 上挂着派工 / 进行中 / 复审 / 等前置 / 等人 等任何流程标签，说明新一轮已经开始
 # 或已交人——这时一个标签都不动，只补说明（还没发的话），这条交接作废。
