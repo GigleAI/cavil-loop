@@ -1553,9 +1553,9 @@ still go to the bot's own requests only.
 ## Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`)
 
 One back-and-forth between agents — a proposal or PR, the review, the revision, the next review … —
-takes **one** comment, the *round log*, instead of one comment per step. Off unless the config says
-`ENABLE_ROUND_LOG=true` (the template does; a project whose config lacks the line gets one
-`poll.log` notice and stays off). Set `ENABLE_ROUND_LOG=false` (or remove the line) to turn it off.
+takes **one** comment, the *round log*, instead of one comment per step. On by default: a config
+without the line has it on, as does `ENABLE_ROUND_LOG=true`. Set `ENABLE_ROUND_LOG=false` (or
+`ENABLE_ROUND_LOG=""`) to turn it off; removing the line turns it back on.
 
 <details><summary>What goes into the record, and what stays separate</summary>
 
@@ -1617,8 +1617,8 @@ nothing when it fails.
 
 <details><summary>Turning it off</summary>
 
-Set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
-counted. It takes effect at once: the round-log write command checks the setting each time it runs, and
+Set `ENABLE_ROUND_LOG=false` (or an empty value). Removing the line does not turn it off — a missing
+line means on. Existing records stay as they are and are still counted. It takes effect at once: the round-log write command checks the setting each time it runs, and
 the guarded read (`outsider-read.sh`, autopilot items with the outside-content guard) stops adding the
 split view. An agent session already running keeps the instructions it was started with, so an item that
 is in the middle of an agent back-and-forth when the setting goes off can stop half-way: a worker whose
@@ -1715,9 +1715,6 @@ still needs to be dispatched again as described above.
 )
 ```
 <!-- round-log-on-ops:end -->
-
-To make it the default for every project, change the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every
-project without the line then has it on.
 
 </details>
 

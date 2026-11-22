@@ -533,6 +533,7 @@ loaded="$(lib_load)"
 want="$(for k in $LIBKEYS $FNKEYS; do printf '%s=%s\n' "$k" "$(reg_empty "$k")"; done)"
 chk "这 $nkeys 项全写成空值后真实加载公共库：是登记表的「写成空值时的值」" "$loaded" "$want"
 chk "确有空值和不写不同的项（轮询记录：不写 = 开、空值 = 关）" "$(reg_unset ENABLE_POLL_RUN_LOG) $(reg_empty ENABLE_POLL_RUN_LOG)" "true false"
+chk "确有空值和不写不同的项（往返记录，GitHub#669：不写 = 开、空值 = 关；公共库写成空值时判定为关）" "$(reg_unset ENABLE_ROUND_LOG) $(reg_empty ENABLE_ROUND_LOG) $(grep -E '^ENABLE_ROUND_LOG=' <<<"$loaded")" "true false ENABLE_ROUND_LOG=false"
 chk "到达性 · 两个默认开的标签开关（GitHub#551）：没写这一行时是标签名，写成空值时公共库读到空" \
     "$(for k in LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do printf '%s ' "$(reg_unset "$k")"; done)|$(grep -E '^LABEL_PENDING_(BLOCKED|LATER)=' <<<"$loaded" | tr '\n' ' ')" \
     "pending/blocked pending/later |LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "

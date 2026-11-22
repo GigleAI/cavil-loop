@@ -177,6 +177,8 @@ LABEL_PENDING_PR="pending/PR"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
 LABEL_PENDING_BLOCKED="pending/blocked"
+# 往返记录 GitHub#669 起没写就开；这里的提示词与催促按它关着时写
+ENABLE_ROUND_LOG=""
 LABEL_DONE="Done"
 WORKER_AGENT="claude"
 REVIEW_WORKER_AGENT="codex"

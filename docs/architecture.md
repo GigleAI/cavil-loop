@@ -381,7 +381,7 @@ The layers, in order: the skill's base workflow template (a project may replace 
 
 The prompt then reaches the agent one of three ways: pasted into the worker's live tmux session (a review dispatch never lands in the coding session), passed to a resumed conversation looked up by `(work number, agent, role)`, or passed as the launch argument of a fresh session when there is nothing to resume (or the resume dies within seconds). See [Session isolation](#session-isolation) above.
 
-With `ENABLE_ROUND_LOG` on, comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
+With `ENABLE_ROUND_LOG` on (the default; `false` or an empty value turns it off), comments one agent leaves for another — a delivery handed to review, a review sending work back — are appended as sections of one *round log* comment instead of a new comment each; the worker then reads "the latest comment" as the latest unit of that view (every section is one unit). Comments to humans stay separate. See [Round log](operations.md#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log).
 
 Projects can additionally install their own agent hooks — for example a Claude Code `PreToolUse` hook that injects directory rules before a file edit. That lives in the host project; cavil-loop does not ship or manage it. The right-hand column of the diagram (steps 5–6) shows one such hook as an example only.
 

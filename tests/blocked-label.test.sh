@@ -96,6 +96,7 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_AGENT_DOING="doing/agent"
+ENABLE_ROUND_LOG=""
 POST_MERGE_RETROSPECTIVE=false
 AUTO_CLEANUP_ON_MERGE=false
 PENDING_HUMAN_CONFLICT_CHECK=false
@@ -753,6 +754,8 @@ LABEL_AGENT_DOING="doing/agent"
 WORKER_AGENT_DEFAULT="claude"
 PATH="$SANDBOX/pbin:\$PATH"
 GH_TOKEN="fake-token-for-test"
+# 往返记录 GitHub#669 起没写就开；这里比的是它关着时拼出的提示词
+ENABLE_ROUND_LOG=""
 CONF
         # on = 写了标签名；off = 写成空值（GitHub#551 起，空值才是「关」）；missing = 没写这一行（默认开）
         case "$sw" in on) echo 'LABEL_PENDING_BLOCKED="pending/blocked"' ;; off) echo 'LABEL_PENDING_BLOCKED=""' ;; esac
@@ -789,6 +792,8 @@ LABEL_AGENT_DOING="doing/agent"
 WORKER_AGENT_DEFAULT="claude"
 PATH="$SANDBOX/pbin:\$PATH"
 GH_TOKEN="fake-token-for-test"
+# 往返记录 GitHub#669 起没写就开；这里比的是它关着时拼出的提示词
+ENABLE_ROUND_LOG=""
 CONF
         case "$2" in on) echo 'LABEL_PENDING_BLOCKED="pending/blocked"' ;; off) echo 'LABEL_PENDING_BLOCKED=""' ;; esac
     } > "$c"

@@ -252,6 +252,8 @@ LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 往返记录 GitHub#669 起没写就开；同样写成空值
+ENABLE_ROUND_LOG=""
 LABEL_PENDING_PR="pending/PR"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
