@@ -8,25 +8,19 @@
 //
 // The box itself is changed by one function in the detail panel (typing goes through it too).
 //
-// A whole entry keeps its markdown; only HTML comments go — a reader never sees them on GitHub (the
-// loop's hidden markers, the usage record under a usage fold). Removing one must not change what the
-// rest renders to: two blocks a comment kept apart must stay apart, a comment-looking attribute value
-// is not a comment. So the result is checked against the parsed structure of the source, and a comment
-// whose removal would change it is left as an empty comment instead. Words selected in the discussion
-// are plain text: they are escaped so they show exactly as selected, never as a link or emphasis.
+// A whole entry keeps its markdown; only what is inside HTML comments goes. Those hold the loop's
+// hidden markers, and they must not come along: the daemon takes `<!-- agent-blocked-by: … -->`
+// from anywhere in a collaborator's comment, quoted or not. A comment is not deleted but emptied —
+// `<!-- -->` stands where it stood — so the parser meets a comment at the same place and nothing
+// around it can join, split, or turn into something else (a task box, a strikethrough, a longer
+// autolink, two lists made one: each was found once while comments were being deleted). Whole lines
+// go only where nothing can depend on them: comment lines inside a block of raw HTML that has more
+// in it, and comment lines at the very start or end of the text. Where comments are is read by
+// micromark with GitHub's extensions, the same parser the client renders with; the result is
+// checked against the source's token structure, and a text the check refuses is not quoted whole.
 
-import { fromMarkdown } from 'mdast-util-from-markdown';
-
-interface Node {
-  type: string;
-  value?: string;
-  position?: { start: { offset?: number }; end: { offset?: number } };
-  children?: Node[];
-  [k: string]: unknown;
-}
-
-/** CommonMark: where HTML (and so a comment) starts and ends is the same with GitHub's extensions on */
-const parse = (s: string) => fromMarkdown(s) as Node;
+import { parse as mmParse, postprocess, preprocess } from 'micromark';
+import { gfm } from 'micromark-extension-gfm';
 
 /**
  * The HTML comments of a piece of raw HTML, as [start, end) offsets: read the way a browser tokenizes it
@@ -67,6 +61,23 @@ export function htmlComments(s: string): [number, number][] {
   return out;
 }
 
+interface Tok {
+  type: string;
+  start: { offset: number };
+  end: { offset: number };
+  _spread?: boolean;
+}
+
+/** how many times a text was parsed (tests hold the cost of one quote to a fixed number of parses) */
+export const parses = { n: 0 };
+
+/** micromark's events for `s`, GitHub's extensions on */
+function events(s: string): ['enter' | 'exit', Tok][] {
+  parses.n++;
+  const ev = postprocess(mmParse({ extensions: [gfm()] }).document().write(preprocess()(s, undefined, true)));
+  return ev.map(([k, tok]) => [k, tok as unknown as Tok]);
+}
+
 const stripComments = (s: string) => {
   let out = '';
   let at = 0;
@@ -76,125 +87,138 @@ const stripComments = (s: string) => {
   }
   return out + s.slice(at);
 };
+const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
 
-const squash = (s: string) => s.replace(/[ \t\r\n]+/g, ' ');
-
-/** What a text renders to, without positions and without comments: two texts that render the same give the same string. */
-function shape(tree: Node): string {
-  const walk = (n: Node): unknown => {
-    const o: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(n)) if (k !== 'position' && k !== 'children') o[k] = v;
-    // runs of whitespace in text and raw HTML render as one space (code keeps its own: it is not text)
-    if (n.type === 'html') o.value = squash(stripComments(n.value ?? '')).trim();
-    if (n.type === 'text') o.value = squash(n.value ?? '');
-    if (n.children) {
-      const kids: Record<string, unknown>[] = [];
-      for (const c of n.children) {
-        const w = walk(c) as Record<string, unknown> | null;
-        if (!w) continue;
-        // a comment taken out of a line joins the text on either side of it
-        const last = kids[kids.length - 1];
-        if (w.type === 'text' && last?.type === 'text') last.value = squash(String(last.value) + String(w.value));
-        else kids.push(w);
-      }
-      // a block's text starts and ends where its words do
-      const head = kids[0];
-      const tail = kids[kids.length - 1];
-      if (head?.type === 'text') head.value = String(head.value).replace(/^ /, '');
-      if (tail?.type === 'text') tail.value = String(tail.value).replace(/ $/, '');
-      o.children = kids.filter((k) => k.type !== 'text' || k.value !== '');
+/**
+ * What a text is made of, comments aside: every token in order (lists with their tight / loose
+ * flag), the text of text and code exactly, raw HTML with its comments out and its whitespace as a
+ * browser shows it, and nothing for line endings, indentation prefixes or blank lines between blocks.
+ */
+function structure(s: string): string {
+  const out: string[] = [];
+  let skip = 0;
+  for (const [k, tok] of events(s)) {
+    const slice = () => s.slice(tok.start.offset, tok.end.offset);
+    const whole = tok.type === 'htmlFlow' || tok.type === 'htmlText' || tok.type === 'codeFenced' || tok.type === 'codeIndented' || tok.type === 'codeText';
+    if (k === 'exit') {
+      if (whole) skip--;
+      continue;
     }
-    return n.type === 'html' && o.value === '' ? null : o;
-  };
-  return JSON.stringify(walk(tree));
+    if (skip) {
+      if (whole) skip++;
+      continue;
+    }
+    if (whole) {
+      skip++;
+      if (tok.type === 'htmlFlow' || tok.type === 'htmlText') {
+        const v = squash(stripComments(slice()));
+        if (v) out.push(`${tok.type}:${v}`);
+      } else out.push(`${tok.type}:${slice()}`);
+      continue;
+    }
+    if (/^(lineEnding|lineEndingBlank|linePrefix|whitespace|blockQuotePrefixWhitespace)$/.test(tok.type)) continue;
+    if (tok.type === 'data' || tok.type === 'characterEscapeValue' || tok.type === 'characterReferenceValue') {
+      const last = out[out.length - 1];
+      if (last?.startsWith('data:')) out[out.length - 1] = last + slice();
+      else out.push(`data:${slice()}`);
+      continue;
+    }
+    out.push(tok._spread === undefined ? tok.type : `${tok.type}:${tok._spread}`);
+  }
+  return JSON.stringify(out);
 }
 
-/** a comment left in place, empty: what stands between two blocks when removing the comment would join them */
+/** what stands where a comment was */
 const PLACEHOLDER = '<!-- -->';
 
 /**
- * `source` without its HTML comments, rendering to exactly what `source` renders to (the comments aside).
- * A comment is taken out where it is a comment for the markdown parser (in HTML, block or inline — the same
- * characters in code are code, and inside an HTML tag they are an attribute value). A line left with
- * nothing but blanks goes whole, and a first / last block of only comments takes the blank lines up to the
- * start / end of the text. Where taking a comment out would change the rest (two paragraphs or two lists it
- * kept apart would become one, a link would form across it), it stays as an empty comment. Nothing else
- * changes: with no comment the result is `source` itself.
+ * `source` with every HTML comment emptied (hidden markers out), rendering to what `source` renders
+ * to; `null` when that cannot be made sure of (then the entry is not quoted whole — words selected in
+ * it still can be). A comment is one where micromark with GitHub's extensions reads HTML (the same
+ * characters in code are code; inside a tag they are an attribute value; a `|` of a table row splits
+ * it before it could be one). Whole lines go in two places only: a line of nothing but comments inside
+ * a block of raw HTML that has more in it, and lines of nothing but comments and blanks at the very
+ * start or end. With no comment the result is `source` itself.
  */
-export function withoutHidden(source: string): string {
-  const tree = parse(source);
-  const comments: [number, number][] = [];
-  const walk = (n: Node) => {
-    if (n.type === 'html') {
-      const a = n.position?.start.offset;
-      const b = n.position?.end.offset;
-      if (a !== undefined && b !== undefined) for (const [x, y] of htmlComments(source.slice(a, b))) comments.push([a + x, a + y]);
-    }
-    for (const c of n.children ?? []) walk(c);
-  };
-  walk(tree);
-  if (!comments.length) return source;
-  const want = shape(tree);
-  const blocks = (tree.children ?? []).filter((c) => c.position?.start.offset !== undefined && c.position.end.offset !== undefined);
-
-  /** the text with the comments marked `true` taken out and the others left as an empty comment */
-  const build = (out: boolean[], edges: boolean): string => {
-    const cut = new Uint8Array(source.length);
-    const ph = new Map<number, number>();
-    comments.forEach(([a, b], i) => {
-      cut.fill(1, a, b);
-      if (!out[i]) ph.set(a, b);
-    });
-    // a line left with blanks only by comments taken out (none left in it) goes whole, with its line break
-    for (let start = 0; start < source.length; ) {
-      let end = source.indexOf('\n', start);
-      if (end < 0) end = source.length;
-      let lost = false;
-      let left = false;
-      for (let i = start; i < end; i++) {
-        if (ph.has(i)) left = true;
-        if (cut[i]) lost = true;
-        else if (!/\s/.test(source[i])) left = true;
-      }
-      if (lost && !left) cut.fill(1, start, Math.min(end + 1, source.length));
-      start = end + 1;
-    }
-    if (edges) {
-      const gone = (c: Node) => {
-        for (let i = c.position!.start.offset!; i < c.position!.end.offset!; i++) if (ph.has(i) || (!cut[i] && !/\s/.test(source[i]))) return false;
-        return true;
-      };
-      const kept = blocks.filter((c) => !gone(c));
-      if (!kept.length) return '';
-      if (gone(blocks[0])) cut.fill(1, 0, source.lastIndexOf('\n', kept[0].position!.start.offset! - 1) + 1);
-      if (gone(blocks[blocks.length - 1])) {
-        const nl = source.indexOf('\n', kept[kept.length - 1].position!.end.offset!);
-        if (nl >= 0) cut.fill(1, nl + 1, source.length);
-      }
-    }
-    let s = '';
-    for (let i = 0; i < source.length; i++) {
-      const p = ph.get(i);
-      if (p !== undefined) {
-        s += PLACEHOLDER;
-        i = p - 1;
-      } else if (!cut[i]) s += source[i];
-    }
-    return s;
-  };
-  const same = (s: string) => shape(parse(s)) === want;
-
-  const all = comments.map(() => true);
-  const first = build(all, true);
-  if (first === '' || same(first)) return first;
-  // one at a time: every comment starts as an empty comment and is taken out when that changes nothing
-  const out = comments.map(() => false);
-  for (let i = 0; i < comments.length; i++) {
-    out[i] = true;
-    if (!same(build(out, false))) out[i] = false;
+export function withoutHidden(source: string): string | null {
+  const cut: [number, number][] = [];
+  const flows: { a: number; b: number; comments: [number, number][] }[] = [];
+  for (const [k, tok] of events(source)) {
+    if (k !== 'enter' || (tok.type !== 'htmlFlow' && tok.type !== 'htmlText')) continue;
+    const a = tok.start.offset;
+    const b = tok.end.offset;
+    const mine = htmlComments(source.slice(a, b)).map(([x, y]) => [a + x, a + y] as [number, number]);
+    cut.push(...mine);
+    if (tok.type === 'htmlFlow' && mine.length) flows.push({ a, b, comments: mine });
   }
-  const withEdges = build(out, true);
-  return same(withEdges) ? withEdges : build(out, false);
+  if (!cut.length) return source;
+  const inComment = new Uint8Array(source.length);
+  for (const [x, y] of cut) inComment.fill(1, x, y);
+  const blank = (i: number) => /\s/.test(source[i]);
+  // the lines [start, end) of the text; `end` is at the line break (or the end of the text)
+  const lines: [number, number][] = [];
+  for (let s = 0; s <= source.length; ) {
+    let e = source.indexOf('\n', s);
+    if (e < 0) e = source.length;
+    lines.push([s, e]);
+    if (e === source.length) break;
+    s = e + 1;
+  }
+  const onlyHidden = ([s, e]: [number, number]) => {
+    let any = false;
+    for (let i = s; i < e; i++) {
+      if (inComment[i]) any = true;
+      else if (!blank(i)) return null;
+    }
+    return any;
+  };
+  const drop = new Uint8Array(source.length + 1);
+  const dropLine = ([s, e]: [number, number]) => drop.fill(1, s, Math.min(e + 1, source.length));
+  // a block of raw HTML with more in it than comments: its comment-only lines go
+  for (const f of flows) {
+    let more = false;
+    for (let i = f.a; i < f.b && !more; i++) if (!inComment[i] && !blank(i)) more = true;
+    if (!more) continue;
+    for (const ln of lines) if (ln[0] >= f.a && ln[1] <= f.b && onlyHidden(ln) === true) dropLine(ln);
+  }
+  // the very start and end: lines of nothing but comments and blanks
+  const firstWord = lines.findIndex((ln) => onlyHidden(ln) === null);
+  if (firstWord < 0) return '';
+  for (let i = 0; i < firstWord; i++) dropLine(lines[i]);
+  let lastWord = lines.length - 1;
+  while (onlyHidden(lines[lastWord]) !== null) lastWord--;
+  if (lastWord < lines.length - 1) {
+    // the last line with words keeps its line break; after it, nothing
+    drop.fill(1, Math.min(lines[lastWord][1] + 1, source.length), source.length);
+  }
+  const build = (dropping: boolean) => {
+    let out = '';
+    let ci = 0;
+    const sorted = [...cut].sort((x, y) => x[0] - y[0]);
+    for (let i = 0; i < source.length; ) {
+      if (dropping && drop[i]) {
+        i++;
+        continue;
+      }
+      while (sorted[ci] && sorted[ci][1] <= i) ci++;
+      const c = sorted[ci];
+      // a comment (or what is left of one whose first lines went) becomes one empty comment
+      if (c && c[0] <= i) {
+        out += PLACEHOLDER;
+        i = c[1];
+        continue;
+      }
+      out += source[i];
+      i++;
+    }
+    return out;
+  };
+  const want = structure(source);
+  for (const dropping of [true, false]) {
+    const out = build(dropping);
+    if (structure(out) === want) return out;
+  }
+  return null;
 }
 
 /** Is there anything to quote at all? */

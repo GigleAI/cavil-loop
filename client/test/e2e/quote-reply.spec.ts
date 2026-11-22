@@ -17,6 +17,7 @@ const N = 139;
 const KEY = `gigleai/cavil-loop#${N}`;
 
 // a comment the way the loop writes them: words, a hidden marker of its own, a usage fold with its hidden record
+// (the marker is emptied; the record under the fold's closing tag goes with its line)
 const LOOP_SOURCE = [
   '## 方案已更新',
   '',
@@ -40,7 +41,8 @@ const LOOP_QUOTED = [
   '>',
   '> 第一段正文。',
   '>',
-  // the marker's own line is gone; the blank lines on either side of it stay (whitespace is never tidied)
+  // the marker between two blocks is emptied, not deleted: nothing around it can join or change
+  '> <!-- -->',
   '>',
   '> - 一条',
   '> - 两条',
@@ -152,7 +154,7 @@ test('GitHub#653: 引用回复 quotes an entry without its hidden markers, or th
   // typing goes on after it; a second quote goes after that, one blank line between
   await page.keyboard.type('同意。');
   await quoteBtn(bodyId).click();
-  await expect(reply).toHaveValue(`${LOOP_QUOTED}\n\n同意。\n\n> 正文的话 \n\n`);
+  await expect(reply).toHaveValue(`${LOOP_QUOTED}\n\n同意。\n\n> 正文的话 <!-- -->\n\n`);
   await reply.fill('');
 
   // ---- 3. words selected in one entry: R from inside the discussion quotes just them ----
@@ -172,7 +174,7 @@ test('GitHub#653: 引用回复 quotes an entry without its hidden markers, or th
   // selected in another entry: the button quotes its own entry whole
   await select(frame, { id: 'C-plain', words: '还有别的话。' });
   await quoteBtn(bodyId).click();
-  await expect(reply).toHaveValue('> 正文的话 \n\n');
+  await expect(reply).toHaveValue('> 正文的话 <!-- -->\n\n');
   await reply.fill('');
 
   // ---- 5. a selection across two entries: R only goes to the box, nothing is quoted ----

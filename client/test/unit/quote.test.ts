@@ -1,12 +1,13 @@
-// GitHub#653: quote reply — what a quote of a whole entry keeps (everything but HTML comments, byte for
-// byte), how a quote is laid out, and where it goes in the reply box. The cases of the three design-review
-// rounds on #653 sit together here: each was a way a broader clean-up changed visible text.
+// GitHub#653: quote reply — what a quote of a whole entry keeps (everything; HTML comments emptied), how
+// a quote is laid out, and where it goes in the reply box. The cases of the three design-review rounds on
+// #653 and the two code-review rounds on PR #659 sit together in one corpus: each was a way a clean-up
+// changed visible text, and every one of them is checked by rendering, as the source and as a quote.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { micromark } from 'micromark';
 import { gfm, gfmHtml } from 'micromark-extension-gfm';
-import { hasWords, htmlComments, quoteText, selectionMarkdown, trimSelection, withQuote, withoutHidden } from '../../src/data/quote';
+import { hasWords, htmlComments, parses, quoteText, selectionMarkdown, trimSelection, withQuote, withoutHidden } from '../../src/data/quote';
 import { buildTimeline } from '../../src/data/detail';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -44,126 +45,116 @@ const shownText = (html: string) =>
 /** a whole quote renders to what the source does, the comments aside — as the source and as a quote */
 const sameRender = (source: string) => {
   const out = withoutHidden(source);
-  expect(render(out)).toBe(render(source));
-  expect(render(quoteText(out))).toBe(render(quoteText(source)));
-  return out;
+  expect(out).not.toBeNull();
+  expect(render(out!)).toBe(render(source));
+  expect(render(quoteText(out!))).toBe(render(quoteText(source)));
+  return out!;
 };
 
-/** the text with every line that is nothing but one HTML comment taken out */
-const dropCommentLines = (s: string) =>
-  s
-    .split('\n')
-    .filter((l) => !/^<!--.*-->$/.test(l))
-    .join('\n');
+/** every case of every round, in one place: each must render the same as the source, and as a quote */
+const CORPUS: Record<string, string> = {
+  roundLog: ROUND_LOG,
+  // design review rounds on #653
+  usageFold: '正文\n\n---\n<details><summary>⏱️ 耗时：1m 0s</summary>\n\n- 开始 07:00\n\n</details>\n<!-- agent-metrics wall_secs=60 -->\n',
+  foldAlike: '正文\n\n<details><summary>⏱️ 耗时：构建计时示例</summary>\n\n本地首次构建约需两分钟\n\n</details>\n',
+  unclosedFold: '前文\n\n<details><summary>⏱️ 耗时：3s</summary>\n\n中间的正文\n\n<details><summary>普通折叠</summary>\n\n折叠里的字\n\n</details>\n\n后文\n',
+  fencedBlanks: '说明\n\n```\na\n\n\n\nb\n```\n<!-- x -->\n',
+  indentedOnly: '    const a = 1;\n\n\n    const b = 2;\n',
+  commentThenCode: '<!-- marker -->\n\n    code line\n      more\n',
+  commentAsCode: '例：\n\n```html\n<!-- agent-blocked-by: #12 -->\n```\n\n行内 `<!-- x -->` 也是代码\n',
+  multiLine: 'a\n\n<!-- one\ntwo\nthree -->\n\nb\n',
+  inline: '前 <!-- x --> 后\n',
+  twoBetween: 'a\n\n<!-- x -->\n<!-- y -->\n\nb',
+  edgesBlank: '\n\n正文\n\n',
+  crlf: 'a\r\n\r\n<!-- x -->\r\n\r\nb\r\n',
+  // PR #659 code review round 1
+  twoParagraphs: 'First\n<!-- hidden -->\nSecond',
+  twoLists: '- first\n<!-- hidden -->\n- second',
+  twoListsBlank: '- first\n\n<!-- hidden -->\n\n- second',
+  twoCodes: '    one\n\n<!-- x -->\n\n    two\n',
+  linkAcross: '[a]<!-- x -->(b)',
+  attribute: '<span title="<!-- literal -->">visible</span><!-- marker --> text\n',
+  inItem: '- item\n\n  <!-- inside the item -->\n\n  more of it\n',
+  inQuote: '> quoted\n> <!-- x -->\n> more\n',
+  // PR #659 code review round 2: GitHub's extensions
+  taskBox: '- [<!-- hidden -->x] item',
+  strike: '~<!-- hidden -->~text~~',
+  autolink: 'https://exa<!-- hidden -->mple.com',
+  tablePipe: '| a | b |\n|---|---|\n| c <!-- d | e --> | f |\n',
+};
 
-describe('withoutHidden: HTML comments go, everything else stays byte for byte', () => {
-  it('a real round-log record: every hidden marker and both usage records go; folds, sections and the top version stay', () => {
-    const out = withoutHidden(ROUND_LOG);
-    expect(out).not.toMatch(/^<!--/m);
-    expect(out).not.toContain('agent-metrics');
-    expect(out).not.toContain('cavil-round-log:');
-    expect(out).toBe(dropCommentLines(ROUND_LOG));
-    // the two visible usage folds and their bullets are still there, as written
-    expect(out.match(/^<details><summary>⏱️ 耗时：/gm)?.length).toBe(2);
-    // inline code that shows a comment is code: kept
-    expect(out).toContain('`<!-- … -->` → 原样保留');
-    expect(out).toContain('**只删 HTML 片段里的 `<!-- … -->` 注释**');
+describe('withoutHidden: every comment emptied, everything else as it was', () => {
+  it('every case of every round renders the same as the source, as itself and as a quote', () => {
+    for (const [name, s] of Object.entries(CORPUS)) {
+      try {
+        sameRender(s);
+      } catch (e) {
+        throw new Error(`${name}: ${(e as Error).message}`);
+      }
+    }
   });
 
-  it('a usage fold with its record and a fold that only looks like one: both folds stay, only the record goes', () => {
-    const real = '正文\n\n---\n<details><summary>⏱️ 耗时：1m 0s</summary>\n\n- 开始 07:00\n\n</details>\n<!-- agent-metrics wall_secs=60 -->\n';
-    const alike = '正文\n\n<details><summary>⏱️ 耗时：构建计时示例</summary>\n\n本地首次构建约需两分钟\n\n</details>\n';
-    expect(withoutHidden(real)).toBe(real.replace('<!-- agent-metrics wall_secs=60 -->\n', ''));
-    expect(withoutHidden(alike)).toBe(alike);
+  it('the hidden words are gone; empty comments stand where comments stood', () => {
+    expect(withoutHidden(CORPUS.twoParagraphs)).toBe('First\n<!-- -->\nSecond');
+    expect(withoutHidden(CORPUS.twoLists)).toBe('- first\n<!-- -->\n- second');
+    expect(withoutHidden(CORPUS.taskBox)).toBe('- [<!-- -->x] item');
+    expect(withoutHidden(CORPUS.strike)).toBe('~<!-- -->~text~~');
+    expect(withoutHidden(CORPUS.autolink)).toBe('https://exa<!-- -->mple.com');
+    expect(withoutHidden(CORPUS.inline)).toBe('前 <!-- --> 后\n');
+    expect(withoutHidden(CORPUS.multiLine)).toBe('a\n\n<!-- -->\n\nb\n');
+    expect(withoutHidden(CORPUS.attribute)).toBe('<span title="<!-- literal -->">visible</span><!-- --> text\n');
+    expect(htmlComments('<a title=\'x <!-- y\'>z</a><!-- real -->')).toEqual([[25, 38]]);
   });
 
-  it('an unclosed usage opening followed by an ordinary fold: nothing is cut', () => {
-    const s = '前文\n\n<details><summary>⏱️ 耗时：3s</summary>\n\n中间的正文\n\n<details><summary>普通折叠</summary>\n\n折叠里的字\n\n</details>\n\n后文\n';
-    expect(withoutHidden(s)).toBe(s);
+  it('what is not a comment stays as written: code, an attribute value, a cell a table row splits', () => {
+    for (const k of ['commentAsCode', 'tablePipe', 'foldAlike', 'indentedOnly', 'edgesBlank']) expect(withoutHidden(CORPUS[k])).toBe(CORPUS[k]);
+    expect(withoutHidden(CORPUS.fencedBlanks)).toBe('说明\n\n```\na\n\n\n\nb\n```\n');
   });
 
-  it('code keeps its blank lines and indentation', () => {
-    const fenced = '说明\n\n```\na\n\n\n\nb\n```\n<!-- x -->\n';
-    expect(withoutHidden(fenced)).toBe('说明\n\n```\na\n\n\n\nb\n```\n');
-    const indented = '    const a = 1;\n\n\n    const b = 2;\n';
-    expect(withoutHidden(indented)).toBe(indented);
-    // a comment first, indented code next: the comment and the blank line go, the code stays as it is
-    expect(withoutHidden('<!-- marker -->\n\n    code line\n      more\n')).toBe('    code line\n      more\n');
-  });
-
-  it('comments written as code stay', () => {
-    const s = '例：\n\n```html\n<!-- agent-blocked-by: #12 -->\n```\n\n行内 `<!-- x -->` 也是代码\n';
-    expect(withoutHidden(s)).toBe(s);
-  });
-
-  it('a comment over several lines goes; an inline one goes alone; a block of only comments between two paragraphs goes', () => {
-    expect(withoutHidden('a\n\n<!-- one\ntwo\nthree -->\n\nb\n')).toBe('a\n\n\nb\n');
-    expect(withoutHidden('前 <!-- x --> 后\n')).toBe('前  后\n');
-    expect(withoutHidden('a\n\n<!-- x -->\n<!-- y -->\n\nb')).toBe('a\n\n\nb');
-    // a comment at the end takes the blank lines before it: no empty quote lines at the end
+  it('whole lines go only inside raw HTML that has more in it, and at the very start and end', () => {
+    // the usage record under the fold's closing tag (raw HTML with more in it)
+    expect(withoutHidden(CORPUS.usageFold)).toBe(CORPUS.usageFold.replace('<!-- agent-metrics wall_secs=60 -->\n', ''));
+    // the start: a comment first, indented code next — the code stays code
+    expect(withoutHidden(CORPUS.commentThenCode)).toBe('    code line\n      more\n');
+    // the end: no empty quote lines after the words
     expect(withoutHidden('a\n\n<!-- x -->\n')).toBe('a\n');
     expect(withoutHidden('a\n\n<!-- x -->')).toBe('a\n');
+    // nothing but comments: nothing to quote
+    expect(withoutHidden('<!-- a -->\n\n<!-- b -->\n')).toBe('');
   });
 
-  it('no comment: the text itself, blank lines at either end included', () => {
+  it('a real round-log record: no hidden marker or usage record left; folds, sections and the top version all there', () => {
+    const out = withoutHidden(ROUND_LOG)!;
+    expect(out).not.toMatch(/cavil-round-log:|agent-metrics/);
+    expect(out.match(/^<details><summary>⏱️ 耗时：/gm)?.length).toBe(2);
+    expect(out).toContain('`<!-- … -->` → 原样保留');
+    // every line of the record that holds no comment is there, in order
+    const kept = ROUND_LOG.split('\n').filter((l) => !l.includes('<!--') || l.includes('`<!--'));
+    let at = 0;
+    for (const l of kept) {
+      const i = out.indexOf(l, at);
+      expect(i, l).toBeGreaterThanOrEqual(0);
+      at = i + l.length;
+    }
+  });
+
+  it('no comment: the text itself', () => {
     for (const s of ['\n\n正文\n\n', '  \n# 标题\n\n- a\n- b\n\n\n', 'x', '']) expect(withoutHidden(s)).toBe(s);
   });
 
-  it('nothing but comments: nothing left (and nothing to quote)', () => {
-    expect(withoutHidden('<!-- a -->\n\n<!-- b -->\n')).toBe('');
-    expect(hasWords(withoutHidden('<!-- a -->\n'))).toBe(false);
-  });
-
-  it('CRLF sources (GitHub keeps what the browser sent)', () => {
-    expect(withoutHidden('a\r\n\r\n<!-- x -->\r\n\r\nb\r\n')).toBe('a\r\n\r\n\r\nb\r\n');
-  });
-});
-
-describe('PR #659 code review round 1, problem 1: taking a comment out never changes what the rest renders to', () => {
-  it('two paragraphs a comment kept apart stay two paragraphs', () => {
-    const out = sameRender('First\n<!-- hidden -->\nSecond');
-    expect(out).toBe('First\n<!-- -->\nSecond');
-    expect(out).not.toContain('hidden');
-  });
-
-  it('two lists a comment kept apart stay two lists (with or without blank lines around it)', () => {
-    expect(sameRender('- first\n<!-- hidden -->\n- second')).toBe('- first\n<!-- -->\n- second');
-    expect(sameRender('- first\n\n<!-- hidden -->\n\n- second')).toBe('- first\n\n<!-- -->\n\n- second');
-  });
-
-  it('two code blocks a comment kept apart stay two code blocks', () => {
-    expect(sameRender('    one\n\n<!-- x -->\n\n    two\n')).toBe('    one\n\n<!-- -->\n\n    two\n');
-  });
-
-  it('a link does not form across a comment that was between its two halves', () => {
-    expect(sameRender('[a]<!-- x -->(b)')).toBe('[a]<!-- -->(b)');
-  });
-
-  it('where nothing changes, the comment goes whole (no empty comment left)', () => {
-    expect(sameRender('a\n\n<!-- x -->\n\nb\n')).toBe('a\n\n\nb\n');
-    expect(sameRender('前 <!-- x --> 后\n')).toBe('前  后\n');
-  });
-
-  it('a comment-looking attribute value is not a comment', () => {
-    const s = '<span title="<!-- literal -->">visible</span> text\n';
-    expect(withoutHidden(s)).toBe(s);
-    expect(htmlComments('<a title=\'x <!-- y\'>z</a><!-- real -->')).toEqual([[25, 38]]);
-    // a real comment next to it still goes
-    expect(sameRender('<span title="<!-- literal -->">visible</span><!-- marker -->\n')).toBe('<span title="<!-- literal -->">visible</span>\n');
-  });
-
-  it('every earlier case renders the same too', () => {
-    for (const s of [
-      ROUND_LOG,
-      '说明\n\n```\na\n\n\n\nb\n```\n<!-- x -->\n',
-      '<!-- marker -->\n\n    code line\n      more\n',
-      'a\n\n<!-- one\ntwo\nthree -->\n\nb\n',
-      'a\n\n<!-- x -->\n<!-- y -->\n\nb',
-      '正文\n\n---\n<details><summary>⏱️ 耗时：1m 0s</summary>\n\n- 开始 07:00\n\n</details>\n<!-- agent-metrics wall_secs=60 -->\n',
-      '- item\n\n  <!-- inside the item -->\n\n  more of it\n',
-      '> quoted\n> <!-- x -->\n> more\n',
-    ])
-      sameRender(s);
+  it('PR #659 code review round 2, problem 5: a long comment costs a fixed number of parses, whatever its number of comments', () => {
+    // 200 short paragraphs, each kept apart from the next by a hidden marker on its own line
+    const long = Array.from({ length: 200 }, (_, i) => `第 ${i + 1} 段正文，说明这一步。\n<!-- marker ${i} -->`).join('\n');
+    const before = parses.n;
+    const out = sameRender(long);
+    // the render check above parses with micromark itself, not through the quote module: only the quote's own parses count
+    expect(parses.n - before).toBeLessThanOrEqual(3);
+    expect(out.split('<!-- -->').length - 1).toBe(199);
+    expect(out).not.toContain('marker');
+    const t0 = performance.now();
+    withoutHidden(long);
+    // measured well under 50 ms; the bound leaves room for a loaded machine
+    expect(performance.now() - t0).toBeLessThan(1000);
   });
 });
 
@@ -261,7 +252,7 @@ describe('the detail read: which entries can be quoted whole', () => {
   it('body, comment and review carry the cleaned source; none read or nothing visible: no quote', () => {
     const tl = buildTimeline(raw as never);
     const by = (id: string) => tl.find((e) => e.id === id)!;
-    expect(by('I').quoteSource).toBe('b ');
+    expect(by('I').quoteSource).toBe('b <!-- -->');
     // not editable by this account, still quotable (quoting reads only)
     expect(by('I').editSource).toBeUndefined();
     expect(by('C1').quoteSource).toBe('c');

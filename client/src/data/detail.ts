@@ -188,7 +188,7 @@ function wallSecs(source: unknown): { wallSecs: number } | Record<string, never>
 export function quoteSource(source: unknown): { quoteSource: string } | Record<string, never> {
   if (typeof source !== 'string') return {};
   const q = withoutHidden(source);
-  return hasWords(q) ? { quoteSource: q } : {};
+  return q !== null && hasWords(q) ? { quoteSource: q } : {};
 }
 
 /** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
