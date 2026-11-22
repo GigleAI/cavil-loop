@@ -254,6 +254,9 @@ describe('the back end and the daemon\'s real script', () => {
   // 17 values × (read + save) through the real script, one after another: 16 s on CI with the
   // default 20 s budget (main run 43150760693), so any extra load on the runner tipped it over
   // (PR #400 review round 5). The work is the point of the test; give it the time, keep every value.
+  // Then the script's per-setting cost grew with the registry (84 settings, ~1400 processes per read): 37.9–39.5 s
+  // on CI through 2026-11-21, while the integers case next to it reached 62 s and failed the nightly build. The script
+  // now works out every setting in one pass (GitHub#662): on a dev box at load ~45, 55.8 s before, 10.5 s after.
   it('one list of values, three checks — the form, the back end, the script — agree on which may be written', async () => {
     const b = backend();
     const values = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];
@@ -274,6 +277,9 @@ describe('the back end and the daemon\'s real script', () => {
     // 17 values × (read + save through the real script): ~17 s on a loaded dev box, past the 20 s default on CI (PR #415)
   }, 60_000);
 
+  // 16 values × 3 runs of the real script (read, the back end's read before saving, the save): 58.6–59.2 s on CI in
+  // five of eight runs on 2026-11-21, 62.1 s and a timeout on the nightly build of 2026-11-22 (GitHub#662). With the
+  // script doing every setting in one pass: on a dev box at load ~45, 59.8 s before, 16.2 s after.
   // GitHub#555: whole numbers past 9 digits, up to the using code's own bound, go through the form, the back end and the
   // script alike; one past the bound, or a leading zero, through none of them
   it('integers: the form, the back end and the script agree up to the using code\'s own bound', async () => {
