@@ -488,14 +488,24 @@ tmux_sandbox_start
 tmux new-session -d -s rt-issue1 "sleep 30" && echo NEW-OK
 tmux capture-pane -p -S - -t '=rt-issue1:' > /dev/null && echo CAPTURE-OK
 tmux -S "$(tmux_sandbox_socket)" has-session -t '=rt-issue1' && echo EXPLICIT-OK
+# 经符号链接指到服务目录的 TMUX_TMPDIR：核过后用真实地址连，仍是同一个服务
+ln -s "$TMUX_TMPDIR" "$OUT/alias"
+TMUX_TMPDIR="$OUT/alias" tmux has-session -t '=rt-issue1' && echo ALIAS-OK
+# 服务目录里一个已经不存在的目录：调用 tmux 之前就拒绝（复审 #9：tmux 自己选址会退回别的临时目录）
+TMUX_TMPDIR="$TMUX_TMPDIR/gone" tmux new-session -d -s gone "sleep 30" 2> "$OUT/gone.err"; echo "gone=$?" > "$OUT/gone.rc"
+[ -e "$TMUX_TMPDIR/gone" ] && echo GONE-DIR-CREATED
 # 窗格里的程序：TMUX 由 tmux 自己设，指向专用服务
 tmux new-session -d -s rt-issue2 "tmux display-message -p inpane > '$OUT/inpane' 2>&1; sleep 30"
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$OUT/inpane" ] && break; sleep 0.2; done
 EOF
-chk "正常调用：退出码 0" "$CASE_RC" "0"
+chk "正常调用（含一条故意的拒绝）：以失败退出" "$CASE_RC" "1"
 chk "正常调用：建会话、capture-pane -S -、显式 -S 都放行" "$(grep -c -e NEW-OK -e CAPTURE-OK -e EXPLICIT-OK "$T/rtok.out")" "3"
 chk "正常调用：窗格里调 tmux 放行" "$(cat "$T/rtok.d/inpane" 2>/dev/null)" "inpane"
-chk "正常调用：没有拒绝记录" "$(grep -c '连的不是本次运行的专用服务' "$T/rtok.out")" "0"
+chk "符号链接指到服务目录：照常连到同一个服务" "$(grep -c ALIAS-OK "$T/rtok.out")" "1"
+chk "目录已不存在：拒绝（退出 1）" "$(cat "$T/rtok.d/gone.rc")" "gone=1"
+chk "目录已不存在：拒绝发生在调用 tmux 之前（包装记下原因）" "$(grep -c '所在的目录不存在' "$T/rtok.d/gone.err")" "1"
+chk "目录已不存在：没去建那个目录" "$(grep -c GONE-DIR-CREATED "$T/rtok.out")" "0"
+chk "正常调用：只有这一条拒绝记录" "$(grep -c '^  服务地址 ' "$T/rtok.out")" "1"
 
 run_case rtbad <<'EOF'
 tmux_sandbox_start
@@ -526,7 +536,7 @@ chk "-L 落在服务目录里：单独写、合并写都放行" "$(grep -c -E '^
 chk "连错服务：父目录分量、符号链接指过去的地方没起服务" "$([ -e "$T/rtbad.d/viasym.sock" ] || ls "$T/rtbad.d"/tmux-* >/dev/null 2>&1 && echo yes || echo no)" "no"
 
 echo "    共用的归属规则：tmux_sandbox_reap.py owns"
-OW="$T/owns"; mkdir -p "$OW/s/tmux-1" "$OW/out"; ln -s "$OW/out" "$OW/s/link"; ln -s "$OW/s" "$OW/alias"
+OW="$T/owns"; mkdir -p "$OW/s/tmux-1" "$OW/s/tmux-$(id -u)" "$OW/out"; ln -s "$OW/out" "$OW/s/link"; ln -s "$OW/s" "$OW/alias"
 owns() { python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" owns "$OW/s" "$1" && echo in || echo out; }
 chk "owns：服务目录里的地址" "$(owns "$OW/s/tmux-1/default")" "in"
 chk "owns：经别名指到服务目录里" "$(owns "$OW/alias/tmux-1/default")" "in"
@@ -541,6 +551,8 @@ chk "check：-u -L 名字 / -uL 名字 / -uL名字（都在服务目录里）" "
 chk "check：-f 的参数不当地址（-fS 是配置文件名 S）" "$(ck -f S ls) $(ck -fS ls)" "in in"
 chk "check：-S 在子命令之后不算全局选项" "$(ck capture-pane -p -S -)" "in"
 chk "check：看不懂的全局选项" "$(ck -Z ls)" "out"
+chk "check：地址在服务目录里、但所在目录已不存在（复审 #9）" "$(TMUX_TMPDIR="$OW/s/gone" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls > /dev/null && echo in || echo out)" "out"
+chk "check：放行时打印解析后的真实地址（包装用 -S 交给 tmux）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls)" "$(cd "$OW/s" && pwd -P)/tmux-$(id -u)/default"
 chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
 
 REAL_TMUX=$(command -v tmux)

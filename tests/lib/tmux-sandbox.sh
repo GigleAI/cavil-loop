@@ -29,7 +29,9 @@
 #   tmux's own getopt string (combined forms like `-2S path` included; an option it does not know is
 #   refused), works out the socket the call will really use in tmux's own order (`-S`; else `-L` under
 #   `TMUX_TMPDIR`; else the socket in `TMUX`; else `default` under `TMUX_TMPDIR`, `/tmp` when unset),
-#   and refuses, and records, the call when that socket is not this run's — and any record fails the
+#   and refuses, and records, the call when that socket is not this run's or its directory does not
+#   exist (tmux itself would skip such a directory and fall back to another one); a call it lets
+#   through is run with the checked real path passed as `-S`, so tmux chooses nothing on its own — and any record fails the
 #   file; the exit also looks at every tmux server among the processes reparented to the test and fails
 #   the file when one listens on a socket that is not this run's (a child that lost `PATH` and ran the
 #   real tmux elsewhere). "This run's" is one rule for both, `owns` in `tests/lib/tmux_sandbox_reap.py`:
@@ -194,14 +196,16 @@ if [ -e "\$d/closed" ]; then echo "tmux 沙盒已关闭，拒绝：tmux \$*" >&2
 # 这次调用实际会连的服务地址归不归本次运行，整件事交给 tmux_sandbox_reap.py check：它照 tmux 自己的
 # getopt 串拆全局选项（合并写法也认），按 tmux 的顺序算出地址，再用 owns（解析成真实路径后在服务目录
 # 里）判断；收尾认沙盒外服务也用 owns（PR #660 复审：原来包装自己在 shell 里拆选项，漏了合并写法）。
+# 核过的地址用 -S 显式交给 tmux（放在最前，用户给的 -S 只会是同一个地址）：tmux 不再自己选址，
+# 也就不会在目录失效时退回别的临时目录（PR #660 复审 #9）。
 bad=""
-why=\$(python3 "\$lib/tmux_sandbox_reap.py" check "\$d/s" "\$@" 2>&1) || bad="\${why:-判断服务地址失败}"
+sock=\$(python3 "\$lib/tmux_sandbox_reap.py" check "\$d/s" "\$@" 2>&1) || bad="\${sock:-判断服务地址失败}"
 if [ -n "\$bad" ]; then
     printf '%s | tmux %s\n' "\$bad" "\$*" >> "\$d/violations"
     echo "tmux 沙盒：这次调用连的不是本次运行的专用服务（\$bad），拒绝：tmux \$*" >&2
     exit 1
 fi
-"\$real" -f /dev/null "\$@"; rc=\$?
+"\$real" -f /dev/null -S "\$sock" "\$@"; rc=\$?
 if [ "\$rc" -eq 0 ]; then
     new=0; name=""; prev=""
     for a in "\$@"; do
@@ -210,7 +214,7 @@ if [ "\$rc" -eq 0 ]; then
         prev="\$a"
     done
     if [ "\$new" = 1 ] && [ -n "\$name" ]; then
-        pid=\$("\$real" display-message -p -t "=\$name:" '#{pid}' 2>/dev/null)
+        pid=\$("\$real" -S "\$sock" display-message -p -t "=\$name:" '#{pid}' 2>/dev/null)
         printf 'session %s\nserver %s\n' "\$name" "\$pid" >> "\$d/log"
     fi
 fi

@@ -205,16 +205,25 @@ def stray_tmux(pid, real, sandbox):
 def main():
     args = sys.argv[1:]
     if args[:1] == ["check"]:
-        # 包装用：check <服务目录> <tmux 的参数…>，这次调用连的地址在服务目录里退出 0，否则 1（打印地址）
+        # 包装用：check <服务目录> <tmux 的参数…>。这次调用连的地址在服务目录里、且所在目录存在：
+        # 打印它解析后的真实地址、退出 0（包装用 -S 原样交给 tmux）；否则打印原因、退出 1
         try:
             sock = tmux_socket(args[2:], os.environ)
         except getopt.GetoptError as e:
             print("看不懂的 tmux 全局选项（%s）" % e)
             return 1
-        if owns(args[1], sock):
-            return 0
-        print("服务地址 %s" % sock)
-        return 1
+        if not owns(args[1], sock):
+            print("服务地址 %s" % sock)
+            return 1
+        real = os.path.realpath(sock)
+        if not os.path.isdir(os.path.dirname(real)):
+            # 目录不在：tmux 自己选址时会跳过它、退回别的临时目录（tmux.c 的 expand_paths）；
+            # 包装又总是用 -S 把这里核过的地址交给 tmux，这时连不上也起不了——干脆在调用前拒绝
+            print("服务地址 %s 所在的目录不存在" % sock)
+            return 1
+        # 打印核过的真实地址：包装用 -S 原样交给 tmux，tmux 就不会再自己挑地址
+        print(real)
+        return 0
     if args[:1] == ["owns"]:
         # 包装用：owns <服务目录> <地址>，在里面退出 0，不在 1，判断不了 2
         try:
