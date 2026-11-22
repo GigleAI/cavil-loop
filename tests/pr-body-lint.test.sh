@@ -305,7 +305,9 @@ has() { grep -qF -- "$2" "$1"; }
 OLD="$TMP/old"; mkdir -p "$OLD"
 BASE=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || true)
 [ -n "$BASE" ] && git -C "$REPO_DIR" archive "$BASE" | tar -x -C "$OLD"
-git -C "$REPO_DIR" show "$BASE:REVIEW.md" > "$TMP/review-old.md" 2>/dev/null || : > "$TMP/review-old.md"
+# 旧审查标准取固定提交 10622996（加新条目之前的主干）：取合并基点的话，本 PR 合并后主干和之后每个 PR 的合并基点
+# 都已带新条目，「旧」与「新」是同一份，下面那条断言在主干和别的 PR 上都会红（PR #655 的 CI、主干 c35f4540 都红过）
+git -C "$REPO_DIR" show "10622996:REVIEW.md" > "$TMP/review-old.md" 2>/dev/null || : > "$TMP/review-old.md"
 cp "$REPO_DIR/REVIEW.md" "$TMP/review-new.md"
 NEW_LINE='GitHub 上 issue / PR 的正文和评论都有修改历史'
 
