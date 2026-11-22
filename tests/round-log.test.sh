@@ -220,8 +220,8 @@ chk "worker 没给完整版本：拒收" "$rc" "2"
 chk "以上全部零写入" "$(writes)" "0"
 
 echo "── 4a. 来回进行到一半关掉开关：下一次调用立刻按关着处理（GitHub#646）──"
-# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收（照提示词改成单独发），一笔不写；读取命令（托管条目的
-# 受保护读取，往返视图只附在它的输出里）不再附往返视图
+# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收（照提示词改成单独发），一笔不写；受保护读取
+# （outsider-read.sh）不再附往返视图，直接读取（round-log.sh show）不看开关、照常拆分并标出 --of
 fresh issue 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""'
 echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
 RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
@@ -236,7 +236,10 @@ chk "关掉之后带着之前的节编号发结论：拒收、退出 2" "$rc $(r
 chk "关掉之后：一笔没写" "$(( $(writes) - w0 ))" "0"
 o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
 lacks "关掉之后读取命令不再附往返视图" "$o" "往返记录视图"
+lacks "关掉之后受保护读取不再标出要回应的交付（--of）" "$o" "--of "
 chk "关掉之后读取命令照常成功" "$rc" "0"
+o=$(RL show 7); rc=$?
+chk "关掉之后直接读取命令（round-log.sh show）不看开关：照常成功、仍标出 --of" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
 
 echo "── 4. 最新单元：中途有别的评论 → 另起一条 ──"
 fresh issue

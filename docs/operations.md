@@ -1610,13 +1610,25 @@ nothing when it fails.
 <details><summary>Turning it off</summary>
 
 Set `ENABLE_ROUND_LOG=false` (or remove the line). It takes effect at once, not only for new
-dispatches: existing records stay as they are and are still counted, but the round-log write and read
-commands check the setting each time they run. A worker or reviewer session already running still has
-the round-log instructions in its prompt; its next delivery or verdict gets `RESULT=rejected` (exit 2)
-and, as those instructions say, is posted as a separate comment, and the read command no longer adds
-the split view. Turning it off halfway through a back-and-forth therefore ends that record there; to
-let the current one finish in the same record, turn it off after it has reached a person (the review
-passed, or the item was handed over).
+dispatches: existing records stay as they are and are still counted, and the round-log write command
+checks the setting each time it runs. A worker or reviewer session already running still has the
+round-log instructions in its prompt; what it does next depends on which command it reads the thread
+with:
+
+- **Every item except autopilot items with the outside-content guard** is read with `round-log.sh show`.
+  That read does not look at the setting: it still splits existing records and still names the delivery
+  to answer (`--of …`). The next delivery or verdict gets `RESULT=rejected` (exit 2) and, as the
+  instructions say, is posted as a separate comment.
+- **Autopilot items with the outside-content guard** are read with `outsider-read.sh`, which adds the
+  split view only while the setting is on. A reviewer that read the thread before the change already
+  has the delivery's id and is rejected the same way. A reviewer that reads it only after the change
+  gets no id; its instructions then say to post nothing and stop, so that item stays on `doing/agent`
+  without a verdict until a person puts `pending/review` back on it (the review then runs again and
+  posts its verdict as a separate comment).
+
+So turning it off in the middle of a back-and-forth ends that record there, and can stop one guarded
+review. To avoid both, turn it off when no item is in an agent back-and-forth — nothing on
+`pending/review`, or on `pending/agent` / `doing/agent` after a review sent it back.
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
