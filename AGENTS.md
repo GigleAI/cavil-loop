@@ -190,32 +190,10 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 
 ### Weekly report
 
-- Numbers are computed by `scripts/weekly-report/` (fixed caliber, comparable week over week); the **narrative and the PDF are written by the agent**. The dispatch spec lives in `run.sh`'s issue template — that template is the single source of truth; `scripts/weekly-report/README.md` only restates it
-- **PDF order is fixed** (GitHub#61): ① page 1: conclusions & cautions, **kept short** (3–5 items, one sentence each + one sentence of why) ② delivery ③ effort ④ cost ⑤ token ⑥ per-model breakdown ⑦ detailed breakdown by group ⑧ data caliber appendix. ②–⑥ each start a new page with "chart + last-10-weeks table" (this week's row bold, last row week-over-week); `report.py` lays them out together with the page-break markers, the agent writes only ① and ⑦
-- **The per-model breakdown must add up to the totals**: dispatch count, both durations, money and the four token items summed over models equal the totals; `bymodel.check()` runs before the collector writes and again before the report renders, and exits non-zero on mismatch. A multi-model dispatch's time goes whole to the "multi-model dispatch" row, never split by token share; a fallback record that cannot name a single model goes whole to "unrecorded / multi" — never guess
-- **Never put the report tool's own meta-info in the PDF** (caliber fixes, missed data, audit trail) — that belongs in the issue comment. The PDF is about what got done this week
-- Producing / publishing: `node topdf.mjs <project-dir> report.md report.pdf --title T --subtitle S`, then `URL=$(bash publish-asset.sh <project-key> report.pdf)` (adds a `rev`; a PDF is not an image and is not published publicly — it prints an internal-only URL or a local path, see docs/operations.md "Public entry for comment images")
-- **Detail lists must not key off issue-side activity alone** — plenty of issues go quiet once the design is settled and the whole week's discussion happens on the PR. Selection is: issue has comments **or** its linked PR has comments **or** it closed that week. PRs with no linked issue go in their own `loose_prs` group
-- **Money in the report is a *converted reference value*, never a bill.** Both agents here run on flat-rate subscriptions — there is no per-token invoice to reconcile against. Say "converted at list price", never "cost" or "billed"
-- **Price a call at the model *that call* used.** Taking one model for a whole window (or, on the codex side, one `turn_context.model` for a whole batch of rollout files) silently misprices every mixed-model dispatch. A dispatch routinely spans several session files, and a single file can switch models mid-way. Scan per file, in order, and stamp each usage record with the most recent preceding `turn_context`
-- **Never hardcode a price table.** The old one silently went a generation stale — same-basis totals came out 193% high and nothing failed. Prices are re-derived at runtime from the CLI's own accounting
-- **Two independent gates, and neither substitutes for the other**: ① numerical identifiability (noise amplification on b + bootstrap spread) ② cross-check against an external reference. Stability says *solvable*, not *correct* — a systematic counting error is perfectly stable. Fit residual, column share, and condition number are **not** valid gates (measured: 0.4% residual while the input price was off by 76%; κ=9 on items that were unstable); column scaling is pure reparameterization and its "sensitivity" is identically 1
-- **A price's trust state must travel all the way to the rendered report**, not stop at the solver. If it stops there, a disputed price backfilled from the reference and a corroborated one render identically and the promised red flag doesn't exist. The chain is driver `price_status=` → record → collect → report
-- **The built-in reference is a locally cached copy and is not fetched at run time.** Never describe it as "cross-checked against the official price list" — if it goes stale, the solved value and the reference go wrong together and this mechanism cannot see it. The codex side's built-in prices are **human-configured** and never cross-checked at all; the two sides are not the same yardstick and the report must say so separately
-- **Only models *missing* from the built-in tables get auto-fetched, and only by the daemon** (GitHub#51). A driver that sees usage with no price drops a local marker (it runs inside the worker, which may not reach non-github.com hosts); the next poll tick runs `drivers/token-usage/price_fetch.py`, which writes a model to `fetched-prices.json` only when the official pricing page and LiteLLM **agree** item by item, and only items both sources list. Fetched prices **never override** a built-in or operator-configured price (an explicit `CODEX_PRICES`, including `{}`, turns the gap-fill off for codex), and their money lands in its own trust buckets all the way to the report — `fetched` (no local evidence) or `disputed_fetched` (local solve disagrees with the fetched price; keep both the red flag *and* the provenance) — two public sources agreeing is still not an invoice check, so never let it render like a human-checked price
-- **Reading usage: one normalization, used by everyone.** The driver (jq) and the weekly-report loader (python) read the same records; when only one of them had the #935 per-field zero fallback, the loader read a complete log as all zeros, compared it to a correct footer, and declared the log short — which silently pushed recomputable dispatches back to their old values and ejected whole overlap groups from the summable total. Guard it by **cross-checking the two implementations on one fixture**, not by asserting numbers on each separately
-- **When a recomputed result exists, take its whole field set — never `or`-fallback field by field.** An empty trust-bucket dict is a *legitimate* recompute result (this dispatch claimed no calls); `info.get(x) or rec.get(x)` reads it as "not computed" and resurrects the old footer's buckets. Measured: two overlapping dispatches both recomputed, total \$25, buckets `disputed \$25 + unstable \$25`, and the report printed a disputed amount that does not exist. Same rule for any "recomputed vs original" pair of fields: branch once on whether the recompute happened
-- **Don't round at the serialization boundary — and when you catch yourself doing it, remove the rounding rather than moving the threshold.** Two decimals are for humans; the numbers in the machine record are for the collector. Formatting a trust bucket with the human formatter turned \$0.0025 into `unstable:0.00`; the state was destroyed at the source and no downstream fix could bring it back. Widening to six decimals only pushed the cliff further out — one cache-read token at \$0.1/M is \$0.0000001 and rounds to zero all the same. Emit machine fields unrounded; the exact double's shortest round-trip string is the honest value even when it reads as `0.007050000000000001`.
-- **Display rounding must never decide whether something exists.** Filtering report sections on `round(amount) != 0` made a \$0.10 disputed amount vanish *and* flipped the text to "nothing was priced this period" — the red flag disappeared with it. Filter on the value; format small amounts so they stay visible (cents, or `< $0.01`). The same rule applies to any derived per-column value: compute it for that column's own period, never compute it once and print it into both the current and previous cells — a week spanning two months of different lengths then shows the wrong comparison.
-- **"Something got priced" must be backed by an item that actually had usage.** Counting a priced-but-zero-token item as evidence lets a dispatch whose entire real usage is unpriced report `partial` with a \$0.00 amount instead of `none` — and the collector then counts it as having money. The test is *nonzero usage AND a price*, never *nonzero amount*: a legitimately zero rate, or an amount that rounds below half a cent, is still priced. Whenever one rule has several implementations, fix and pin all of them — the one that happened to be right is not proof the rule is enforced.
-- **Price per item, and report every item you could not price.** A configured model with one unpriced component (here codex's `cache_write`, which has no published rate) must land `partial` with those tokens in `cost_unknown_tokens` — not `full / 0`. Deciding to skip the warning *because it would make everything look partial* is the same silent-shrinkage this whole area exists to prevent; and the premise was false anyway — 0 of 14,081 real local records have a nonzero value there. Count the real data before you reason about how a metric will look.
-- **"Known zero" is not "couldn't compute".** Coverage state must key off *whether anything was left unpriced*, not *whether anything got priced*. An empty claim set (every call went to another dispatch) or a verified true-zero window is a **determined \$0**; requiring "at least one priced item" for a `full` state turns those into fake missing-money and makes the report claim real spend is higher. Apply the rule identically everywhere it is computed — here that is one python function plus both jq drivers
-- **A derived field and every count that describes it must come from the same source.** Recomputing the amount but leaving "does this record have an amount?" on the old footer makes the report contradict itself in both directions — header \$25 next to "1 record has no amount, real spend is higher", or header \$0 with the missing-money banner silently gone. When you change where a value comes from, grep every counter, banner, and share that describes it. Keep the old signal if it has evidential value, but under its own name, never driving the final conclusion
-- **Never attribute a call to a model context that comes *after* it.** A truncated session file can open mid-conversation: the earliest call may belong to the model before a switch, while the first visible `turn_context` is already the one after. "Nearest available evidence" is not evidence — initialize to unknown, let those tokens land in `cost_unknown_tokens`, and report "can't price it" rather than guessing. Fixtures must use the real event order (context before the calls it governs); a fixture that forces an unfounded attribution rule is the fixture's bug
-- **Attribute calls to dispatches in this order**: group by `requestId` first (canonical time = earliest in the group), *then* filter by window. Half the groups have non-unique timestamps, so filtering first double-counts calls that straddle a boundary. Candidate windows must also be filtered **by agent** — the dispatch identity is `(worktree, start)` and does not include it
-- **Log checks can only falsify.** Passing means "no shortfall detected", never "the log is complete", and the evidence for a gap must be *calls another same-agent dispatch actually claimed*, not an inference from overlapping windows
-- **Fallback values and recomputed values cannot be added together.** Within a group of overlapping dispatches, either all members are recomputed (group enters the total) or the whole group is listed separately as non-summable — mixing them counts the shared calls twice
-- **Processing time is counted per *turn*, and each turn belongs to exactly one dispatch** (GigleTutor-Web#933). A turn is the run of main-session records sharing one `promptId` — never split on "non-meta user records": tool results are `type=user` without `isMeta`, and splitting on them drops every tool execution in between. The turn's *start* goes through `attribute.owner()`, the same function the token claim uses, over **all** deduplicated windows at once; selecting "turns that start in my window" per window counts a turn twice whenever windows overlap. The owning dispatch gets the whole turn, uncapped, so processing time can exceed the dispatch's wall time — the report lists those as disclosure, not as misattribution. Two traps: an assistant record with `model=<synthetic>` ("No response requested.") is written by the CLI when a new prompt arrives after an interrupted turn, stamped with *that* moment — letting it extend the old turn turned a few minutes into 41 h / 75 h / 522 h and tripled a week's total; and the CLI deletes old session logs, so every run merges the turns it saw into a local ledger (`<cache>/worktime-turns.jsonl`, under `flock`, atomic replace, end only moves later, "done" only goes false→true). Never describe this metric as "excluding waits": in-turn waits (permission prompts, retry backoff, a paused process) are included
+The weekly report's rules — who computes the numbers, the fixed PDF order, how prices, trust states,
+attribution and processing time are counted — live in [scripts/weekly-report/README.md](scripts/weekly-report/README.md)
+(section 「给 agent 的规则」). Read them before changing anything under `scripts/weekly-report/` or the
+token-usage drivers.
 
 ### Where a rule lives: lint, test, or AGENTS.md
 
@@ -315,71 +293,10 @@ Three sibling files carry the parts that must outlive "which session is current"
 42.claude.unresolved       launches whose id could not be read back (diagnostics only)
 ```
 
-**Every write to this registry needs positive evidence of ownership, and that is
-the whole point.** There are exactly three writers, and each one now answers
-"why do I believe this conversation is mine?":
-
-| writer | evidence |
-|---|---|
-| a freshly pinned id (claude) | we minted the id ourselves at launch |
-| adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
-| read-back after launch (codex) | the session's **launch input** carries this launch's unique tag, or failing that equals this launch's prompt in full |
-
-**Adoption uses a positive criterion.** The worker role may only take over a
-conversation listed in `.preexisting` — i.e. one that predates role tracking,
-the only kind whose role genuinely cannot be known.
-Asking the opposite question ("is this id currently registered to someone
-else?") looks equivalent and is not: every way a registration can go missing
-then turns another role's conversation into a free-for-all. Two such ways are
-real — a forced new session used to delete the old id, and a codex id that the
-post-launch read-back never resolved — and both ended with the worker resuming
-the reviewer's conversation. Hence also: a forced new session **retires** the
-old id instead of deleting it, and `cleanup-issue.sh` clears only the current
-registrations, never the two files above (a worktree can be rebuilt at the same
-path while the agent's history, keyed by cwd, is still sitting there).
-
-The read-back has the same trap one level down: "a session file that appeared
-after I launched" is **not** evidence that I launched it. If an earlier role's
-read-back timed out, that role's file can land inside the next role's window and
-get claimed by it. So the read-back asks the driver to prove the candidate was
-started with this dispatch's prompt (`agent_session_started_with`), refuses when
-two candidates both claim it, and — for a driver that cannot prove anything —
-only claims a lone candidate when no earlier launch for that work item was ever
-left unresolved.
-
-Three details of that proof are load-bearing, all learned the hard way.
-
-*What counts as the launch input*: every user message **before the first
-assistant reply**, not "the first user message". A real codex rollout opens
-`session_meta → developer×3 → user(AGENTS.md, ~30k chars) → user(the dispatch
-prompt) → assistant`, so the first user message is the repo's own instructions
-and a check that stops there always says no — the role then never finds its own
-session again. The boundary must not be widened to "search the whole
-conversation" either: a later dispatch injecting a prompt into an existing
-session would carry a marker too, and that session is not the one this launch
-created.
-
-*How much of it to compare*: the **complete** message, never its first line and
-never a prefix. Reading one line rejects every multi-line prompt (every template
-here is multi-line), and comparing a prefix accepts another role's session
-whenever two templates share a long opening. And because two launches can legitimately render a byte-identical
-prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
-the prompt of any launch that will need a read-back — so "which launch" stays
-answerable. Launches that can pin an id (claude) get no marker; their prompt is
-untouched. Failing to claim is always allowed: the conversation stays
-unowned and the role starts fresh, which costs context and never crosses roles.
-
-Same rule one level down: which sessions belong to a worktree is decided by
-parsing `cwd` out of the session record with jq, not by grepping `"cwd":"…"` out
-of the raw line. Measured at equal cost (200 files, 0.4s either way), and the
-grep form silently returns nothing the day the writer adds a space.
-
-**Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
-in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals
-(`AGENT_LAUNCH_KIND`, `WORKER_SESSION_ID`) and therefore must run in the caller's
-own shell, while the command string has to be produced inside `"$( )"`. Merging
-them means the globals die in the command-substitution subshell and every
-dispatch script trips `unbound variable` under `set -u`.
+Every write to this registry needs positive evidence of ownership — the three writers, the adoption
+rule, what the read-back may claim, and why `agent_session_plan` and `agent_launch_command` are two
+functions — read the block comment above the session-registry functions in `scripts/_lib.sh` before
+changing any of it.
 
 ### Session / worktree / branch naming
 
@@ -402,16 +319,13 @@ claude -n: $SESSION_NAME_PREFIX$N                    e.g. issue5
 
 This means the worktree/tmux/branch "N" **isn't necessarily** the same as `feature/issue-N`'s number — it can be the PR number too. Safe on GitHub because issue/PR share one numeric namespace; not portable to GitLab (issues + MRs use separate iids) — for cross-platform support see the platform adapter discussion in issue tracker.
 
-### Desktop client actions: the window changes first, the controller does the work, results are said in one place (GitHub#482)
+### Desktop client actions (GitHub#482)
 
-Any action in `client/` that writes to GitHub follows these four rules:
-
-1. **The window changes first**: whatever can show its result at once is changed on screen right away and marked 「保存中…」 (saving) — nobody waits on a button that does nothing.
-2. **Anything that waits goes to the controller**: a request that waits for GitHub is sent, awaited, checked and finished by the controller (`client/src/app/controller.ts`), not by the panel / tab component that started it. Closing, leaving or switching that component neither stops the request nor hides its result.
-3. **Results are said only in the window's notice area**: running, done and failed all go to the one notice area at the top of the window (`client/src/renderer/NoticeArea.tsx`, under the tab bar, above every page); no other part of the window says them. A change whose result is already visible (label, milestone, status, iteration, a ticked task) says nothing when it succeeds; a success notice goes away by itself after 5 s, a failure stays until the person closes it.
-4. **A failure offers only "retry" and one way out, and what "retry" means follows how sure the outcome is**: surely not sent, or refused — retry does it again with the same choices; no answer — retry only reads again (read-only), only the label steps the existing rules allow may be re-sent (「重发…」), and only after saying what a late request can still cause; an uncertain new issue is never created again automatically. "Not found" is not "did not happen". The way out is one path the person can finish by hand (handle it on GitHub, reopen the draft, give up and take GitHub's value …), one per kind of failure; opening the web page is not the person having checked — a lock is lifted only when they explicitly press 「已核对」. Text not sent is kept by the program, never by asking the person to save it.
-
-Today (since GitHub#488): the results the controller already holds — close, merge, 托管, 交给 agent, 等前置, new issue, changes not saved — appear only in the notice area — a label / milestone / status / iteration change made anywhere says nothing else (the controller marks its result `held`; only a refusal before it was recorded is said where it was made); the detail head's 「⚠ N」 keeps only that item's own matters (a failed read, a refusal before anything was recorded, the way back to a kept draft). Since GitHub#489 a reply, an edited body / comment / title and a ticked box are sent by the controller too (`startSend`, the rules in `client/src/shared/sends.ts`): the box empties / the editor closes at once, the panel may be closed or left, the result is said in the notice area (a ticked box and a title say nothing when they simply went through). Where unsent text goes is one rule: refused for sure or never sent → back into that item's edit box (taken by the panel that shows the item; the record keeps the box's latest text until it is sent again, the box is emptied or the editor cancelled, since the box is not on disk); no answer → kept in the notice only, never back in an edit box, 「再查一次」 reads and sends nothing, only a comment that was not there before and that no other send owns (or GitHub holding exactly the wanted text) proves it, and two sends of the same comment text on one item are never in flight together; one a person unlocked is no longer checked and leaves a same-text mark on disk with no time limit (only signing out drops it; a limit is crossed by a check that simply runs late), so no other send of that text there is ever proven automatically — one rule, `sameTextUnclear`, used by every comment proof (a reply, an operation's attached comment, a reply from an operation's kept comment); the record is stored with the cache and survives a restart. Since GitHub#490 every failed notice offers at most 「重试」, one way out and ×, from one rule per kind — `opActions` in `client/src/shared/ops.ts` (built on `opButtons`, which keeps every existing check of what may be sent again), `sendActions` in `sends.ts`, `createActions` in `noticeTone.ts`; the notices only draw it. Refused for sure → 「重试」 does it again at once with the same choices (no dialog, the read before sending as always); no answer → 「再查一次」 (reads only), except the one label step the existing rules let a person send again (「重发…」 with its dialog); a new issue not known to be created is only looked for again, never created again. The way out for a no-answer outcome is 「到 GitHub 上核对」 in two steps in one place: the first opens the page and copies the text (a failed copy is said, the text stays), the second — 「已在 GitHub 上核对过，解除锁定」 — is the unlock; no × until then. The old 「复制原文 / 放进回复框 / 丢掉草稿」 buttons are gone: × of a notice whose attached comment surely did not go out gives it back to the reply box (as a refused reply the panel takes).
+Any action in `client/` that writes to GitHub follows four rules — the window changes first, anything that
+waits goes to the controller, results are said only in the notice area, a failure offers only "retry" and one
+way out — and the notice area, sends and unsent-text rules built on them. They are written once, in
+[client/README.md](client/README.md) (section 「操作：界面先变、主程序去做、结果统一通知」); read them before
+changing any client action.
 
 ## Common task flows
 

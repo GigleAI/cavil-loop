@@ -10704,6 +10704,74 @@ price_fetch_tick() {
     return 0
 }
 
+# ── Session registry: why every write needs evidence (moved from the root AGENTS.md, GitHub#658; read before changing) ──
+# **Every write to this registry needs positive evidence of ownership, and that is
+# the whole point.** There are exactly three writers, and each one now answers
+# "why do I believe this conversation is mine?":
+#
+# | writer | evidence |
+# |---|---|
+# | a freshly pinned id (claude) | we minted the id ourselves at launch |
+# | adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
+# | read-back after launch (codex) | the session's **launch input** carries this launch's unique tag, or failing that equals this launch's prompt in full |
+#
+# **Adoption uses a positive criterion.** The worker role may only take over a
+# conversation listed in `.preexisting` — i.e. one that predates role tracking,
+# the only kind whose role genuinely cannot be known.
+# Asking the opposite question ("is this id currently registered to someone
+# else?") looks equivalent and is not: every way a registration can go missing
+# then turns another role's conversation into a free-for-all. Two such ways are
+# real — a forced new session used to delete the old id, and a codex id that the
+# post-launch read-back never resolved — and both ended with the worker resuming
+# the reviewer's conversation. Hence also: a forced new session **retires** the
+# old id instead of deleting it, and `cleanup-issue.sh` clears only the current
+# registrations, never the two files above (a worktree can be rebuilt at the same
+# path while the agent's history, keyed by cwd, is still sitting there).
+#
+# The read-back has the same trap one level down: "a session file that appeared
+# after I launched" is **not** evidence that I launched it. If an earlier role's
+# read-back timed out, that role's file can land inside the next role's window and
+# get claimed by it. So the read-back asks the driver to prove the candidate was
+# started with this dispatch's prompt (`agent_session_started_with`), refuses when
+# two candidates both claim it, and — for a driver that cannot prove anything —
+# only claims a lone candidate when no earlier launch for that work item was ever
+# left unresolved.
+#
+# Three details of that proof are load-bearing, all learned the hard way.
+#
+# *What counts as the launch input*: every user message **before the first
+# assistant reply**, not "the first user message". A real codex rollout opens
+# `session_meta → developer×3 → user(AGENTS.md, ~30k chars) → user(the dispatch
+# prompt) → assistant`, so the first user message is the repo's own instructions
+# and a check that stops there always says no — the role then never finds its own
+# session again. The boundary must not be widened to "search the whole
+# conversation" either: a later dispatch injecting a prompt into an existing
+# session would carry a marker too, and that session is not the one this launch
+# created.
+#
+# *How much of it to compare*: the **complete** message, never its first line and
+# never a prefix. Reading one line rejects every multi-line prompt (every template
+# here is multi-line), and comparing a prefix accepts another role's session
+# whenever two templates share a long opening. And because two launches can legitimately render a
+# byte-identical
+# prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
+# the prompt of any launch that will need a read-back — so "which launch" stays
+# answerable. Launches that can pin an id (claude) get no marker; their prompt is
+# untouched. Failing to claim is always allowed: the conversation stays
+# unowned and the role starts fresh, which costs context and never crosses roles.
+#
+# Same rule one level down: which sessions belong to a worktree is decided by
+# parsing `cwd` out of the session record with jq, not by grepping `"cwd":"…"` out
+# of the raw line. Measured at equal cost (200 files, 0.4s either way), and the
+# grep form silently returns nothing the day the writer adds a space.
+#
+# **Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
+# in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals
+# (`AGENT_LAUNCH_KIND`, `WORKER_SESSION_ID`) and therefore must run in the caller's
+# own shell, while the command string has to be produced inside `"$( )"`. Merging
+# them means the globals die in the command-substitution subshell and every
+# dispatch script trips `unbound variable` under `set -u`.
+
 # ── 会话注册表：(work number, agent, 角色) → agent 侧的 session id ──
 #
 # 为什么不放 state.json：那是有兼容约束的接口（CONTRIBUTING 明写改了要申报），
