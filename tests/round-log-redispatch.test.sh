@@ -8,7 +8,9 @@
 #
 # 守的是 docs/operations{,.zh}.md「关掉」折叠块里的重派步骤，整条走一遍：
 #   1. 查被打断的是哪次派工：文档里 round-log-redispatch-ops 那段命令按字面在只带 HOME / PATH / LANG
-#      的环境里跑（只把示例编号 123 换成条目编号，人照做时也是这样），中英两份一字不差。
+#      的环境里跑（只把示例编号 123 和示例账号换成真的，人照做时也是这样），中英两份一字不差。
+#      只认仍然有效的 daemon 派工：loop 账号挂的 doing/agent、紧挨着之前 loop 账号摘掉恰好一个派工标签、
+#      之后流程标签没再变过、没挂 pending/human、前后两次读的标签相同（PR #652 复审第 2 轮）。
 #      看的是标签历史里 daemon 最后一次挂 doing/agent 前摘掉的那个标签——不是最后一条评论：
 #      只有 PR 正文、没有 worker 评论的首轮复审也要回到 pending/review。
 #   2. 照文档在页面上做的那一步（摘 doing/agent、挂 RESTORE 给出的标签），这里用同一个假 GitHub 的写接口做。
@@ -126,10 +128,23 @@ chk "round-log-redispatch-ops：中英两份文档里的命令一字不差" \
     "$(doc_block operations.zh.md round-log-redispatch-ops)" "$(doc_block operations.md round-log-redispatch-ops)"
 doc_block operations.md round-log-redispatch-ops > "$SANDBOX/block.sh"
 chk "命令块里的示例编号只出现一次（照做时只换它）" "$(grep -c 'N=123' "$SANDBOX/block.sh")" 1
+chk "命令块里的 loop 账号示例只出现一次（照做时换成真的账号）" "$(grep -c 'LOOP=loop-account' "$SANDBOX/block.sh")" 1
+# 读标签历史那一下顺手改条目标签的替身：测「读的过程中标签变了」（只对写了 shim_hook_<n> 的条目生效）
+mkdir -p "$SANDBOX/shim"
+cat > "$SANDBOX/shim/gh" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+    case "\$a" in repos/owner/repo/issues/*/events*) n="\${a#repos/owner/repo/issues/}"; n="\${n%%/*}"
+        [ -f "\$FAKE_GH_DIR/shim_hook_\$n" ] && bash "\$FAKE_GH_DIR/shim_hook_\$n" ;;
+    esac
+done
+exec "$SANDBOX/bin/gh" "\$@"
+SH
+chmod +x "$SANDBOX/shim/gh"
 SYS_PATH="$(dirname "$(command -v awk)"):$(dirname "$(command -v grep)"):/usr/bin:/bin"
 run_block() {   # <编号>
-    sed "s/N=123/N=$1/" "$SANDBOX/block.sh" > "$SANDBOX/block-$1.sh"
-    RC=0; OUT="$(env -i HOME="$HOME" PATH="$SANDBOX/bin:$SYS_PATH" LANG=C.UTF-8 FAKE_GH_DIR="$GD" FAKE_GH_REPO=owner/repo \
+    sed -e "s/N=123/N=$1/" -e "s/LOOP=loop-account/LOOP=loop-bot/" "$SANDBOX/block.sh" > "$SANDBOX/block-$1.sh"
+    RC=0; OUT="$(env -i HOME="$HOME" PATH="$SANDBOX/shim:$SANDBOX/bin:$SYS_PATH" LANG=C.UTF-8 FAKE_GH_DIR="$GD" FAKE_GH_REPO=owner/repo \
         bash "$SANDBOX/block-$1.sh" 2>&1)" || RC=$?
     LAST="$(printf '%s\n' "$OUT" | tail -1)"
 }
@@ -159,11 +174,40 @@ chk "不挂 doing/agent：NOT_STUCK、退出非 0" "$LAST $([ "$RC" != 0 ] && ec
 # issue 4：doing/agent 是人手挂的，前面没有被摘掉的派工标签
 mkissue 4; ev 4 labeled doing/agent maint; labels 4 "doing/agent"
 run_block 4
-chk "前面没有摘掉派工标签：UNKNOWN、不给标签" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: cannot tell which label dispatched it nz"
+chk "doing/agent 是人手挂的：UNKNOWN、不给标签" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: doing/agent was not added by loop-bot nz"
+# PR 11：维护者亲手摘 pending/review、再挂 doing/agent（同一个账号先摘后挂，但不是 loop 账号）
+mkpr 11; ev 11 labeled pending/review; ev 11 unlabeled pending/review maint; ev 11 labeled doing/agent maint; labels 11 "doing/agent"
+run_block 11
+chk "维护者自己先摘后挂：UNKNOWN（不是 daemon 派工）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: doing/agent was not added by loop-bot nz"
+# PR 12：两条标签事件都没有账号字段
+mkpr 12; ev 12 labeled pending/review; labels 12 "doing/agent"
+jset events.json '.["12"] += [{event:"unlabeled", label:{name:"pending/review"}, actor:null}, {event:"labeled", label:{name:"doing/agent"}, actor:null}]'
+run_block 12
+chk "事件没有账号字段：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: doing/agent was not added by loop-bot nz"
+# PR 13：现状还挂 doing/agent，历史里 daemon 已摘掉它、挂了 pending/human（交人）
+mkpr 13; ev 13 labeled pending/review; dispatch_flip 13 pending/review; ev 13 labeled pending/human; ev 13 unlabeled doing/agent
+labels 13 "doing/agent"
+run_block 13
+chk "历史里 doing/agent 已被摘掉：UNKNOWN（保留交人）" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the label history does not end with doing/agent added nz"
+# PR 14：同时挂着 pending/human
+mkpr 14; ev 14 labeled pending/review; dispatch_flip 14 pending/review; ev 14 labeled pending/human; labels 14 "doing/agent,pending/human"
+run_block 14
+chk "同时挂着 pending/human：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the item is on pending/human too nz"
+# PR 15：派工之后有人又挂了一个派工标签
+mkpr 15; ev 15 labeled pending/review; dispatch_flip 15 pending/review; ev 15 labeled pending/agent maint; ev 15 unlabeled pending/agent maint
+labels 15 "doing/agent"
+run_block 15
+chk "派工之后流程标签又变过：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: labels changed after the dispatch nz"
+# PR 16：第一次读到 doing/agent，读历史的同时 daemon 摘掉它、挂上 pending/human
+mkpr 16; ev 16 labeled pending/review; dispatch_flip 16 pending/review; labels 16 "doing/agent"
+printf '%s\n' "cd '$GD' && jq '.[\"16\"] = [\"pending/human\"]' labels.json > l.tmp && mv l.tmp labels.json" > "$GD/shim_hook_16"
+run_block 16; rm -f "$GD/shim_hook_16"
+chk "读的过程中交了人：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the labels changed while reading nz"
+chk "到达性 · 替身确实改了标签" "$(jq -c '.["16"]' "$GD/labels.json")" '["pending/human"]'
 # issue 3：标签历史里根本没有挂 doing/agent 的记录（历史和现状对不上）
 mkissue 3; labels 3 "doing/agent"
 run_block 3
-chk "历史里没有派工：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: no dispatch in the label history nz"
+chk "历史里没有派工：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: the label history does not end with doing/agent added nz"
 # issue 2：同一次派工摘掉了两个派工标签，分不清
 mkissue 2; ev 2 labeled pending/agent maint; ev 2 labeled pending/review maint
 ev 2 unlabeled pending/review; ev 2 unlabeled pending/agent; ev 2 labeled doing/agent; labels 2 "doing/agent"
@@ -177,7 +221,7 @@ chk "条目读不到：UNKNOWN" "$LAST $([ "$RC" != 0 ] && echo nz)" "UNKNOWN: c
 
 echo "── 2. 照做：摘 doing/agent、挂回 RESTORE 的标签，真跑一轮 poller ──"
 # 别的条目都放回不会被派工的样子，只留 PR 8 和 issue 5 这两条
-for n in 9 6 4 3 2; do labels "$n" "pending/human"; done
+for n in 9 6 4 3 2 11 12 13 14 15 16; do labels "$n" "pending/human"; done
 for n in 8 5; do
     run_block "$n"; restore="${LAST#RESTORE: }"
     env PATH="$SANDBOX/bin:$PATH" gh api -X DELETE "repos/owner/repo/issues/$n/labels/doing%2Fagent" >/dev/null 2>&1

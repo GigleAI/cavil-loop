@@ -1378,27 +1378,39 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 的条目都看不出来。所以关掉之后留意一阵，发现停在半路的条目就重派一次：
 
 - **怎么认出来**：条目挂着 `doing/agent`，却好一阵没有新评论，它的 agent 会话已经停下（开了卡住检测的项目，daemon 也会自己提醒或交人）
-- **查出被打断的是哪次派工**：daemon 派工时先摘掉派工标签、再挂上 `doing/agent`，所以条目的标签历史里，最后一次挂 `doing/agent` 之前被 daemon 摘掉的那个标签，就是这次派工的来由。整段运行下面这一段（`owner/repo` 换成仓库名，`123` 换成条目编号；项目改过这几个标签名的一并换掉），看最后一行：
+- **查出被打断的是哪次派工**：daemon 派工时用 loop 写评论的账号先摘掉派工标签、再挂上 `doing/agent`。所以只有同时满足这几条，才算查到了一次仍然有效的 daemon 派工：
+  - `doing/agent` 最后一次是被挂上的，挂它的是 loop 账号
+  - 紧挨着之前，loop 账号摘掉的派工标签恰好一个
+  - 之后流程标签没再变过，条目也没挂 `pending/human`
+
+  整段运行下面这一段，看最后一行。运行前替换：`owner/repo` 换成仓库名，`123` 换成条目编号，`loop-account` 换成 loop 写评论的账号（条目上往返记录那条评论的作者）；项目改过这几个标签名的，一并换掉。
   - `RESTORE: <标签>`：派出这次工的标签。`pending/review` 是复审（只有 PR 正文、还没有 worker 评论的首轮复审也一样），`pending/agent…` 是 worker
   - `NOT_STUCK: …`：条目已经不挂 `doing/agent`，不用重派
-  - `UNKNOWN: …`：看不出来（读不到、标签历史里没有派工、摘掉的标签不止一个或不是这两种）。不要按最后一条评论去猜：到条目页面的时间线上自己核对 daemon 最后一次挂 `doing/agent` 前摘掉的标签；核对不出，就只摘 `doing/agent`、挂 `pending/human`，留给人处理
+  - `UNKNOWN: …`：查不到这样一次派工。可能是读不到、读的过程中标签变了、标签历史里账号或标签名缺失；也可能 `doing/agent` 不是 loop 账号挂的，挂上之后流程标签又变过，同时挂着 `pending/human`，或摘掉的派工标签不止一个。先重跑一次；仍是 `UNKNOWN` 就不要改标签，也不要按最后一条评论去猜。到条目页面的时间线上核对 daemon 派工的那一次（loop 账号摘掉派工标签、挂上 `doing/agent`）以及之后有没有人动过；确认了才挂回那个派工标签，确认不了就保持现状，留给维护者处理
 
 <!-- round-log-redispatch-ops:begin -->
 ```bash
 (
-  REPO=owner/repo; N=123
-  LABELS="$(gh api "repos/$REPO/issues/$N" --jq '.labels[].name')" || { echo "UNKNOWN: could not read the item"; exit 1; }
-  printf '%s\n' "$LABELS" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
-  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, .actor.login, .label.name] | @tsv')" \
+  REPO=owner/repo; N=123; LOOP=loop-account
+  labels() { gh api "repos/$REPO/issues/$N" --jq '.labels[].name'; }
+  L1="$(labels)" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  printf '%s\n' "$L1" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
+  if printf '%s\n' "$L1" | grep -qx 'pending/human'; then echo "UNKNOWN: the item is on pending/human too"; exit 1; fi
+  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, (.actor.login // ""), (.label.name // "")] | @tsv')" \
     || { echo "UNKNOWN: could not read the label history"; exit 1; }
-  printf '%s\n' "$EV" | awk -F'\t' '
+  L2="$(labels)" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  [ "$L1" = "$L2" ] || { echo "UNKNOWN: the labels changed while reading"; exit 1; }
+  printf '%s\n' "$EV" | awk -F'\t' -v loop="$LOOP" '
+    function trig(x) { return x == "pending/review" || x == "pending/agent" || index(x, "pending/agent/") == 1 }
+    function flow(x) { return trig(x) || x == "doing/agent" || x == "pending/human" }
     { e[NR] = $1; a[NR] = $2; l[NR] = $3 }
     END {
-      for (i = NR; i >= 1; i--) if (e[i] == "labeled" && l[i] == "doing/agent") break
-      if (i < 1) { print "UNKNOWN: no dispatch in the label history"; exit 1 }
+      for (i = NR; i >= 1; i--) if (l[i] == "doing/agent") break
+      if (i < 1 || e[i] != "labeled") { print "UNKNOWN: the label history does not end with doing/agent added"; exit 1 }
+      if (a[i] != loop) { print "UNKNOWN: doing/agent was not added by " loop; exit 1 }
+      for (k = i + 1; k <= NR; k++) if (flow(l[k]) || l[k] == "") { print "UNKNOWN: labels changed after the dispatch"; exit 1 }
       n = 0
-      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == a[i]; j--)
-        if (l[j] == "pending/review" || l[j] == "pending/agent" || index(l[j], "pending/agent/") == 1) { n++; t = l[j] }
+      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == loop; j--) if (trig(l[j])) { n++; t = l[j] }
       if (n != 1) { print "UNKNOWN: cannot tell which label dispatched it"; exit 1 }
       print "RESTORE: " t
     }'

@@ -1633,27 +1633,39 @@ again any item that stopped half-way:
 
 - **How to spot one**: the item carries `doing/agent`, has had no new comment for a while, and its agent
   session has stopped (on a project with the stuck-worker check, the daemon also reminds or hands over by itself)
-- **Find which dispatch was interrupted**: a dispatch first removes the label that dispatched it and then adds `doing/agent`, so in the item's label history the label the daemon removed right before it last added `doing/agent` is where that dispatch came from. Run this whole block (replace `owner/repo` with the repository and `123` with the item number; and the label names, if the project renamed them) and read its last line:
+- **Find which dispatch was interrupted**: a dispatch is made with the loop's write account, which first removes the label that dispatched the item and then adds `doing/agent`. So it counts as a dispatch that still stands only when all of these hold:
+  - the last change to `doing/agent` added it, and the loop account made it
+  - right before that, the loop account removed exactly one dispatch label
+  - no flow label changed after it, and the item is not on `pending/human`
+
+  Run this whole block and read its last line. Before running it, replace `owner/repo` with the repository, `123` with the item number and `loop-account` with the loop's write account (the author of the round log comment on the item), and the label names too if the project renamed them.
   - `RESTORE: <label>` — the label that dispatched it. `pending/review` is a review (a first-round review of a PR whose delivery is only in its description, with no worker comment yet, as well), `pending/agent…` is a worker
   - `NOT_STUCK: …` — the item no longer carries `doing/agent`; nothing to dispatch again
-  - `UNKNOWN: …` — it cannot be told (a read failed, no dispatch in the label history, more than one such label removed or neither of the two). Do not guess from the latest comment: check on the item page's timeline which label the daemon removed right before it last added `doing/agent`; if that cannot be told either, only remove `doing/agent`, add `pending/human` and leave the item to a person
+  - `UNKNOWN: …` — no such dispatch was found. A read may have failed, the labels may have changed while reading, or an account or label name may be missing from the history. Or `doing/agent` was not added by the loop account, flow labels changed after it, the item is on `pending/human` too, or more than one dispatch label was removed. Run it once more; if it is still `UNKNOWN`, do not change any label and do not guess from the latest comment. On the item page's timeline, check the daemon's dispatch (the loop account removing a dispatch label and adding `doing/agent`) and whether anyone changed labels after it; put that dispatch label back only once that is confirmed, otherwise leave the item as it is for a maintainer
 
 <!-- round-log-redispatch-ops:begin -->
 ```bash
 (
-  REPO=owner/repo; N=123
-  LABELS="$(gh api "repos/$REPO/issues/$N" --jq '.labels[].name')" || { echo "UNKNOWN: could not read the item"; exit 1; }
-  printf '%s\n' "$LABELS" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
-  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, .actor.login, .label.name] | @tsv')" \
+  REPO=owner/repo; N=123; LOOP=loop-account
+  labels() { gh api "repos/$REPO/issues/$N" --jq '.labels[].name'; }
+  L1="$(labels)" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  printf '%s\n' "$L1" | grep -qx 'doing/agent' || { echo "NOT_STUCK: the item does not carry doing/agent"; exit 1; }
+  if printf '%s\n' "$L1" | grep -qx 'pending/human'; then echo "UNKNOWN: the item is on pending/human too"; exit 1; fi
+  EV="$(gh api --paginate "repos/$REPO/issues/$N/events?per_page=100" --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.event, (.actor.login // ""), (.label.name // "")] | @tsv')" \
     || { echo "UNKNOWN: could not read the label history"; exit 1; }
-  printf '%s\n' "$EV" | awk -F'\t' '
+  L2="$(labels)" || { echo "UNKNOWN: could not read the item"; exit 1; }
+  [ "$L1" = "$L2" ] || { echo "UNKNOWN: the labels changed while reading"; exit 1; }
+  printf '%s\n' "$EV" | awk -F'\t' -v loop="$LOOP" '
+    function trig(x) { return x == "pending/review" || x == "pending/agent" || index(x, "pending/agent/") == 1 }
+    function flow(x) { return trig(x) || x == "doing/agent" || x == "pending/human" }
     { e[NR] = $1; a[NR] = $2; l[NR] = $3 }
     END {
-      for (i = NR; i >= 1; i--) if (e[i] == "labeled" && l[i] == "doing/agent") break
-      if (i < 1) { print "UNKNOWN: no dispatch in the label history"; exit 1 }
+      for (i = NR; i >= 1; i--) if (l[i] == "doing/agent") break
+      if (i < 1 || e[i] != "labeled") { print "UNKNOWN: the label history does not end with doing/agent added"; exit 1 }
+      if (a[i] != loop) { print "UNKNOWN: doing/agent was not added by " loop; exit 1 }
+      for (k = i + 1; k <= NR; k++) if (flow(l[k]) || l[k] == "") { print "UNKNOWN: labels changed after the dispatch"; exit 1 }
       n = 0
-      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == a[i]; j--)
-        if (l[j] == "pending/review" || l[j] == "pending/agent" || index(l[j], "pending/agent/") == 1) { n++; t = l[j] }
+      for (j = i - 1; j >= 1 && e[j] == "unlabeled" && a[j] == loop; j--) if (trig(l[j])) { n++; t = l[j] }
       if (n != 1) { print "UNKNOWN: cannot tell which label dispatched it"; exit 1 }
       print "RESTORE: " t
     }'
