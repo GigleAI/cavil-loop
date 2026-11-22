@@ -45,7 +45,12 @@ export async function waitUntil(pred: () => boolean, what: string, show?: () => 
     }
   };
   for (;;) {
-    if (signal?.aborted || end?.done) throw new WaitStopped(`在等：${what}（用例已结束或超时）${last()}`);
+    if (signal?.aborted || end?.done) {
+      const e = new WaitStopped(`在等：${what}（用例已结束或超时）${last()}`);
+      // a case that timed out is reported as "timed out" alone; say here what it was still waiting for
+      if (signal?.aborted) console.error(e.message);
+      throw e;
+    }
     if (pred()) return;
     if (Date.now() > deadline) throw new WaitStopped(`在等：${what}（准备步骤等了 ${HOOK_LIMIT_MS} ms）${last()}`);
     await new Promise<void>((resolve) => {
