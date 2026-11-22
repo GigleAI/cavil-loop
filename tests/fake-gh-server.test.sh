@@ -78,13 +78,26 @@ PY
 served() { local n; n=$( { wc -c < "$1.d/served"; } 2>/dev/null) || n=0; echo "${n:-0}" | tr -d ' '; }
 # 「走了常驻服务 N 次」类检查：红的时候把能看出是哪条路的线索打出来（GitHub#648）——server.log 末尾、
 # 退回原因字母（c = 连不上，f = 服务回了退回）、服务进程和端口文件还在不在
+# 服务进程在不在：只认 PID 文件里的正整数（空、读不到、不是数字都写「未知」——`kill -0 0` 会探到
+# 自己的进程组而成功，PR #657 复审第 1 轮）；kill -0 成功 = 在，失败而 /proc 里也没有 = 不在，其余 = 未知
+served_proc() {   # <状态目录>
+    local pid
+    pid=$( { head -n 1 "$1/pid"; } 2>/dev/null) || { echo "未知（PID 文件读不到）"; return; }
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || { echo "未知（PID 文件里没有有效数字）"; return; }
+    if kill -0 "$pid" 2>/dev/null; then echo "$pid 在"
+    elif [ ! -e "/proc/$pid" ]; then echo "$pid 不在"
+    else echo "$pid 未知（探测不到）"; fi
+}
+served_clue() {   # <gh 路径>：打印线索
+    local d="$1.d"
+    echo "     线索：退回原因 [$( { cat "$d/fallback"; } 2>/dev/null)]；服务进程 $(served_proc "$d")；端口文件 $([ -s "$d/port" ] && echo 在 || echo 不在)"
+    echo "     server.log 末尾："; tail -n 15 "$d/server.log" 2>/dev/null | sed 's/^/       /'
+}
 chk_served() {   # <说明> <实得> <期望> <gh 路径>
-    local before=$fail d="$4.d" pid
+    local before=$fail
     chk "$1" "$2" "$3"
     [ "$fail" -gt "$before" ] && [ "$QUIET" != 1 ] || return 0
-    pid=$( { cat "$d/pid"; } 2>/dev/null)
-    echo "     线索：退回原因 [$( { cat "$d/fallback"; } 2>/dev/null)]；服务进程 ${pid:-?} $(kill -0 "${pid:-0}" 2>/dev/null && echo 在 || echo 不在)；端口文件 $([ -s "$d/port" ] && echo 在 || echo 不在)"
-    echo "     server.log 末尾："; tail -n 15 "$d/server.log" 2>/dev/null | sed 's/^/       /'
+    served_clue "$4"
 }
 # 状态目录逐字节比较（ISO 时间换占位）；输出 same 或第一处不同
 dir_same() {
@@ -408,6 +421,31 @@ if os.environ.get("ROLE") != "server": os.environ["LC_CTYPE"] = "en_US.UTF-8"'
         "1/LC_CTYPE en_US.UTF-8/LC_CTYPE C.UTF-8"
 
     for f in "$LW"/*-bin/*.d/pid "$LW"/hook-*/new-bin/*.d/pid; do kill "$(cat "$f")" 2>/dev/null; done
+
+    # 调用方环境里有一个名字含非 UTF-8 字节的 PYTHON* 变量（PR #657 复审第 1 轮）：服务判出启动设置不同，
+    # 写退回原因时不能因编码出错把退回应答吞掉——必须退回旧方式执行，结果与旧方式相同，日志仍是一行
+    local BW="$W/badname"; mkdir -p "$BW/old-bin" "$BW/new-bin"
+    FAKE_GH_SERVER=0 bash "$LIB/fake_gh_client.sh" install "$BW/old-bin/gh" python3 "$FAKE_AP"
+    FAKE_GH_OWNER=$$ bash "$LIB/fake_gh_client.sh" install "$BW/new-bin/gh" python3 "$FAKE_AP"
+    for v in old new; do
+        FAKE_GH_DIR="$W/ap-new" FAKE_GH_REPO=example/ap cap "$BW/$v" -- env $'PYTHON_REVIEW_\xff=1' $'PYTHONX=a\nb\xfe' "$BW/$v-bin/gh" api user --jq .login
+    done
+    chk "调用方有名字含非 UTF-8 字节的 PYTHON* 变量：退回旧方式执行，退出码 / 输出与旧方式相同" \
+        "$(cat "$BW/new.rc")/$(cat "$BW/new.out")/$(cmp -s "$BW/old.out" "$BW/new.out" && cmp -s "$BW/old.rc" "$BW/new.rc" && echo same || echo diff)" \
+        "0/loop-bot/same"
+    chk "  …原因字母是 f、服务没接手，server.log 记下一行（字节转义、换行转义，不断行）" \
+        "$(cat "$BW/new-bin/gh.d/fallback")/$(served "$BW/new-bin/gh")/$(grep -c '^FALLBACK pid=[0-9]*: ' "$BW/new-bin/gh.d/server.log")/$(grep -c 'PYTHON_REVIEW_\\udcff' "$BW/new-bin/gh.d/server.log")/$(grep -c "PYTHONX caller='a\\\\\\\\nb\\\\\\\\udcfe'" "$BW/new-bin/gh.d/server.log")/$(wc -l < "$BW/new-bin/gh.d/server.log" | tr -d ' ')" \
+        "f/0/1/1/1/1"
+
+    # 线索里的服务进程：PID 文件空 / 不是数字 / 进程已退出 / 在
+    local CD="$W/clue"; mkdir -p "$CD/a.d" "$CD/b.d" "$CD/c.d" "$CD/d.d"
+    : > "$CD/a.d/pid"; echo 0 > "$CD/b.d/pid"
+    ( exit 0 ) & local deadpid=$!; wait "$deadpid"; echo "$deadpid" > "$CD/c.d/pid"
+    echo "$$" > "$CD/d.d/pid"
+    chk "线索 · PID 文件为空 / 为 0 / 进程已退出 / 进程在：未知 / 未知 / 不在 / 在" \
+        "$(served_clue "$CD/a" | grep -c '服务进程 未知（PID 文件里没有有效数字）')/$(served_clue "$CD/b" | grep -c '服务进程 未知（PID 文件里没有有效数字）')/$(served_clue "$CD/c" | grep -c "服务进程 $deadpid 不在")/$(served_clue "$CD/d" | grep -c "服务进程 $$ 在")" \
+        "1/1/1/1"
+    chk "线索 · PID 文件不存在：未知" "$(served_clue "$CD/none" | grep -c '服务进程 未知（PID 文件读不到）')" 1
 
     # ── 安全：没带对令牌的请求不执行任何东西 ──
     local P; P=$(cat "$W/new-bin/gh.d/port"); D="$W/tok"; seed_ap "$D"

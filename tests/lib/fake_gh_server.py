@@ -142,11 +142,20 @@ LOCALE_VARS = ("LC_ALL", "LC_CTYPE", "LANG")
 
 
 def log(msg):
-    """One line in server.log (opened by fake_gh_client.sh as this server's stdout / stderr)."""
+    """One line in server.log (opened by fake_gh_client.sh as this server's stdout / stderr).
+
+    Never raises and always writes exactly one line: the message can carry a caller's variable
+    names and values, which may hold bytes that are not UTF-8 (surrogate escapes after
+    os.fsdecode) or line breaks. Those are escaped (backslashreplace, \\n / \\r), and any failure
+    to write is swallowed — the log is only a clue, it must never change what the caller is told
+    (PR #657 review round 1: an encoding error here cut the FALLBACK answer off and the call
+    failed with exit 70 instead of running the old way)."""
     try:
-        with open(os.path.join(STATE, "server.log"), "a") as f:
-            f.write(msg + "\n")
-    except OSError:
+        text = str(msg).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+        line = text.encode("utf-8", "backslashreplace")
+        with open(os.path.join(STATE, "server.log"), "ab") as f:
+            f.write(line + b"\n")
+    except Exception:
         pass
 
 
@@ -289,8 +298,8 @@ def serve(conn):
                     raise OSError("fd %d is not a pipe / character device" % n)
                 fds.append(os.open(path, os.O_WRONLY | os.O_CLOEXEC))
         except (OSError, ValueError) as e:
+            conn.sendall(b"FALLBACK\n")   # answer first: nothing in the log may stand in its way
             log("FALLBACK pid=%d: %s" % (pid, e))
-            conn.sendall(b"FALLBACK\n")
             os._exit(0)
 
         conn.sendall(b"ACK\n")
