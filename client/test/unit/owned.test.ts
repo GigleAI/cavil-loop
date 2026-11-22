@@ -56,7 +56,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1' || NOT_LINUX)('owned: one g
     const exited = r.events.find((e) => e.what === 'program-exited')!.at;
     const removed = r.events.find((e) => e.what === 'folder-removed')!.at;
     console.log(`正常结束到收尾完成：${removed - exited} ms`);
-  });
+    // GitHub#649: room for its calls and each call's own cleanup time (see test/support/owned-run.ts)
+  }, 45_000);
 
   it('a descendant still holding the output: stopped with the group, the output is read to its end', async () => {
     const dir = tempDir();
@@ -69,7 +70,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1' || NOT_LINUX)('owned: one g
     expect(did(r, 'grace-start')).toBe(true);
     expect(pidsIn(pids)).toHaveLength(1);
     for (const p of pidsIn(pids)) expect(alive(p), `pid ${p}`).toBe(false);
-  });
+    // GitHub#649: room for its calls and each call's own cleanup time (see test/support/owned-run.ts)
+  }, 45_000);
 
   it('the folder is still there when the group is told to stop, and gone once the call returns; products are read first', async () => {
     const dir = tempDir();
@@ -126,7 +128,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1' || NOT_LINUX)('owned: one g
     expect(did(r, 'drain-timeout')).toBe(true);
     expect(took).toBeLessThan(5_000);
     expect(existsSync(r.root!)).toBe(true);
-  });
+    // GitHub#649: room for its call and the call's own cleanup time
+  }, 45_000);
 
   it('the time account: a call fits only with its cleanup time left over', () => {
     let now = 0;
@@ -387,5 +390,6 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1' || NOT_LINUX)('owned: run.s
     const { CLEANUP_FAILED } = await import('../mutation/owned.mjs');
     const r = await owned(['/bin/bash', '-c', `eval "$(grep -m1 '^CLEANUP_FAILED=' "$1")"; echo "$CLEANUP_FAILED"`, '_', runSh], { settle: 'command', ownMs: 10_000 });
     expect(Number(r.stdout.trim())).toBe(CLEANUP_FAILED);
-  });
+    // GitHub#649: room for its calls and each call's own cleanup time (see test/support/owned-run.ts)
+  }, 45_000);
 });

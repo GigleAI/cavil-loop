@@ -78,7 +78,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
     const r = await run(['--one', '0'], { CLIENT_MUT_TIMEOUT_MS: '1' });
     expect(r.status).toBe(1);
     expect(r.out).toContain('超时');
-  });
+    // GitHub#649: room for its calls and each call's own cleanup time (see test/support/owned-run.ts)
+  }, 45_000);
 
   it('the entry script without node on PATH fails instead of reporting success', async () => {
     // GitHub#649: through the owned group like every other process here; judged by its exit code
@@ -91,7 +92,8 @@ describe.skipIf(process.env.CLIENT_MUT_CHILD === '1')('negative-control runner',
     expect(`${r.stdout}${r.stderr}`).not.toContain('读不到负对照清单');
     // nothing but the script itself ever ran in its group
     expect(r.events.filter((e) => e.what === 'signal')).toEqual([]);
-  });
+    // GitHub#649: room for its calls and each call's own cleanup time (see test/support/owned-run.ts)
+  }, 45_000);
 
   // with the baseline's map each run is one small test file, not a second whole suite (a whole
   // nested suite under load made unrelated timing tests flake and this case read them as red).

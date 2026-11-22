@@ -536,5 +536,7 @@ describe('GitHub#558: no quota of the client\'s own; GitHub\'s own limit is said
     // REST: the checks that answered 200, the lists of changes — well under a tenth of the hour's 5000
     expect(fake.state.quota.core.used - core).toBeLessThan(650);
     expect(fake.state.quota.graphql.used - points).toBeLessThan(450);
-  });
+    // GitHub#649: 57 real rounds through the real back end — the point is their total over an hour, so it
+    // stays one case. Measured: 6.0 s idle, 12.1–12.2 s at load 32–38, 20.3 s at load ~60 on 28 cores
+  }, 60_000);
 });
