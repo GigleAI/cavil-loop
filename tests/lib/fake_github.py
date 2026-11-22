@@ -578,6 +578,29 @@ if method == "GET":
     if len(parts) == 3 and parts[0] == "issues" and parts[2] == "events":
         # 真接口的每个事件都带递增的 id；夹具没写 id 的按位置补上（写了 "id": null 的原样保留，测「缺编号」）
         evl = [dict(e) for e in load("events.json", {}).get(parts[1], [])]
+        # 和真 GitHub 一样：挂着的每个标签都有一条「加上」它的事件，合并的 PR 有一条 merged 事件（GitHub#656）。夹具没写的
+        # 在这里补：补的「加上」排在最前（时间 2026-01-01），补的 merged 按合并时间插在对应位置。放了 nosynth_<n> 文件的
+        # 条目不补（测「事件缺失」）
+        # 记下的事件先按位置编号（和以前一样），补出来的事件用按标签名算的固定编号：标签集合变了编号也不会挪
+        for i, e in enumerate(evl):
+            if "id" not in e:
+                e["id"] = 5000 + i
+        _it = items.get(parts[1], {})
+        # 只给已合并的 PR 补（issue 和打开的 PR 照旧：别的测试靠「挂着却没有事件」测判不了）
+        if _it.get("kind") == "pr" and _it.get("merged") and not os.path.exists(p("nosynth_" + parts[1])):
+            _have = {e.get("label", {}).get("name") for e in evl if e.get("event") == "labeled"}
+            import zlib as _z
+            _syn = [{"id": 100 + _z.crc32(l.encode()) % 4000, "event": "labeled", "label": {"name": l},
+                     "actor": {"login": "maint", "type": "User"}, "created_at": "2026-01-01T00:00:00Z"}
+                    for l in labels.get(parts[1], []) if l not in _have]
+            evl = _syn + evl
+            if not any(e.get("event") == "merged" for e in evl):
+                _mt = _it.get("merged_at") or "2026-01-01T00:00:00Z"
+                _k = len(evl)
+                for _j, _e in enumerate(evl):
+                    if (_e.get("created_at") or "") > _mt:
+                        _k = _j; break
+                evl.insert(_k, {"id": 4999, "event": "merged", "actor": {"login": "maint", "type": "User"}, "created_at": _mt})
         for i, e in enumerate(evl):
             if "id" not in e:
                 e["id"] = 5000 + i
@@ -828,6 +851,9 @@ if method == "PUT" and len(parts) == 3 and parts[0] == "pulls" and parts[2] == "
     it.setdefault("merged_at", now_iso())
     it.setdefault("merge_commit_sha", "m" * 40)
     save("items.json", items)
+    _pe = load("events.json", {})
+    _pe.setdefault(parts[1], []).append({"event": "merged", "actor": {"login": me(), "type": me_type()}, "created_at": now_iso()})
+    save("events.json", _pe)
     # merge_closes 文件存在时（GitHub#461）：和真 GitHub 合进默认分支一样，正文里关闭关键词指向的本仓库 issue
     # 随合并关掉（state_reason = completed），并记一条 closed 事件。没有这个文件时照旧不动 issue
     if os.path.exists(p("merge_closes")):

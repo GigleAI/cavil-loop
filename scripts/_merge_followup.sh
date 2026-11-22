@@ -308,7 +308,7 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
         gh api "repos/$REPO/pulls/$pr" > "$d/pj" 2>/dev/null || return 1
         jq -c --arg p "$pr" '{pr: $p, merged: (.merged // null), sha: (.merge_commit_sha // ""), base: (.base.ref // ""),
             head_ref: (.head.ref // ""), head_sha: (.head.sha // ""), head_repo: (.head.repo.full_name // ""),
-            labels: ([(.labels // [])[].name] | sort)}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
+            labels: (if (.labels | type) == "array" then ([.labels[].name] | sort) else error("labels") end)}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
         # 合并提交、目标分支、来源分支、分支最新提交、来源仓库：记录和现读两边都得有值、而且相等，缺一样就不写
         jq -e --slurpfile i <(tail -n 1 "$d/ident") --arg p "$pr" '.[] | select(.pr == $p) as $r | $i[0] as $i
             | $i.merged == true
@@ -397,50 +397,93 @@ mf_comment_find() {   # <目标> <指纹>
     return 1
 }
 
-# 合并 PR 自己的标签：Done（<reminder>=true 时另挂 pending/human），摘掉流程标签。
-# 一次写一个，每写之前现读一次，必须正好是「开始时读到的 + 已经写成的这几步」，否则本轮停手（return 1），下轮从头判；
-# 写完再读回核对。合并之后才挂上的流程标签（按事件记录：最后一次加上它的时间不早于合并时间）是有人开了新一轮，
-# 这个 PR 的标签一个不动（return 0 并记 superseded）。事件记录读不到 = 判不了，本轮不写
+# 合并 PR 自己的标签：Done（<reminder>=true 时另挂 pending/human），摘掉流程标签。复审第 1–3 轮在这条路径上连续指出
+# 写前依据不全的变体，这里一次收口（硬规则 L1）。整条路径只认一份「PR 现状」（mf_pr_state）：
+#   身份（已合并、分支最新提交）+ 完整标签 + 每个流程标签最后一次「加上」的事件编号和时间。
+#   读不全（缺 labels 数组、事件页读不到、相关事件缺编号或时间）= 判不了，本轮一个标签都不动（return 1）。
+# 判断能不能动：PR 上的每个流程标签，都必须找得到「加上」它的事件、有时间、而且早于合并时间（合并前挂的、这一轮留下的），
+#   才可以摘；有一个是合并之后挂上的 → 新一轮，这个 PR 的标签一个不动（return 0，记 pr_superseded）；
+#   有一个找不到事件或缺时间 → 判不了（return 1）。
+# 写：一次一步，每步之前现读 mf_pr_state，必须等于「开始时 + 已写成的这几步」：身份一样、标签集合一样、
+#   每个这次没动过的流程标签最后一次「加上」的事件编号一样（同名标签被摘掉又挂回去，集合不变、事件编号变了 → 停手）。
+#   不一致就停手（return 1），下一轮从头判。写完再读一次，核对同一份期望
+mf_pr_state() {   # <PR> → stdout 一行 JSON {merged, head_sha, labels, last:{标签: {id, at}}}；return 1 = 读不全
+    local pr="$1" pj ev flows
+    pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || return 1
+    ev=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events" 2>/dev/null) || return 1
+    flows=$(mf_flow_labels)
+    { printf '%s\n' "$pj"; printf '%s\n' "$ev"; } | jq -cs --argjson f "$flows" '
+        .[0] as $p | .[1] as $pages
+        | if ($p.labels | type) != "array" or ($p.merged | type) != "boolean" or (($p.head.sha // "") == "") then error("pr") else . end
+        | [$pages[] | if type == "array" then .[] else error("page") end] as $e
+        | [$e[] | select((.event == "labeled" or .event == "unlabeled") and ((.label.name // "") as $l | $f | index($l)) != null)] as $le
+        | if any($le[]; (.id | type) != "number" or ((.created_at // "") == "")) then error("event") else . end
+        | ([$e | to_entries[] | select(.value.event == "merged") | .key] | last) as $mp
+        | {merged: $p.merged, head_sha: $p.head.sha, labels: ([$p.labels[].name] | sort), merged_pos: $mp,
+           last: (reduce ($e | to_entries[] | select(.value.event == "labeled" and ((.value.label.name // "") as $l | $f | index($l)) != null)) as $x
+                  ({}; .[$x.value.label.name] = {id: $x.value.id, at: $x.value.created_at, pos: $x.key}))}' 2>/dev/null
+}
+mf_flow_labels() {
+    printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))'
+}
 mf_pr_labels() {   # <PR> <true|false>
-    local pr="$1" rem="$2" at labs evs flows plan step kind lab expect cur out
+    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect touched='[]' out
     at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
-    labs=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$labs" ] || return 1
-    evs=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events" 2>/dev/null) || return 1
-    evs=$(printf '%s' "$evs" | jq -c '[.[] | if type == "array" then .[] else error("page") end]' 2>/dev/null) || return 1
-    flows=$(printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" \
-        "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))')
-    if [ -z "$at" ] || printf '%s' "$labs" | jq -e --argjson f "$flows" --argjson e "$evs" --arg at "$at" '
-            any(.[]; . as $l | ($f | index($l)) != null
-                and ([$e[] | select(.event == "labeled" and (.label.name // "") == $l)] | last | (.created_at // "")[:19] >= ($at[:19])))' >/dev/null 2>&1; then
-        if [ -z "$at" ]; then return 1; fi
-        log "  合并后交接：PR #$pr 合并之后又挂上了流程标签（新一轮），它的标签不动"
-        mf_set '.prs[$p].pr_superseded = true' --arg p "$pr" || true
-        return 0
-    fi
-    plan=$(printf '%s' "$labs" | jq -c --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" --argjson f "$flows" '. as $L
-        | (if index($D) == null then ["add:" + $D] else [] end)
-        + (if $r == "true" and index($H) == null then ["add:" + $H] else [] end)
+    [ -n "$at" ] || return 1
+    s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
+    [ "$(printf '%s' "$s0" | jq -r '.merged')" = true ] \
+        && [ "$(printf '%s' "$s0" | jq -r '.head_sha')" = "$(mf_get '.prs[$p].head_sha // ""' --arg p "$pr" | jq -r .)" ] || {
+        log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
+    flows=$(mf_flow_labels)
+    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" '
+        .merged_pos as $mp | [.labels[] | select(. as $l | ($f | index($l)) != null)] as $on
+        | [ $on[] as $l | (.last[$l] // null) as $x
+            # 先后按事件在记录里的位置比（合并和挂标签常在同一秒）：排在「merged」事件之后 = 新一轮；没有 merged 事件时
+            # 才按时间比，同一秒算判不了
+            | if $x == null then "unknown"
+              elif $mp != null then (if $x.pos > $mp then "new" else "old" end)
+              elif ($x.at[:19]) > ($at[:19]) then "new" elif ($x.at[:19]) == ($at[:19]) then "unknown" else "old" end ]
+        | if index("new") != null then "new" elif index("unknown") != null then "unknown" else "ok" end')
+    case "$verdict" in
+        new) log "  合并后交接：PR #$pr 合并之后又挂上了流程标签（新一轮），它的标签不动"
+             mf_set '.prs[$p].pr_superseded = true' --arg p "$pr" || true; return 0 ;;
+        unknown) log "  合并后交接：PR #$pr 有流程标签找不到加上它的事件（或缺时间），判不了，本轮不动"; return 1 ;;
+        ok) ;;
+        *) return 1 ;;
+    esac
+    plan=$(printf '%s' "$s0" | jq -c --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" --argjson f "$flows" '.labels as $L
+        | (if ($L | index($D)) == null then ["add:" + $D] else [] end)
+        + (if $r == "true" and ($L | index($H)) == null then ["add:" + $H] else [] end)
         + [$L[] | select(. as $l | ($f | index($l)) != null and ($r != "true" or $l != $H)) | "del:" + .]')
-    expect="$labs"
+    expect="$s0"
     for step in $(printf '%s' "$plan" | jq -r '.[] | @base64'); do
         step=$(printf '%s' "$step" | base64 -d); kind="${step%%:*}"; lab="${step#*:}"
-        cur=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$cur" ] || return 1
-        if [ "$cur" != "$expect" ]; then
+        cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || { log "  合并后交接：PR #$pr 写标签途中读不全，本轮停手"; return 1; }
+        if ! mf_pr_state_same "$cur" "$expect" "$touched"; then
             log "  合并后交接：PR #$pr 的标签在两次写之间被人改了，本轮停手，下轮从头判"; return 1
         fi
         if [ "$kind" = add ]; then
             run_gh "合并后交接：PR #$pr 加 $lab" gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$lab" >/dev/null || return 1
-            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '. + [$l] | unique | sort')
+            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '.labels = (.labels + [$l] | unique | sort)')
         else
             if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$(printf '%s' "$lab" | jq -sRr @uri)" 2>&1) \
                && ! printf '%s' "$out" | grep -q 'HTTP 404'; then
                 log "  合并后交接：PR #$pr 摘 $lab 失败，下轮再试"; return 1
             fi
-            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" 'map(select(. != $l))')
+            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '.labels = (.labels | map(select(. != $l)))')
         fi
+        touched=$(printf '%s' "$touched" | jq -c --arg l "$lab" '. + [$l] | unique')
     done
-    cur=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$cur" ] || return 1
-    [ "$cur" = "$expect" ]
+    cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || return 1
+    mf_pr_state_same "$cur" "$expect" "$touched"
+}
+# 两份 PR 现状是不是同一个：身份、标签集合一样，没被这次写过的流程标签最后一次「加上」的事件也一样
+mf_pr_state_same() {   # <现读> <期望> <这次写过的标签 JSON 数组>
+    jq -en --argjson a "$1" --argjson b "$2" --argjson t "$3" '
+        $a.merged == $b.merged and $a.head_sha == $b.head_sha and $a.labels == $b.labels
+        and (($a.last | with_entries(select(.key as $k | ($t | index($k)) == null) | .value = .value.id))
+             == ($b.last | with_entries(select(.key as $k | ($t | index($k)) == null) | .value = .value.id)))' >/dev/null 2>&1
 }
 
 mf_try_fail() {   # <目标> <原因>：一次真正尝试了读写却没成功的轮次（等清理的轮次不调它）

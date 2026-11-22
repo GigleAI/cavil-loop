@@ -379,6 +379,40 @@ chk "这一轮：加了 Done 之后停手，pending/review 和 pending/merge 都
 tick
 chk "下一轮：认出合并后挂上的是新一轮，PR 标签一个不动，交接收敛" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")/$(comments_of 200)" "Done,pending/merge,pending/review/1/1"
 
+echo "㉑ PR 上的流程标签找不到「加上」它的事件 → 判不了，PR 标签不动、不算交接完成；事件补齐后照常收敛"
+fresh
+mkissue 210 "" open
+mkmerged 211 feature/issue-210 "Refs #210"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+touch "$GD/nosynth_211"
+jset events.json '.["211"] = [{event:"merged", actor:{login:"maint", type:"User"}, created_at:"2026-03-01T10:00:00Z"}]'
+tick; tick
+chk "两轮：PR 标签原样、没记已交接、日志写明判不了" "$(labels_of 211)/$(jq -r '.merge_followup.prs["211"].handed // "none"' "$STATE")/$([ "$(grep -c 'PR #211 有流程标签找不到加上它的事件' "$W/state/poll.log")" -ge 2 ] && echo yes)" "pending/review/none/yes"
+jset events.json '.["211"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-02-28T10:00:00Z"}, {event:"merged", actor:{login:"maint", type:"User"}, created_at:"2026-03-01T10:00:00Z"}]'
+tick
+chk "事件补齐（合并之前挂的）→ 摘掉、打 Done、交接收敛" "$(labels_of 211)/$(jq -r '.merge_followup.prs["211"].handed // "none"' "$STATE")" "Done/1"
+
+echo "㉒ 加上流程标签的事件缺时间 → 读不全，PR 标签不动"
+fresh
+mkissue 220 "" open
+mkmerged 221 feature/issue-220 "Refs #220"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+jset events.json '.["221"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:""}]'
+tick; tick
+chk "两轮：PR 标签原样、没记已交接" "$(labels_of 221)/$(jq -r '.merge_followup.prs["221"].handed // "none"' "$STATE")" "pending/review/none"
+chk "  → 到达性：确实读不全（日志）" "$([ "$(grep -c 'PR #221 的标签或标签事件读不全' "$W/state/poll.log")" -ge 2 ] && echo yes)" "yes"
+
+echo "㉓ 两步写之间同名标签被摘掉又挂回去（标签集合不变）→ 停手；下一轮认出是新一轮，不摘它"
+fresh
+mkissue 230 "" open
+mkmerged 231 feature/issue-230 "Refs #230"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["231"] += [{event:"unlabeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}, {event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:01Z"}]' \
+    > "$GD/hook_after_POST_issues_231_labels_1"
+tick
+chk "这一轮：只加了 Done 就停手，pending/review 还在、没记已交接" "$(labels_of 231)/$(jq -r '.merge_followup.prs["231"].handed // "none"' "$STATE")" "Done,pending/review/none"
+chk "  → 到达性：日志写明两次写之间被改" "$(grep -c 'PR #231 的标签在两次写之间被人改了' "$W/state/poll.log")" "1"
+tick
+chk "下一轮：重挂的 pending/review 是合并之后挂的 → 不动，交接收敛" "$(labels_of 231)/$(jq -r '.merge_followup.prs["231"].handed // "none"' "$STATE")" "Done,pending/review/1"
+
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]

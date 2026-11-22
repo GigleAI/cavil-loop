@@ -294,6 +294,17 @@ if args and args[0] == "api":
                     "actor": ({"login": e["actor"]} if e.get("actor") else None),
                     "label": {"name": e.get("label", "")}, "created_at": "2026-10-01T00:00:00Z"}
                    for k, e in enumerate(it.get("events", []))]
+            # 已合并的 PR 和真 GitHub 一样：挂着的每个标签都有「加上」它的事件、有一条 merged 事件（GitHub#656）。
+            # 夹具没写的补在最前面（编号按标签名固定，标签变了也不挪）
+            if it.get("is_pr") and it.get("merged"):
+                import zlib as _z
+                have = {e["label"]["name"] for e in evs if e["event"] == "labeled"}
+                syn = [{"id": 100 + _z.crc32(l.encode()) % 800, "event": "labeled", "actor": {"login": "maintainer"},
+                        "label": {"name": l}, "created_at": "2026-01-01T00:00:00Z"} for l in it.get("labels", []) if l not in have]
+                if not any(e["event"] == "merged" for e in evs):
+                    syn.append({"id": 999, "event": "merged", "actor": {"login": "maintainer"}, "label": {"name": ""},
+                                "created_at": "2026-01-01T00:00:00Z"})
+                evs = syn + evs
             if HIDENEW:
                 evs = [e for e in evs if not (isinstance(e["id"], int) and e["id"] >= 5000)]
             size = it.get("events_page")
