@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+
+# ── Variables directly followed by a non-ASCII character: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Variables directly followed by a non-ASCII character (GitHub#411: `${VAR}` rule above, the textual
+# checker `tests/lib/bash_multibyte_vars.py`) → `tests/bash-multibyte-vars.test.sh` (~2 s). Every case
+# is run through real bash under the single-byte locale and through the checker: whenever bash says
+# "unbound variable" the checker must report it (no misses), and literal-text cases are reported as
+# well, by design; then every script under `scripts/` plus `setup.sh` must check clean. A locale that
+# cannot be built is red, never a skip. There is no automatic fix: only a person can tell whether a
+# hit is an expansion (add braces) or literal text (reword it). Do not go back to a context-aware
+# parser
+#
 """Find `$NAME` directly followed by a non-ASCII byte in shell scripts (GitHub#411).
 
 macOS ships bash 3.2, which decides where a variable name ends with the C library's

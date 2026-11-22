@@ -7,6 +7,53 @@
 # 只定义变量，不读配置、不做任何 I/O。
 # `default` 这个词展开成的内置清单：之后会以维护者身份运行代码的文件（CI、git hooks、agent 配置、
 # 项目级提示词覆盖、打开目录就可能执行任务的编辑器 / 容器配置、安装 / 构建 / 环境配置）
+
+# ── Files a human must look at before an autopilot merge: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Files a human must look at before an autopilot merge (GitHub#337: `AUTOPILOT_HUMAN_PATHS` /
+# `AUTOPILOT_HUMAN_PATHS_DEFAULT`, `autopilot_paths_verdict` in `_lib.sh` and the `AUTOPILOT_PATHS_JQ`
+# rules in `_human_paths.sh`, the branch in `autopilot_permit`) →
+# `tests/autopilot-human-paths.test.sh` (~2 min; real `agent-poll.sh` against the stateful fake
+# GitHub, which now reports `changed_files` on a PR and can serve a raw file-list answer from
+# `raw_pulls_<n>_files`) plus `tests/autopilot.test.sh`. Empty or unset means the old `.github/` code
+# path, untouched: the test compares five scenarios, abnormal file lists included, with the merge-base
+# scripts — GitHub calls byte for byte on the three where nothing is handed over, and state, labels
+# and the visible comment text on the two that hand the PR over (the hand-over's own calls changed in
+# GitHub#382) — so **every new behaviour hangs on the value being non-empty**, never add one outside
+# that branch. With a value: the list is matched and read-completeness is checked in one jq program;
+# an entry that cannot be read is a hand-off naming it, never skipped; a file list that is not
+# provably whole (count ≠ the PR's `changed_files`, missing count, malformed, failed) is "can't read",
+# never "no hit". The two new hand-offs (`AP_STOP` = `paths` / `paths-config`) go through
+# `autopilot_to_human` like every other reason: before each write the whole permit is re-run and must
+# give the same verdict, the same `AP_STOP_KEY` (files hit / bad entry) and the same PR identity
+# (GitHub#382, next entry). The config lines in `docs/operations{,.zh}.md` (behind `<!--
+# autopilot-human-paths:examples:begin -->`) are run through the real poller by the test; keep the two
+# copies identical. Test files do not count (GitHub#548, `AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS`, not set
+# / empty / `on` = on): what a test file is lives only in `is_test` inside `AUTOPILOT_PATHS_JQ` — the
+# same jq program used for the decision and every re-judgement — and the docs list exactly its rules;
+# a renamed file is skipped only when both paths are test files, and nothing under the root `.github/`
+# is ever a test file (the maintainer's choice in #548). Skipping needs a complete record: for a file
+# whose new path is a test file, an unknown or missing `status`, or a rename / copy without a
+# non-empty `previous_filename`, is "can't read" (`test_rec_ok`), never "no old path" (PR #549 code
+# review round 1). Any other value leaves the jq output untouched: the test diffs calls, state, labels
+# and comments against the merge-base scripts with `off` and with a misspelled value. Files a hook
+# calls from outside the list (GitHub#560): the daemon still looks at paths only — it never reads a
+# hook to find what it runs. The gap is covered in two places. ① The docs tell maintainers to *append*
+# the called file to the existing value (never replace the line) and, for a test-named file with the
+# exemption on, also turn the exemption off or rename. ② `prompts/autopilot-review-human-paths.md`,
+# appended by `autopilot_review_paths_section` to the autopilot **review** prompt only when the list
+# is set (unset: every composed prompt equals the merge-base copy byte for byte, the test diffs them),
+# has the reviewer follow listed hooks to the repo files they run and hand over instead of queuing the
+# merge when the PR changes a file on that chain that the daemon would not block, or when a call's
+# path cannot be worked out. Any config advice it gives must first be checked with
+# `scripts/human-paths-check.sh` (read-only, managed entrypoint `entrypoints/human-paths-check.sh`).
+# That command and the merge check judge a change record (one file, or the old + new path of one
+# rename / copy) with the same `rec_exempt` / `rec_hits` in `_human_paths.sh` (`rec_verdict` on top
+# for the command; a rename goes in as `--renamed <old> <new>`, never as two paths — PR #565 code
+# review round 1), and the test cross-checks the command against real poll rounds for every list ×
+# exemption × file-name combination, renames included; the doc command behind `<!--
+# autopilot-human-paths:check:begin -->` is run verbatim. This is the reviewer reading code, not a
+# daemon check: never describe it as a guarantee
+#
 AUTOPILOT_HUMAN_PATHS_DEFAULT="/.github/ .husky/ .githooks/ /.pre-commit-config.yaml /lefthook.yml .claude/ .codex/ .agents/ .mcp.json .devcontainer/ .vscode/ package.json Makefile .envrc"
 
 # 清单条目 → 正则。rules(spec; def)：[{raw, re} | {raw, bad}]

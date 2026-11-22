@@ -33,6 +33,8 @@ cp "$REPO_DIR/scripts/heavy-test.sh" "$REPO_DIR/scripts/_heavy.sh" "$SRC/scripts
 cp "$REPO_DIR/scripts/human-paths-check.sh" "$REPO_DIR/scripts/_human_paths.sh" "$SRC/scripts/"
 cp "$REPO_DIR/scripts/flip-label.sh" "$REPO_DIR/scripts/conflict-check.sh" "$REPO_DIR/scripts/pr-feedback.sh" \
    "$REPO_DIR/scripts/_step.sh" "$REPO_DIR/scripts/step-result.jq" "$SRC/scripts/"   # 步骤脚本（GitHub#599）
+cp "$REPO_DIR/scripts/pr-body-lint.sh" "$REPO_DIR/scripts/_concurrent_work_defs.sh" "$REPO_DIR/scripts/_autopilot_summary.sh" "$SRC/scripts/"   # PR 正文版式检查（GitHub#644）
+mkdir -p "$SRC/tests/lib"; cp -r "$REPO_DIR/tests/lib/vendor" "$SRC/tests/lib/"   # 它用的 CommonMark 解析器
 mkdir -p "$SRC/prompts"; cp "$REPO_DIR/prompts/review.template.md" "$SRC/prompts/"     # 跨版本：用发布里的模板渲染
 cat > "$SRC/scripts/agent-poll.sh" <<'SH'
 #!/usr/bin/env bash
@@ -91,6 +93,10 @@ case "$heavy_out" in *"没有登记着的重测试"*) ;; *) fail "heavy-test-ent
 hp_out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/human-paths-check.sh" --spec 'default' --exempt-tests on .githooks/pre-commit 2>&1) \
     || fail "human-paths-check-entry: $hp_out"
 [ "$hp_out" = "拦	.githooks/pre-commit" ] || fail "human-paths-check-entry: $hp_out"
+# 发 PR 正文前的版式检查（GitHub#644）也走长期入口：真的转进发布目录里的脚本
+printf '一句话说明这个改动做了什么。\n\nCloses #1\n' > "$TMP/pr-body.md"
+lint_out=$(bash "$CAVIL_DEPLOY_ROOT/entrypoints/pr-body-lint.sh" "$TMP/pr-body.md" 2>&1) || fail "pr-body-lint-entry: $lint_out"
+[ "$lint_out" = "ok" ] || fail "pr-body-lint-entry: $lint_out"
 pass bootstrap
 
 echo '▶ a running consumer stays on v1 while the stable link moves to v2'

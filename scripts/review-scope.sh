@@ -26,6 +26,44 @@
 # 基线只从结论评论的第一、二行取：第一行是轮次标记，第二行是基线标记；别处出现的标记一律不认
 # 判法是从上往下、停在第一条命中的（docs/operations.md「复审收敛：修复范围怎么算」那张表，测试逐行对拍）。
 # 退出码：0 = 给出了结论（full 或 scope）；2 = 用法错误（没有输出）。
+
+# ── Review convergence and `REVIEW.md`: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Review convergence and `REVIEW.md` (GitHub#621: `prompts/review-converge.md` appended by
+# `review_converge_section`, the three-way `review_md_read` and its two sections in
+# `compose_prompt_template`, `scripts/review-scope.sh` + its managed entrypoint, the late must-fix
+# rule in `prompts/autopilot-review.md`, the numbered rework rule in the issue-comment / pr-comment
+# templates) → `tests/review-converge.test.sh` (~1 min; the real dispatch scripts write every entry
+# point's prompt — new issue, issue comment, PR comment, split sub-issue, review, autopilot review —
+# against a local bare origin and the stateful fake GitHub, with any inherited dispatch environment
+# cleared, and `review-scope.sh` runs in a real git repo against a file-backed fake `gh`, one case per
+# row of the two tables in `docs/operations{,.zh}.md`, plus `shasum`-only and no-sha256 `PATH`s).
+# `REVIEW.md` has three outcomes and "could not read" is never "absent" — no remote ref counts as
+# could not read, and a copy in the main checkout is never used instead. Checklist items the review
+# template already fails (2H, 2Q, 2R, 2L, 2C, 2B) are must-fix, never suggestions, and the worker's
+# text of this round is always in scope. The convergence section goes into every review prompt
+# (projects that replace the whole template included) and into no worker prompt; it sits before the
+# autopilot section, which overrides step ④ for autopilot items. Every way `review-scope.sh` cannot
+# establish the fix is `full <reason>`, never an empty `scope`; a baseline is only the second line of
+# a verdict whose first line is the round marker (a quoted marker elsewhere never counts); proposal
+# mode reads only comments the dispatch account posted on this issue (`not-own` / `not-this-issue`
+# otherwise — an autopilot item's other text goes through the guarded read command), is left out of
+# the review prompt entirely on an autopilot item with the outsider guard on —
+# `review_converge_section` keeps the `guarded-only` blocks of `prompts/review-converge.md` and drops
+# the `plain-only` ones there (the reverse elsewhere): proposal reviews are full every round, and code
+# mode gets its baseline only through `--baseline-mark '<line>'`, copied by the reviewer from the
+# guarded read output, in which case `review-scope.sh` sends no comment request at all — so the
+# guarded read command is the only reader of the item's comments; prints this round's proposal text
+# together with its fingerprint from one read (the reviewer reviews that printed text, never a
+# separate read), and its baseline fingerprint is written only through `fingerprint <id> --issue <N>
+# --expect <current>`, which refuses when the comment changed during the review; fingerprints go
+# through `cfg_sha256` in `scripts/_sha256.sh` (shared with `_lib.sh`); a plain merge of the base is
+# subtracted by merging the reviewed commit with the current fork point (`git merge-tree
+# --write-tree`), a conflict there is `full merge-conflict`. The round marker's format does not change
+# (the weekly report reads it); the baseline marker is the line after it. Tests that diff composed
+# prompts against the merge-base scripts (feature-off comparisons) pass the new side through
+# `strip_review_converge` from `tests/lib/review-converge.sh` first, which drops exactly these two
+# sections by their headings and nothing else
+#
 set -euo pipefail
 
 usage() {

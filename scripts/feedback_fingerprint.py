@@ -1,4 +1,48 @@
 #!/usr/bin/env python3
+
+# ── Question-only rounds: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Question-only rounds (GitHub#614: the 「先判断是不是纯提问」 section, byte-identical in
+# `issue-comment.template.md` and `pr-comment.template.md`, placed before their own decision steps;
+# the `${FEEDBACK_FP_CMD}` placeholder; `scripts/feedback-fingerprint.sh` +
+# `scripts/feedback_fingerprint.py`; the exceptions in the conflict section, the PR reply step 3, both
+# autopilot worker sections and review step 2L ⑤) → `tests/feedback-fingerprint.test.sh` (~5 s; the
+# real command against a fake `gh` serving fixtures by path: record format, resume / new-feedback /
+# need-continue for edits that keep id and time, deletions, outside accounts, the description, a
+# deleted / edited / new review verdict, both real question headings, quoted task lists, old / wait /
+# broken records, failed reads) and `tests/question-only-prompts.test.sh` (~5 s; prompts written by
+# the real dispatch scripts). The record format is made only by `feedback_fingerprint.py`; the
+# templates only ever say "paste the line the command printed" — never write a record format into a
+# template. Outside accounts are dropped before anything is fingerprinted or printed (the same
+# `outsider_role` the guard uses); an author whose role cannot be read, or a comment whose author / id
+# / time is missing, is `unreadable`, never "outsider". Which lines are records is one parser,
+# `record_lines` (a whole line outside code fences): it finds the record in a saved file and tells
+# answer comments from ordinary ones, so a proposal explaining the format in inline code stays a flow
+# comment (PR #639 review round 1). The snapshot's first line is the record itself — the file the
+# worker saves before posting and the answer comment are compared the same way. A record that is not a
+# complete `v=2` line, or a wait record, is always `need-continue`; `item=` covers the description,
+# open / closed, the labels outside `ci_report_flow_labels`, a PR's head commit and base branch, and
+# an issue's open PRs (same work-number rule as `pr_work_num_local`; the open-PR list read whole or
+# `unreadable`); raw fields are checked before anything is derived (a response without `labels`, a
+# label without a name, a state that is neither open nor closed is `unreadable`, never "no labels" —
+# PR #639 review round 2). Whether the dispatch still holds the item is the separate `holding yes|no`
+# line, and every write of a question-only round — the answer, the wait notice and the label — goes
+# through one gate, `write_line` (`write ok <label>`: open and held, the label is where the item goes
+# from that same read; `write stop <reason>` otherwise); neither is in the fingerprint, and an
+# unreadable read prints no gate, so the templates write nothing then (PR #639 review round 3: the
+# wait notice used to bypass the check). Ticks are one entry per question (`t<comment>q<n>`,
+# `tick_groups`), fingerprinted on which boxes are checked only (`tick_state`, never the wording). A
+# question's identity across versions is its number in the heading (`qnum`), never its position —
+# inserting, removing or reordering questions must not move one question's ticks onto another (PR #639
+# review round 4); a number used twice in one version, or a changing version with no known editor, is
+# "cannot date". Each carries when it last changed and who changed it with that person's role, from
+# the loop comment's GraphQL edit history (read only for edited comments with ticks; `tick_change`
+# finds the last version whose state for that question differs from the one before; editors classified
+# by the same `outsider_role`, unreadable role = `unreadable`): shown, never fingerprinted, and a
+# deleted version / a history that does not end at the current ticks / no history is "cannot date",
+# which the templates treat as this round; resuming never falls back to an earlier flow comment than
+# the one the record names. Tests that compare against merge-base dispatch scripts normalise
+# `${FEEDBACK_FP_CMD}` the way they already do `${CAVIL_STEP_DIR}`
+#
 """Answer records for question-only rounds (GitHub#614).
 
 When a human only asks a question, the worker answers and pauses. When the item is handed back

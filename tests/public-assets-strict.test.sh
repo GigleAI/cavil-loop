@@ -112,9 +112,11 @@ if [ -n "$BASE_REV" ] && git -C "$REPO_DIR" cat-file -e "$BASE_REV:scripts/publi
     OPORT="$(free_port)"
     PUBLIC_ASSETS_ROOT="$ROOT" PUBLIC_ASSETS_PORT="$OPORT" node "$OLD_PA/serve.mjs" > "$OLD_LOG" 2>&1 &
     OLD_PID=$!; echo "$OLD_PID" >> "$SVC_PIDS"
-    # 起来了 = 本轮启动的这个进程还活着，且它自己打印了监听本端口的那一行（端口上别人的回答不算）
+    # 起来了 = 本轮启动的这个进程还活着，且它自己打印了监听本端口的那一行（端口上别人的回答不算）。
+    # 最多等 30 秒，打印出那一行就立即往下走：原来只等 5 秒，CI 上负载高时 node 还没打印就判了失败
+    # （GitHub#658，PR #661 的 shard 1/8：日志为空、进程还活着）
     old_up=no
-    for _ in $(seq 1 50); do
+    for _ in $(seq 1 300); do
         kill -0 "$OLD_PID" 2>/dev/null || break
         if grep -q "^public-assets: 127\.0\.0\.1:$OPORT " "$OLD_LOG"; then old_up=yes; break; fi
         sleep 0.1

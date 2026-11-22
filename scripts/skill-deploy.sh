@@ -70,6 +70,7 @@ install_entrypoints() {
     ln -sfn release-entry.sh "$root/flip-label.sh"       # worker / 复审翻标签（GitHub#599）
     ln -sfn release-entry.sh "$root/conflict-check.sh"   # 交 PR 前的冲突检查（GitHub#599）
     ln -sfn release-entry.sh "$root/pr-feedback.sh"      # 读 PR 全部评论（GitHub#599）
+    ln -sfn release-entry.sh "$root/pr-body-lint.sh"     # 发 PR 正文前的版式检查（GitHub#644）
     ln -sfn release-entry.sh "$root/feedback-fingerprint.sh"   # 纯提问的答复记录（GitHub#614）
     ln -sfn release-entry.sh "$root/round-log.sh"        # 往返记录的写入 / 读取（GitHub#610）
     ln -sfn release-entry.sh "$root/notify-relay.sh"   # 早期入口名（GitHub#97 改名前的提示词还在用）

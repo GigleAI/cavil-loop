@@ -22,7 +22,7 @@
   "切到第几个标签页（1 是首页，9 是最后一个；只有首页时不做事）": "Go to tab by number (1 is the home tab, 9 the last one; does nothing when only the home tab is open)",
   "设置标签": "Set labels",
   "设置里程碑": "Set milestone",
-  "跳到回复框": "Jump to the reply box",
+  "跳到回复框；选中了讨论里的文字时，引用进回复框": "Jump to the reply box; with words selected in the discussion, quote them into it",
   "关闭 issue（只打开选原因的确认框；回复框、讨论区里也能按）": "Close issue (only opens the dialog to pick a reason; also works in the reply box and the discussion)",
   "交给 agent（回复框、讨论区里也能按；回复框里有字时先作为评论发出，发成功后再改标签）": "Hand to agent (also works in the reply box and the discussion; text in the reply box is sent as a comment first, and the label changes once it went through)",
   "托管（自动合并；设置里开着确认时先弹确认框；回复框、讨论区里也能按；回复框里有字时先作为评论发出）": "Autopilot (merges automatically; asks first when confirmation is on in settings; also works in the reply box and the discussion; text in the reply box is sent as a comment first)",

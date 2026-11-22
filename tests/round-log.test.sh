@@ -19,6 +19,8 @@
 #   9  复审轮次：单元里带轮次标记的个数 = 拆成独立评论时的个数；材料按时间列出标记与人的评论、标明是全部历史，
 #      跨人工重置时只数重置点之后的（同一节两份只列一次）
 #  10  提示词：开着时多一段、占位符都填上；关着时不加（其余逐字节对比由各自的测试守）
+#  11  每一节的折叠标题（GitHub#651）：耗时 · 角色 · 第一行；缺用量写「耗时未记录」；正文转义；折叠块只包住自己那一节；
+#      拆单元 / 统计 / 读取视图与加标题之前的写法逐项相同；旧格式的节照常读
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -793,10 +795,128 @@ has "开着：轮次仍按最近一次人工动作重置（照上文的办法定
 has "开着：材料里的总数是全部历史、只数重置点之后的" "$sec" "那里的总数是**全部历史**，不是当前轮次——只数重置点之后的带标记单元"
 has "开着：只改标签、编辑评论要另外查" "$sec" "只改了标签、编辑了评论这类动作不在这份材料里，必须另外查"
 has "开着：复审模板本身的重置规则仍在（读 issue events、派工账号以外的动作才重置）" "$sec" "只有 actor/login **不同于派工账号** 的动作才可重置轮次"
+has "开着：worker 第一行写状态 emoji 开头的一句话（成为这一节的折叠标题）" "$sec" "worker 的第一行写一句以状态 emoji 开头的总结：✅ 交付完成、❓ 有要复审确认的疑问、❌ 没做完或有失败"
 lacks "开着：不再叫复审直接用末尾的总数" "$sec" "数单元里带轮次标记的个数（输出末尾写了）"
 fresh issue 'ENABLE_ROUND_LOG=""'
 sec=$(CODING_AGENT_CONFIG="$CONF" bash -c 'source "$1/scripts/_lib.sh" >/dev/null 2>&1; f=$(compose_prompt_template review); cat "$f"' _ "$REPO_DIR")
 lacks "关着：不加这一段" "$sec" "# 往返记录（本项目开启了"
+
+echo "── 11. 每一节的折叠标题（GitHub#651）──"
+fresh issue
+# 节正文末尾的用量 footer 用真实的 comment_footer.render 生成（不手写记录行）
+foot() {   # <输出文件> <wall 秒> <正文>
+    python3 - "$REPO_DIR/scripts/drivers/token-usage" "$2" "$3" > "$SANDBOX/$1" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import comment_footer as c
+start = 1794540000
+kv = "in=1 out=2 cost_usd=1 cost_state=full models=m model_unknown=no ai_secs=5 ai_requests=1"
+print(sys.argv[3] + "\n\n" + c.render("2026-11-13 10:00:00", start, start + int(sys.argv[2]), "claude", "7", "1 input ($1.00)（模型：m）", kv, None, None))
+PY
+    echo "$SANDBOX/$1"
+}
+W1=$(foot t_w1 625 $'❓ 交付中有一处疑问\n\n## 验证结果\n- 跑了 `x`')
+RL post 7 --role worker --to pending/review --body "$W1" --full "$(mk t_f1 '全文 V1')" >/dev/null
+R1=$(foot t_r1 80 $'<!-- codex-review-round:1 -->\n> @maint 说：\n> 引用的话\n\n## ❌ 方案复审未通过，需补<b>齐</b> & 重跑\n\n#1 打回：……')
+RL post 7 --role review --of "$(ofv 7)" --to pending/agent --body "$R1" >/dev/null
+W2=$(mk t_w2 $'修订版：补齐 **测试**\n\n没有 footer 的一节')
+RL post 7 --role worker --to pending/review --body "$W2" --full "$(mk t_f2 '全文 V2')" >/dev/null
+chk "三次交付都进了同一条记录" "$(records)" "1"
+REC=$(jq -r '.["7"][-1].body' "$GD/comments.json")
+has "worker 节标题：耗时 · 角色 · 首行状态句（后面的 ## 小标题不顶替）" "$REC" "<details><summary>⏱️ 10m 25s · worker · ❓ 交付中有一处疑问</summary>"
+has "复审节标题：跳过轮次标记和引用，取结论标题；正文里的 < & 被转义" "$REC" "<details><summary>⏱️ 1m 20s · 复审 · ❌ 方案复审未通过，需补&lt;b&gt;齐&lt;/b&gt; &amp; 重跑</summary>"
+has "没有用量记录的一节写「耗时未记录」，首行没 emoji 补 📝，去掉 markdown 记号" "$REC" "<details><summary>⏱️ 耗时未记录 · worker · 📝 修订版：补齐 测试</summary>"
+lacks "不再有旧的「### 角色 · 时间」标题" "$REC" "### worker agent 交付 ·"
+# 渲染后的结构：用仓库自带的 CommonMark 解析器（tests/lib/vendor 的 markdown-it-py，允许 HTML）把整条记录渲染成
+# HTML，再用 Python 的 HTML 解析器建出 <details> 树：节的折叠块是并列的、都不带 open（展开一节不会带开别的节），
+# 每个只包住自己那一节的正文和它自己的用量 footer
+printf '%s' "$REC" > "$SANDBOX/rec.md"
+o=$(python3 - "$TEST_DIR/lib/vendor" "$SANDBOX/rec.md" <<'PY'
+import sys
+from html.parser import HTMLParser
+sys.path.insert(0, sys.argv[1])
+from markdown_it import MarkdownIt
+html = MarkdownIt("commonmark", {"html": True}).render(open(sys.argv[2], encoding="utf-8").read())
+class T(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.root = {"kids": [], "text": "", "summary": "", "open": False}; self.stack = [self.root]; self.insum = False
+    def handle_starttag(self, tag, attrs):
+        if tag == "details":
+            n = {"kids": [], "text": "", "summary": "", "open": "open" in dict(attrs)}
+            self.stack[-1]["kids"].append(n); self.stack.append(n)
+        elif tag == "summary":
+            self.insum = True
+    def handle_endtag(self, tag):
+        if tag == "details": self.stack.pop()
+        elif tag == "summary": self.insum = False
+    def handle_data(self, d):
+        if self.insum: self.stack[-1]["summary"] += d
+        else:
+            for n in self.stack[1:]: n["text"] += d
+t = T(); t.feed(html)
+secs = [k for k in t.root["kids"] if k["summary"].startswith("⏱️ ") and not k["summary"].startswith("⏱️ 耗时：")]
+out = [str(len(t.stack) - 1), str(len(secs)), str(sum(k["open"] for k in secs))]
+for k in secs:
+    foot = [c for c in k["kids"] if c["summary"].startswith("⏱️ 耗时：")]
+    others = [c for c in k["kids"] if c not in foot]
+    out.append("%s|%d|%d" % (k["summary"].split(" · ")[-1][:6], len(foot), len(others)))
+# 一节的正文不出现在别的节里
+texts = [k["text"] for k in secs]
+out.append(str(sum(1 for i, a in enumerate(texts) for j, b in enumerate(texts) if i != j and "交付中有一处疑问" in a and "交付中有一处疑问" in b)))
+print(" ".join(out))
+PY
+)
+chk "渲染后：没有未关的折叠、3 个并列的节、都不展开；每节一个自己的 footer（第 3 节没有）、不含别的节" "$o" "0 3 0 ❓ 交付中有|1|0 ❌ 方案复审|1|0 📝 修订版：|0|0 0"
+has "渲染后：第一节里有它自己的正文" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from markdown_it import MarkdownIt; print(MarkdownIt("commonmark", {"html": True}).render(open(sys.argv[2], encoding="utf-8").read()))' "$TEST_DIR/lib/vendor" "$SANDBOX/rec.md")" "<h2>验证结果</h2>"
+# 切节和读取都不受标题影响：拆出的每节正文 = 交付时给的正文；标题也读得回来
+o=$(python3 - "$REPO_DIR/scripts" "$GD/comments.json" "$W1" "$R1" "$W2" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import round_log as r
+cs = [{"id": c["id"], "author": c["user"]["login"], "at": c["created_at"], "body": c["body"]} for c in json.load(open(sys.argv[2]))["7"]]
+us = [u for u in r.units(cs, r.trusted_by("loop-bot")) if u["kind"] == "section"]
+want = [open(f).read().strip("\n") for f in sys.argv[3:]]
+print(len(us), [u["body"] for u in us] == want, " | ".join(u["title"] for u in us))
+PY
+)
+chk "拆单元：三节、正文与交付时一字不差、标题读得回来" "$o" "3 True ⏱️ 10m 25s · worker · ❓ 交付中有一处疑问 | ⏱️ 1m 20s · 复审 · ❌ 方案复审未通过，需补<b>齐</b> & 重跑 | ⏱️ 耗时未记录 · worker · 📝 修订版：补齐 测试"
+# 与改动前的写法对拍：同一批交付用加标题之前的 section_text（固定提交 10622996，合并后仍是「改动前」）和现在的
+# 各写一遍，读取、周报、单 PR 统计用的拆单元结果相同
+if git -C "$REPO_DIR" show 10622996:scripts/round_log.py > "$SANDBOX/round_log_old.py" 2>/dev/null; then
+    o=$(python3 - "$REPO_DIR/scripts" "$SANDBOX/round_log_old.py" "$W1" "$R1" "$W2" <<'PY'
+import importlib.util, json, sys
+sys.path.insert(0, sys.argv[1])
+import round_log as new
+spec = importlib.util.spec_from_file_location("old", sys.argv[2]); old = importlib.util.module_from_spec(spec); spec.loader.exec_module(old)
+bodies = [open(f).read() for f in sys.argv[3:]]
+def rec(m):
+    secs = [m.section_text("aaaaaa00000%d" % i, "worker" if i != 1 else "review", "2026-01-01T0%d:00:00Z" % i, 100, None if i != 1 else "aaaaaa000000", b) for i, b in enumerate(bodies)]
+    return m.new_record("aaaaaa000002", "全文", "\n\n".join(secs))
+raw = lambda body: [{"id": 9, "user": {"login": "loop-bot"}, "created_at": "2026-01-01T00:00:00Z", "body": body, "html_url": "u"}]
+strip = lambda us: [{k: v for k, v in u.items() if k not in ("title", "top")} for u in us]
+a = new.expand_github_comments(raw(rec(old)), new.trusted_by("loop-bot"))
+b = new.expand_github_comments(raw(rec(new)), new.trusted_by("loop-bot"))
+na = [{"id": 9, "author": "loop-bot", "at": "2026-01-01T00:00:00Z", "body": rec(old)}]
+nb = [{"id": 9, "author": "loop-bot", "at": "2026-01-01T00:00:00Z", "body": rec(new)}]
+ua, ub = new.units(na, new.trusted_by("loop-bot")), new.units(nb, new.trusted_by("loop-bot"))
+print(len(a), a == b, strip(ua) == strip(ub), [u["top"]["text"] for u in ua] == [u["top"]["text"] for u in ub], new.render(ua, True) == new.render(ub, True))
+PY
+)
+    chk "改动前后写出的记录：统计拆出的 3 节、展开结果相同、单元相同、完整版本相同、读取视图相同" "$o" "3 True True True True"
+else
+    echo "  ❌ 取不到提交 10622996 的 round_log.py，无法对拍"; fail=$((fail+1))
+fi
+# 旧格式（标题是「### 角色 · 时间」）的节照常读：标题为空，不报错
+o=$(python3 - "$SANDBOX/round_log_old.py" "$REPO_DIR/scripts" <<'PY'
+import importlib.util, sys
+sys.path.insert(0, sys.argv[2])
+import round_log as new
+spec = importlib.util.spec_from_file_location("old", sys.argv[1]); old = importlib.util.module_from_spec(spec); spec.loader.exec_module(old)
+_, secs = new.parse_record(old.new_record("aaaaaa000001", "x", old.section_text("aaaaaa000001", "worker", "2026-01-01T00:00:00Z", 1, None, "旧节")))
+print(len(secs), secs[0]["title"])
+PY
+)
+chk "旧格式的节：照常切出、没有标题" "$o" "1 None"
 
 echo
 echo "通过 $pass，失败 $fail"

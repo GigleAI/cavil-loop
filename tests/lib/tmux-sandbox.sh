@@ -5,6 +5,62 @@
 # （不同 worktree，或同一 worktree 跑两次）时，一份的回收 / 清理会把另一份的会话列出来、
 # 杀掉。w01 上 reap-finished-workers 跑了 587 次红了 40 次，其中 31 次另有一份在跑。
 #
+# 规则全文（原样从根目录 AGENTS.md 搬来，那里只留一行索引；GitHub#658 的做法）：
+#
+# - **A test that uses real tmux gets a tmux server of its own** (GitHub#647). Five tests used to
+#   create sessions on the machine's default tmux server under fixed names; two copies running at once
+#   (another worktree, or the same one twice) listed and killed each other's sessions —
+#   `reap-finished-workers` went red 40 times in 587 runs on w01, 31 of them with another copy running.
+#   Such a test sources `tests/lib/tmux-sandbox.sh` before it creates anything, registers its own
+#   clean-up with `tmux_sandbox_on_exit` (no `trap … EXIT` of its own) and calls `tmux_sandbox_start`
+#   before its first tmux call; a directory it creates is handed over with `tmux_sandbox_own_dir`
+#   right after `mktemp` succeeds — never deleted from a callback through a variable, which may have
+#   been inherited from the environment and name someone else's directory (PR #660 review round 1); a
+#   child with an empty environment is started only through `tmux_sandbox_env_i [NAME=VALUE …] cmd …`,
+#   which appends this run's `TMUX_TMPDIR` and `PATH` itself (a reset `PATH` skips the wrapper) and
+#   refuses, without starting anything, an env option or any caller assignment of `PATH` / `TMUX_TMPDIR`
+#   / `TMUX` / `TMUX_PANE` — checked at run time on the arguments bash really passes, so redirections,
+#   quoting and `"$@"` are already resolved. The script re-runs the test as a subreaper, points `TMUX_TMPDIR` at a private directory,
+#   clears `TMUX` (it wins over `TMUX_TMPDIR`), and puts a `tmux` wrapper first on `PATH` that always
+#   adds `-f /dev/null` (a server restarted mid-test reads no user config either — restarting is
+#   allowed, the maintainer's choice) and refuses every call once the exit has begun. Isolation is
+#   checked at run time (PR #660 review round 6, the maintainer chose this over more text rules): the
+#   wrapper refuses, and records, any call whose server is not this run's — `TMUX` pointing elsewhere,
+#   or no `TMUX` and a `TMUX_TMPDIR` that is not this run's directory, or a global `-S` outside it — and
+#   any record fails the file; the exit also looks at every tmux server among the processes reparented
+#   to the test and fails the file when one listens outside this run's directory (a child that lost
+#   `PATH` and ran the real tmux elsewhere). Not caught at run time: a child that bypasses the wrapper
+#   and talks to a server that was already running before the test (it starts no new server). The exit runs the
+#   registered clean-ups each in its own subshell under the test's own options (`set -u` still holds),
+#   writes the close marker, kills the server and stops every process reparented to the test (servers,
+#   pane programs that ignore SIGHUP, leftover background jobs) — a whole batch at a time, every wait
+#   bounded by the 10-second total — and then deletes the owned directories. A failed clean-up, close
+#   marker or delete fails the file (an already red file keeps its code); a leftover it can see, or a
+#   process list it cannot read, keeps the directories and fails the file. **It is a best-effort
+#   clean-up, not a proof** (the maintainer chose this on #647 after eight design rounds on a proof):
+#   the list is read one process at a time, so a process reparented in the middle of a scan can be
+#   missed and not reported. Nothing checks for that; a missed process cannot be reached by another run
+#   (its server address is unique) but keeps its own CPU / memory. The text lint is
+#   `tests/tmux-sandbox-guard.test.sh` (rules in `tests/lib/tmux_guard.py`: a literal tmux call without
+#   `-S` / `-L` needs the sandbox, or `export TMUX_TMPDIR=` plus a cleared `TMUX`, before it; a sandbox
+#   file creates nothing before sourcing it, sets no EXIT trap, deletes nothing from a clean-up
+#   callback, and contains no other way to empty the environment: `env` followed by any option word is
+#   reported unless the options are only `-u NAME` (which keeps the environment), and so is `exec -c` —
+#   also inside quotes and trailing comments, on purpose, since it never tries to read what `env -i` was
+#   given (PR #660 review rounds 2–4 each found a shell form that a text reading of `env -i`'s arguments
+#   got wrong: single quotes, an empty value or a comment, a redirection before a reassignment); the
+#   isolation variables are guarded anywhere in the file, by text, also over-reporting: `-u` / `--unset`
+#   / `unset` naming `PATH`, `TMUX_TMPDIR`, `TMUX` or `TMUX_PANE`, any assignment of the last three,
+#   and a `PATH=` whose value does not contain `$PATH` / `${PATH}` (adding directories around it is
+#   allowed) are reported (round 5: the `-u` exception let `env -u TMUX_TMPDIR` through); an
+#   absolute-path tmux call is always reported; continuation lines are joined first). It cannot see
+#   `PATH` changed somewhere else, a child that changes its own `PATH` or empties its own environment,
+#   `env` called through a variable, names or values built from variables, a directory put in front of
+#   `PATH` that holds its own `tmux`, tmux called through a
+#   variable or a wrapper function (`"$REAL_TMUX" …`), a test that only reaches tmux through the script
+#   under test, or a script written out through a here-doc — the author and the reviewer check those.
+#   Start-up and exit are tested in `tests/tmux-sandbox.test.sh`
+#
 # 用法（顺序就是规则，tests/tmux-sandbox-guard.test.sh 会核对）：
 #
 #   set -uo pipefail

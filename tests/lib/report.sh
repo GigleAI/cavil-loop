@@ -30,6 +30,14 @@
 # fails as "没汇报计数"; so does a line whose negative-control count differs from the file's own
 # "负对照：跳过 N 项" line. It must run in the main shell (not inside $( )), after the last assertion.
 
+# ── Kinds, the count line, `--kind` / `--quick`, the grouped summaries and `--tally`: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Kinds, the count line, `--kind` / `--quick`, the grouped summaries and `--tally` (GitHub#212:
+# `tests/run.sh`, `tests/lib/report.sh`, the `# kind:` header and the `report_counts` call in every
+# file) → `tests/run.test.sh` (~30 s) plus `bash tests/run.sh --quick`; the smoke test →
+# `tests/smoke.test.sh` (~6 s; `MUTATION=1` adds one broken copy, new-issue dispatch that never flips
+# `doing/agent`)
+#
+
 report_counts() {   # <regress pass> <regress fail> [mut ran] [mut fail]
     local rp="${1:-}" rf="${2:-}" total="${MUTATION_COUNT:-0}" mr ms mf="${4:--}"
     if [ "${MUTATION:-}" = 1 ]; then

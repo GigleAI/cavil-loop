@@ -67,6 +67,7 @@ preview-legacy-adopt 11
 preview-port-ownership 5
 preview-rename-coexist 1
 preview-socket-activation 7
+pr-body-lint 100
 price-fetch 8
 price-identifiability 2
 project-auto-add 85
