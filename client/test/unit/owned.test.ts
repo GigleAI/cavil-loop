@@ -152,8 +152,9 @@ function fakeCargo(mode: 'hold-pipe' | 'kill-parent' | 'sleep') {
   const lines = {
     // the grandchild keeps cargo's stderr (the worker's pipe) open; cargo itself is done
     'hold-pipe': `sleep 300 & echo $! >> "${pids}"; echo $$ >> "${pids}"; exit 0`,
-    // the very first thing it does is kill the worker that started it (the gap the old design had)
-    'kill-parent': `kill -9 $PPID; sleep 300 & echo $! >> "${pids}"; echo $$ >> "${pids}"; exec sleep 300`,
+    // it kills the worker that started it at once (the gap the old design had) — after writing its own
+    // pids down, so the cleanup that follows cannot stop it before the test knows what to look for
+    'kill-parent': `sleep 300 & echo $! >> "${pids}"; echo $$ >> "${pids}"; kill -9 $PPID; exec sleep 300`,
     sleep: `sleep 300 & echo $! >> "${pids}"; echo $$ >> "${pids}"; exec sleep 300`,
   }[mode];
   sh(bin, 'cargo', lines);
