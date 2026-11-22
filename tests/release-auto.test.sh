@@ -1366,6 +1366,8 @@ print("dev-release-if", cl["dev-release"]["if"])
 # GitHub#628: what runs on which trigger, and the queue publishing runs share
 print("dev-release-conc", (cl["dev-release"].get("concurrency") or {}).get("group"), (cl["dev-release"].get("concurrency") or {}).get("cancel-in-progress"))
 print("dev-release-needs", sorted(lst(cl["dev-release"]["needs"])))
+# GitHub#665: the publish slot waits for nothing and reads nothing beyond the release list
+print("dev-release-perms", sorted((cl["dev-release"].get("permissions") or {}).items()))
 for jn in ("package", "package-windows"):
     print(f"{jn}-if", cl[jn].get("if"))
 for jn in ("test-rust", "test-vitest"):
@@ -1401,6 +1403,7 @@ has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks o
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
 has "dev-release-conc client-dev-release-publish False" "$S" "… one publish at a time, never cancelling a running one"
+has "dev-release-perms [('contents', 'write')]" "$S" "… with no permission beyond writing the release (GitHub#665: no wait on other runs, no Actions read)"
 has "dev-release-needs ['mode', 'package', 'package-windows', 'size', 'test']" "$S" "… only after the quick tests, both builds with their update checks, and the size gate"
 has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly build and the weekly full run"
 has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
@@ -1512,7 +1515,7 @@ git -C "$CREMOTE" tag -d client/v0.7.0 >/dev/null
 cmode GITHUB_REF=refs/tags/client/v0.6.1-dev.3 GITHUB_SHA="$C4" EVENT=push
 check "a development-shaped tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=push
-check "push to main → development build, a throw-away key, nothing published (GitHub#628)" "$(mode_line)" "0:::$C4:false:false"
+check "push to main → development build to publish, the real key (GitHub#665: as before GitHub#628)" "$(mode_line)" "0:::$C4:true:true"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='40 16 * * 0'
 check "the weekly schedule → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='30 20 * * *'
@@ -1578,10 +1581,12 @@ devrel_without() {  # devrel_without <n> <sha> <file suffix> → the same build 
 }
 cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
 check "a release build → build" "$(build_line)" "0:true:true"
-for ev in push pull_request; do
-    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
-    check "$ev → quick tests only, nothing built" "$(build_line)" "0:false:true"
-done
+cbuild '[]' TAG= PUBLISH=false EVENT=pull_request
+check "pull_request → quick tests only, nothing built" "$(build_line)" "0:false:true"
+cbuild "$(devrel 9 "$C1")" TAG= PUBLISH=true EVENT=push
+check "push to main (publishing), client changed since the last build → build (GitHub#665)" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=push
+check "push to main (publishing), this commit already out → skipped before building, nothing built" "$(build_line)" "0:false:false"
 for ev in schedule workflow_dispatch; do
     cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
     check "$ev (not publishing) → build and check" "$(build_line)" "0:true:true"
@@ -1773,8 +1778,14 @@ csim "$DISPATCH_MAIN" '{"publish":true,"force":true}' "$SAME"
 check "manual publish + force on the commit already out → built and checked, publish runs (and writes nothing, dev-release.mjs)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
 csim "$DISPATCH_BRANCH" '{"publish":false,"force":false}' "$SAME"
 check "manual check run on a branch → quick + full tests, both builds, nothing published; the branch's own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/feature/issue-628 cancel=true"
+csim "$PUSH_MAIN" '{}' "$CHANGED"
+check "push to main, client changed → quick tests, both builds, size gate, publish; its own never-cancelling group (GitHub#665)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish-push cancel=false"
 csim "$PUSH_MAIN" '{}' "$SAME"
-check "push to main → quick tests only" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-refs/heads/main cancel=true"
+check "push to main, this commit already out → only the mode job (skipped before building)" "$SIM" "ran=mode group=client-dev-publish-push cancel=false"
+csim "$PUSH_MAIN" '{}' "$CHANGED" '{"results":{"dev-release":"failure"}}'
+check "push to main, the publish step failed → no report (only the nightly run reports)" "$(job_of report-failure)" "skipped"
+csim '{"event_name":"push","ref":"refs/tags/client/v0.6.0","event":{}}' '{}' "$SAME"
+check "a pushed client tag keeps its own cancelling group (not a publishing queue)" "${SIM##* group=}" "client-refs/tags/client/v0.6.0 cancel=true"
 csim "$PR" '{}' "$SAME"
 check "pull request → quick tests only, the PR's own group" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-630 cancel=true"
 

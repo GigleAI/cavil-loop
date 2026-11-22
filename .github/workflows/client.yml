@@ -7,9 +7,12 @@ name: Client
 #
 # What runs when:
 #   every PR push                 quick tests: typecheck + cargo, vitest in two halves, in parallel (a few minutes)
-#   push to main                  the same quick tests, nothing else (GitHub#628: builds moved to the night)
+#   push to main                  a development build at once (GitHub#665: back to what it did before
+#                                 GitHub#628): the same steps as a night, below — a push only comes when
+#                                 the client changed (the paths above), so it builds and publishes
 #   nightly (20:30 UTC = 04:30    the development build (GitHub#215 / #628), only when the client changed
-#   Beijing)                      since the last published one (scripts/dev-plan.mjs): quick tests + the Mac
+#   Beijing)                      since the last published one (scripts/dev-plan.mjs) — so it only fills in
+#                                 a merge whose build did not come out: quick tests + the Mac
 #                                 arm64 build (dmg + its checks) + the Windows x64 build (installer + its
 #                                 checks, GitHub#577, and a real update of the installed app) + the size
 #                                 gate, then published as a pre-release; a failed night opens / continues
@@ -77,9 +80,15 @@ concurrency:
   # release called by release.yml has one per tag (its github.ref is the caller's, often main).
   # GitHub#628: the runs that may publish a development build — the nightly one and a manual one with
   # "publish" — share one group that queues and never cancels a running one (a third trigger only
-  # replaces one still waiting); a push to main or a pull request never lands in it.
-  group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'dev-publish' || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && github.event.schedule != '30 20 * * *' && '-weekly' || '' }}
-  cancel-in-progress: ${{ !((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+  # replaces one still waiting). GitHub#665: a push to main publishes too, in a group of its own (also
+  # never cancelling a running one; a newer push replaces one still waiting), so a push never pushes out
+  # a waiting night. Runs of the two groups may build at the same time; they meet only at the publish
+  # job, which has one slot of its own (`client-dev-release-publish`) and re-reads the release list
+  # before writing. That slot keeps one waiting job, and the one replacing it may be the older build
+  # (it finished packaging later): that newer build is then not published this time, until the next
+  # merge or the next night — the gap the maintainer accepted on #665 (Q1 = C).
+  group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'dev-publish' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'dev-publish-push' || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && github.event.schedule != '30 20 * * *' && '-weekly' || '' }}
+  cancel-in-progress: ${{ !(!inputs.tag && ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && github.ref == 'refs/heads/main'))) }}
 
 defaults:
   run:
@@ -93,11 +102,11 @@ jobs:
   #            above every other client/vX.Y.Z tag); the build writes it into the three version files
   #   sha      the commit every job checks out: the one release.yml planned, else this run's own
   #   publish  true on the runs that publish a development build (GitHub#628): the nightly schedule,
-  #            and a manual run on main with "publish" ticked. "publish" on any other branch fails
-  #            here, before anything is built or signed
+  #            a manual run on main with "publish" ticked, and a push to main (GitHub#665). "publish"
+  #            by hand on any other branch fails here, before anything is built or signed
   #   build    whether the Macs and Windows are built at all: every release build, the weekly run, a
-  #            manual run; on a publishing run only when there is something new (scripts/dev-plan.mjs);
-  #            never on a push to main or a pull request (quick tests only)
+  #            manual run; on a publishing run (a push to main included) only when there is something
+  #            new (scripts/dev-plan.mjs); never on a pull request (quick tests only)
   #   quick    whether the quick tests run: everywhere except a publishing run with nothing to build
   #   sign     true when the update packages are signed with the maintainer's key (a release, or a
   #            publishing run); every other run uses a throw-away key
@@ -159,6 +168,8 @@ jobs:
           if [ -z "$tag" ] && [ "$EVENT" = schedule ] && [ "$SCHEDULE" = '30 20 * * *' ]; then
             publish=true
           elif [ -z "$tag" ] && [ "$EVENT" = workflow_dispatch ] && [ "$PUBLISH" = true ]; then
+            publish=true
+          elif [ -z "$tag" ] && [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
             publish=true
           fi
           sign=false
@@ -317,8 +328,8 @@ jobs:
 
   package:
     name: dmg (${{ matrix.arch }})
-    # Not on pull requests (GitHub#195), not on a push to main (GitHub#628), only when the mode job
-    # says so. arm64 alone on the nightly, weekly and manual runs; arm64 and x64 on a release build.
+    # Not on pull requests (GitHub#195), only when the mode job says so. arm64 alone on a push to main
+    # and the nightly, weekly and manual runs; arm64 and x64 on a release build.
     needs: mode
     if: needs.mode.outputs.build == 'true'
     strategy:
@@ -712,13 +723,15 @@ jobs:
             --latest=false
 
   # GitHub#215 / #628: the development build, for installed apps on the development channel: a
-  # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), published by the nightly run and a manual
-  # run on main with "publish" (mode: publish), when there is something new (mode: build), only after
+  # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), published by a push to main (GitHub#665),
+  # the nightly run and a manual run on main with "publish" (mode: publish), when there is something
+  # new (mode: build), only after
   # the quick tests, the Mac build and its real-update check, the Windows build and its real-update
   # check (GitHub#577 / #628), and the size gate passed. scripts/dev-release.mjs publishes it complete
   # or not at all, never on top of a newer one, writes nothing when that version is already out
-  # complete, and keeps the latest 10. Runs that publish queue in one group (the workflow's
-  # `concurrency`); this job has a group of its own as well, so two publishes never overlap.
+  # complete, and keeps the latest 10. Runs that publish queue in two groups (the workflow's
+  # `concurrency`: the night and manual runs, and pushes to main); this job has one group of its own
+  # for all of them, so two publishes never overlap. It waits for no other run inside that slot.
   dev-release:
     name: publish development build
     if: needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true' && needs.mode.outputs.tag == ''

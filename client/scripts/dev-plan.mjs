@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Does this run of the nightly development build (GitHub#628) have anything new to publish?
+// Does this run of the development build (GitHub#628 / #665) have anything new to publish?
 // Run by .github/workflows/client.yml's mode job, only on the runs that may publish a development
-// build: the nightly schedule, and a manual run on main with "publish" ticked.
+// build: a push to main (GitHub#665), the nightly schedule, and a manual run on main with "publish"
+// ticked. After a push has published, the night finds nothing new and builds nothing; it builds only
+// when the push's build did not come out.
 //
 // The maintainer's choice on #628 (Q1 = A): a development build comes out on a night only when the
 // client changed since the last one that was published. "The client" is what starts the Client
