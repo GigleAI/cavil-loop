@@ -503,11 +503,30 @@ TMUX_TMPDIR="$OUT/elsewhere" tmux ls > /dev/null 2>&1; echo "rc1=$?"
 env -u TMUX_TMPDIR tmux ls > /dev/null 2>&1; echo "rc2=$?"
 tmux -S "$OUT/other.sock" ls > /dev/null 2>&1; echo "rc3=$?"
 TMUX="/tmp/tmux-0/default,1,0" tmux ls > /dev/null 2>&1; echo "rc4=$?"
+# 文字前缀在服务目录里、实际位置在外面：父目录分量、符号链接（复审 #7）
+tmux -S "$TMUX_TMPDIR/../dotdot.sock" ls > /dev/null 2>&1; echo "rc5=$?"
+ln -s "$OUT" "$TMUX_TMPDIR/link"
+tmux -S "$TMUX_TMPDIR/link/viasym.sock" ls > /dev/null 2>&1; echo "rc6=$?"
+TMUX_TMPDIR="$TMUX_TMPDIR/link" tmux ls > /dev/null 2>&1; echo "rc7=$?"
+# -L 名字落在本次运行的服务目录里：照常放行
+tmux -L other new-session -d -s lab "sleep 30"; echo "lab=$?"
 echo CASE-RAN
 EOF
 chk "连错服务：以失败退出" "$CASE_RC" "1"
-chk "连错服务：四种写法都被拒绝" "$(grep -c -E '^rc[1-4]=1$' "$T/rtbad.out")" "4"
-chk "连错服务：收尾列出四条拒绝" "$(grep -c -e '^  TMUX_TMPDIR=' -e '^  -S ' -e '^  TMUX=' "$T/rtbad.out")" "4"
+chk "连错服务：七种写法都被拒绝" "$(grep -c -E '^rc[1-7]=1$' "$T/rtbad.out")" "7"
+chk "连错服务：收尾列出七条拒绝" "$(grep -c '^  服务地址 ' "$T/rtbad.out")" "7"
+chk "-L 落在服务目录里：放行" "$(grep -c '^lab=0$' "$T/rtbad.out")" "1"
+chk "连错服务：父目录分量、符号链接指过去的地方没起服务" "$([ -e "$T/rtbad.d/viasym.sock" ] || ls "$T/rtbad.d"/tmux-* >/dev/null 2>&1 && echo yes || echo no)" "no"
+
+echo "    共用的归属规则：tmux_sandbox_reap.py owns"
+OW="$T/owns"; mkdir -p "$OW/s/tmux-1" "$OW/out"; ln -s "$OW/out" "$OW/s/link"; ln -s "$OW/s" "$OW/alias"
+owns() { python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" owns "$OW/s" "$1" && echo in || echo out; }
+chk "owns：服务目录里的地址" "$(owns "$OW/s/tmux-1/default")" "in"
+chk "owns：经别名指到服务目录里" "$(owns "$OW/alias/tmux-1/default")" "in"
+chk "owns：父目录分量出了服务目录" "$(owns "$OW/s/../x.sock")" "out"
+chk "owns：符号链接出了服务目录" "$(owns "$OW/s/link/x.sock")" "out"
+chk "owns：临时根里、服务目录外" "$(owns "$OW/x.sock")" "out"
+chk "owns：服务目录本身不算" "$(owns "$OW/s")" "out"
 chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
 
 REAL_TMUX=$(command -v tmux)
@@ -517,9 +536,17 @@ tmux_sandbox_start
 D=\$(mktemp -d /tmp/cvstray.XXXXXX) || exit 1; tmux_sandbox_own_dir "\$D"; echo "\$D" > "\$OUT/dir"
 TMUX_TMPDIR="\$D" "$REAL_TMUX" -f /dev/null new-session -d -s stray "sleep 300"
 "$REAL_TMUX" -S "\$D/tmux-\$(id -u)/default" display-message -p '#{pid}' > "\$OUT/pid"
+# 在本次运行的临时根里、但不在服务目录里；和文字前缀在服务目录里、经符号链接指到外面（复审 #7）
+R=\${TMUX_TMPDIR%/s}
+"$REAL_TMUX" -f /dev/null -S "\$R/root.sock" new-session -d -s root "sleep 300"
+"$REAL_TMUX" -S "\$R/root.sock" display-message -p '#{pid}' >> "\$OUT/pid"
+ln -s "\$D" "\$TMUX_TMPDIR/link"
+"$REAL_TMUX" -f /dev/null -S "\$TMUX_TMPDIR/link/sym.sock" new-session -d -s sym "sleep 300"
+"$REAL_TMUX" -S "\$TMUX_TMPDIR/link/sym.sock" display-message -p '#{pid}' >> "\$OUT/pid"
 EOF
 chk "沙盒外服务：以失败退出" "$CASE_RC" "1"
 chk "沙盒外服务：收尾报出" "$(grep -c '发现沙盒外的 tmux 服务' "$T/rtstray.out")" "1"
+chk "沙盒外服务：三个都报出（另一个目录、临时根里、符号链接）" "$(grep '发现沙盒外的 tmux 服务' "$T/rtstray.out" | grep -o '[0-9][0-9]*（' | wc -l)" "3"
 chk "沙盒外服务：已被结束" "$(alive_all "$T/rtstray.d/pid")" "0"
 chk "沙盒外服务：它的临时目录照样删掉" "$(d=$(cat "$T/rtstray.d/dir" 2>/dev/null); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
 

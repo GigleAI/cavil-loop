@@ -25,11 +25,15 @@
 #   adds `-f /dev/null` (a server restarted mid-test reads no user config either — restarting is
 #   allowed, the maintainer's choice) and refuses every call once the exit has begun. Isolation is
 #   checked at run time (PR #660 review round 6, the maintainer chose this over more text rules): the
-#   wrapper refuses, and records, any call whose server is not this run's — `TMUX` pointing elsewhere,
-#   or no `TMUX` and a `TMUX_TMPDIR` that is not this run's directory, or a global `-S` outside it — and
-#   any record fails the file; the exit also looks at every tmux server among the processes reparented
-#   to the test and fails the file when one listens outside this run's directory (a child that lost
-#   `PATH` and ran the real tmux elsewhere). Not caught at run time: a child that bypasses the wrapper
+#   wrapper works out the socket a call will really use, in tmux's own order (`-S`; else `-L` under
+#   `TMUX_TMPDIR`; else the socket in `TMUX`; else `default` under `TMUX_TMPDIR`, `/tmp` when unset),
+#   and refuses, and records, the call when that socket is not this run's — and any record fails the
+#   file; the exit also looks at every tmux server among the processes reparented to the test and fails
+#   the file when one listens on a socket that is not this run's (a child that lost `PATH` and ran the
+#   real tmux elsewhere). "This run's" is one rule for both, `owns` in `tests/lib/tmux_sandbox_reap.py`:
+#   the socket's resolved real path lies inside the run's server directory (`…/s`), so `..` and
+#   symbolic links count where they really point (PR #660 review: each side had matched a text prefix,
+#   over different directories). Not caught at run time: a child that bypasses the wrapper
 #   and talks to a server that was already running before the test (it starts no new server). The exit runs the
 #   registered clean-ups each in its own subshell under the test's own options (`set -u` still holds),
 #   writes the close marker, kills the server and stops every process reparented to the test (servers,
@@ -170,6 +174,8 @@ tmux_sandbox_start() {
         || _tmux_sandbox_fail "python3 没有进程句柄功能（需要 3.9 以上），收尾没法确认进程退出"
     # socket 路径有长度上限，所以放在 /tmp 下的短目录里。
     _TMUX_SANDBOX_DIR="$(mktemp -d /tmp/cvtmx.XXXXXX)" || _tmux_sandbox_fail "建临时目录失败"
+    # 解析成真实路径：服务地址归不归本次运行，按解析后的路径判断（tmux_sandbox_reap.py 的 owns）
+    _TMUX_SANDBOX_DIR="$(cd "$_TMUX_SANDBOX_DIR" && pwd -P)" || _tmux_sandbox_fail "解析临时目录失败"
     mkdir -p "$_TMUX_SANDBOX_DIR/s" "$_TMUX_SANDBOX_DIR/bin" || _tmux_sandbox_fail "建临时目录失败"
     chmod 700 "$_TMUX_SANDBOX_DIR/s"
     cat > "$_TMUX_SANDBOX_DIR/bin/tmux" <<WRAP || _tmux_sandbox_fail "写 tmux 包装失败"
@@ -177,29 +183,39 @@ tmux_sandbox_start() {
 # tmux 沙盒的包装（tests/lib/tmux-sandbox.sh 生成）：关门后拒绝一切调用；每次都加
 # -f /dev/null；成功建出的会话、它所在服务的进程号记进 log。
 d='$_TMUX_SANDBOX_DIR'
+lib='$_TMUX_SANDBOX_LIB'
 real='$_TMUX_SANDBOX_REAL'
 if [ -e "\$d/closed" ]; then echo "tmux 沙盒已关闭，拒绝：tmux \$*" >&2; exit 1; fi
 # 运行时核对这次调用连的是本次运行的专用服务（PR #660 复审第 6 轮，维护者选 A）：
 # 设了 TMUX 就看它指的 socket，没设就看 TMUX_TMPDIR；全局选项 -S 给的 socket 也要在里面。
 # 不符就拒绝、记进 violations，收尾时整个文件判失败。
-bad=""
-case "\${TMUX-}" in
-    "") [ "\${TMUX_TMPDIR-}" = "\$d/s" ] || bad="TMUX_TMPDIR=\${TMUX_TMPDIR-（没设）}" ;;
-    "\$d/s/"*) ;;
-    *) bad="TMUX=\$TMUX" ;;
-esac
-gs=""; want=""
+# 这次调用实际会连的服务地址，按 tmux 自己的顺序：-S 给的；否则 -L 名字在 TMUX_TMPDIR 下；
+# 否则 TMUX 里记的；否则 TMUX_TMPDIR 下的 default（TMUX_TMPDIR 没设或为空时 tmux 用 /tmp）。
+# 归不归本次运行只用一条规则判断：tmux_sandbox_reap.py owns（解析成真实路径后在服务目录里），
+# 收尾认沙盒外服务也用它（PR #660 复审：两边原来各按文字前缀判断，范围也不一样）。
+bad=""; sock=""; lab=""; want=""
 for a in "\$@"; do
-    if [ -n "\$want" ]; then [ "\$want" = S ] && gs="\$a"; want=""; continue; fi
+    if [ -n "\$want" ]; then
+        case "\$want" in S) sock="\$a" ;; L) lab="\$a" ;; esac
+        want=""; continue
+    fi
     case "\$a" in
         -S) want=S ;;
-        -[cfLT]) want=x ;;
-        -S?*) gs="\${a#-S}" ;;
+        -L) want=L ;;
+        -[cfT]) want=x ;;
+        -S?*) sock="\${a#-S}" ;;
+        -L?*) lab="\${a#-L}" ;;
         -*) ;;
         *) break ;;
     esac
 done
-if [ -n "\$gs" ]; then case "\$gs" in "\$d/s/"*) ;; *) bad="-S \$gs" ;; esac; fi
+if [ -z "\$sock" ]; then
+    if [ -n "\$lab" ]; then sock="\${TMUX_TMPDIR:-/tmp}/tmux-\$(id -u)/\$lab"
+    elif [ -n "\${TMUX-}" ]; then sock="\${TMUX%%,*}"
+    else sock="\${TMUX_TMPDIR:-/tmp}/tmux-\$(id -u)/default"
+    fi
+fi
+python3 "\$lib/tmux_sandbox_reap.py" owns "\$d/s" "\$sock" || bad="服务地址 \$sock"
 if [ -n "\$bad" ]; then
     printf '%s | tmux %s\n' "\$bad" "\$*" >> "\$d/violations"
     echo "tmux 沙盒：这次调用连的不是本次运行的专用服务（\$bad），拒绝：tmux \$*" >&2
@@ -314,7 +330,7 @@ _tmux_sandbox_exit() {
             sed 's/^/  /' "$_TMUX_SANDBOX_DIR/violations" >&2
             bad=1
         fi
-        reap="$(python3 "$_TMUX_SANDBOX_LIB/tmux_sandbox_reap.py" "$$" --tmux "$_TMUX_SANDBOX_REAL" --sandbox "$_TMUX_SANDBOX_DIR" 2>&1)"
+        reap="$(python3 "$_TMUX_SANDBOX_LIB/tmux_sandbox_reap.py" "$$" --tmux "$_TMUX_SANDBOX_REAL" --sandbox "$_TMUX_SANDBOX_DIR/s" 2>&1)"
         r=$?
         if [ "$r" -eq 3 ]; then
             # 进程都收掉了，但其中有 tmux 服务不在本次运行的地址上：测试的某个子进程绕过了沙盒

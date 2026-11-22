@@ -9,8 +9,8 @@ SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总�
 某个进程退出后它的子进程又会被过继过来，所以循环读清单，直到连续 3 次（间隔 0.2 秒）
 都读到空，总时限 10 秒。
 
-带 --tmux <真 tmux> --sandbox <沙盒目录> 时，结束之前先看每个进程是不是 tmux 服务（可执行文件就是
-真 tmux）：是的话从 /proc/net/unix 找它监听的 socket，不在沙盒目录里（或找不到）就记下来——那是
+带 --tmux <真 tmux> --sandbox <服务目录> 时，结束之前先看每个进程是不是 tmux 服务（可执行文件就是
+真 tmux）：是的话从 /proc/net/unix 找它监听的 socket，按 owns（解析后的真实路径）不在服务目录里（或找不到）就记下来——那是
 测试的某个子进程绕过沙盒、在别的地址上起的服务（PR #660 复审第 6 轮，维护者选 A）。
 
 退出码：0 = 读到空（打印「结束了 N 个进程」）；1 = 时限到了还有活着的；2 = 读清单出错；
@@ -152,6 +152,13 @@ def server_sockets(pid):
     return found
 
 
+def owns(sockdir, path):
+    """服务地址 path 是否在本次运行的服务目录 sockdir 里：两边都解析成真实路径再比
+    （父目录分量、符号链接都按实际位置算）。包装和收尾共用这一条规则。"""
+    base = os.path.realpath(sockdir)
+    return os.path.realpath(path).startswith(base + os.sep)
+
+
 def stray_tmux(pid, real, sandbox):
     """pid 是 tmux 服务且不在沙盒地址上 → 说明文字；否则 None。"""
     try:
@@ -163,13 +170,20 @@ def stray_tmux(pid, real, sandbox):
     socks = server_sockets(pid)
     if socks is None:
         return None
-    if any(s.startswith(sandbox + "/") for s in socks):
+    if any(owns(sandbox, s) for s in socks):
         return None
     return "%d（%s）" % (pid, " ".join(socks) if socks else "找不到它的 socket")
 
 
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["owns"]:
+        # 包装用：owns <服务目录> <地址>，在里面退出 0，不在 1，判断不了 2
+        try:
+            return 0 if owns(args[1], args[2]) else 1
+        except Exception as e:  # noqa: BLE001 —— 判断不了就当不在
+            print("判断服务地址出错：%s" % e, file=sys.stderr)
+            return 2
     real = sandbox = None
     if "--tmux" in args:
         real = os.path.realpath(args[args.index("--tmux") + 1])
