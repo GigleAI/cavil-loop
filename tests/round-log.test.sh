@@ -220,8 +220,8 @@ chk "worker 没给完整版本：拒收" "$rc" "2"
 chk "以上全部零写入" "$(writes)" "0"
 
 echo "── 4a. 来回进行到一半关掉开关：下一次调用立刻按关着处理（GitHub#646）──"
-# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收（照提示词改成单独发），一笔不写；受保护读取
-# （outsider-read.sh）不再附往返视图，直接读取（round-log.sh show）不看开关、照常拆分并标出 --of
+# 复审拿到 --of 之后、发结论之前，配置里改成 false：写入命令拒收，一笔不写；受保护读取（outsider-read.sh）不再附往返视图，
+# 直接读取（round-log.sh show）不看开关、照常拆分并标出 --of；文档给的退路是重新打开——同一会话照常写进记录
 fresh issue 'LABEL_AUTOPILOT="autopilot"' 'LABEL_PENDING_MERGE="pending/merge"' 'AUTOPILOT_OUTSIDER_GUARD="on"' 'AUTOPILOT_OUTSIDER_SCREEN=""'
 echo '{"maint": "admin", "loop-bot": "write"}' > "$GD/perms.json"
 RL post 7 --role worker --to pending/review --body "$(mk b1 '第 1 版')" --full "$(mk f1 'V1')" >/dev/null
@@ -237,10 +237,17 @@ chk "关掉之后：一笔没写" "$(( $(writes) - w0 ))" "0"
 o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
 lacks "关掉之后读取命令不再附往返视图" "$o" "往返记录视图"
 lacks "关掉之后受保护读取不再标出要回应的交付（--of）" "$o" "--of "
-lacks "关掉之后受保护读取没有「最新单元」这一段（提示词据此改成单独发）" "$o" "## 最新单元"
+lacks "关掉之后受保护读取没有「最新单元」这一段" "$o" "## 最新单元"
 chk "关掉之后读取命令照常成功" "$rc" "0"
 o=$(RL show 7); rc=$?
 chk "关掉之后直接读取命令（round-log.sh show）不看开关：照常成功、仍标出 --of" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
+# 文档给的退路：关掉之后发现有条目还在来回中，重新打开 → 同一个会话带着关掉前取得的节编号照常写进记录
+sed -i 's/^ENABLE_ROUND_LOG=false$/ENABLE_ROUND_LOG=true/' "$CONF"
+o=$(bash "$REPO_DIR/scripts/outsider-read.sh" --config "$CONF" 7 2>/dev/null); rc=$?
+chk "重新打开后受保护读取又附上往返视图、标出同一个节编号" "$rc $(grep -c -- '--of '"$OFV" <<<"$o")" "0 1"
+o=$(RL post 7 --role review --of "$OFV" --to pending/agent --body "$(mk r1 $'<!-- codex-review-round:1 -->\n## ❌ 打回')"); rc=$?
+chk "重新打开后带着关掉前的节编号发结论：写入记录" "$rc $(result "$o")" "0 RESULT=written"
+chk "重新打开后：仍只有一条往返记录" "$(records)" "1"
 
 echo "── 4. 最新单元：中途有别的评论 → 另起一条 ──"
 fresh issue
@@ -811,7 +818,6 @@ has "开着：缺本次依据时补不齐就不发、不翻标签" "$sec" "补�
 has "开着：复审必须带读取时标出的 --of、原样照抄" "$sec" "复审**必须**带 \`--of\`"
 has "开着：过期的复审结论不改成单独发" "$sec" "**也不改成单独发**"
 has "开着：记录读不懂按读评论失败处理、不改成单独发" "$sec" "| \`RESULT=unreadable\`（5） | 评论读不全，或评论区里已有的往返记录读不懂（缺标记、版本对不上） | 什么都没写；照上文读评论失败的规则处理，**不改成单独发**、不翻标签 |"
-has "开着：读取输出没有「最新单元」时改成单独发、不因缺 --of 停下" "$sec" "输出里**没有「最新单元」这一段**（往返记录视图整段不在）：说明派工之后本项目关掉了往返记录。这一轮不用写入命令，照上文单独发评论、照常翻标签"
 has "开着：首次交付只有正文时的 --of 写法" "$sec" "| 正文本身（线程里还没有任何交付，如首次开 PR 时交付说明只写在 PR 正文里） | \`body\` | 拒收：照上文单独发 | 过期：不发、不翻标签 |"
 has "开着：轮次仍按最近一次人工动作重置（照上文的办法定重置点）" "$sec" "仍是「最近一次人工动作之后本目标第几轮」"
 has "开着：材料里的总数是全部历史、只数重置点之后的" "$sec" "那里的总数是**全部历史**，不是当前轮次——只数重置点之后的带标记单元"

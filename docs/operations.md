@@ -1609,19 +1609,13 @@ nothing when it fails.
 
 <details><summary>Turning it off</summary>
 
-Set `ENABLE_ROUND_LOG=false` (or remove the line). It takes effect at once, not only for new
-dispatches. Existing records stay as they are and are still counted; from the next post on, every
-agent posts its deliveries and verdicts as separate comments again, so a back-and-forth that was in
-progress simply ends its record there. An agent session already running still has the round-log
-instructions in its prompt, and those instructions cover the switch being turned off under it:
-
-| Where the item is when it is turned off | What happens next |
-|---|---|
-| Waiting for a review (`pending/review`) | The review is dispatched without the round-log instructions and posts its verdict as a separate comment |
-| Review or worker dispatched, thread not read yet | The read shows no round-log view (autopilot items with the outside-content guard, read with `outsider-read.sh`), or still shows it (all other items, read with `round-log.sh show`, which ignores the setting). Without the view the instructions say to post separately; with it, the write command rejects the post (`RESULT=rejected`, exit 2) and the instructions again say to post separately |
-| Thread already read, post not sent yet | The agent already holds the delivery's id; the write command rejects the post and it goes out as a separate comment |
-| Sent back for rework (`pending/agent` / `doing/agent`) | Same as the two rows above for the worker |
-| Handed to a person, or merged | Nothing changes: those comments were separate already |
+Set `ENABLE_ROUND_LOG=false` (or remove the line). Existing records stay as they are and are still
+counted. It takes effect at once: the round-log write command checks the setting each time it runs, and
+the guarded read (`outsider-read.sh`, autopilot items with the outside-content guard) stops adding the
+split view. An agent session already running keeps the round-log instructions it was started with, so a
+session that is in the middle of a back-and-forth can have its post refused or, on a guarded item, find
+no delivery to answer and stop. Turn it off only while no item is in an agent back-and-forth, in four
+steps: check, turn off, check again, and turn it back on if the second check finds something.
 
 To do it with the project settings script instead of an editor (`myproject` is the instance key),
 first check the current value — it prints `ENABLE_ROUND_LOG=true` while the round log is on:
@@ -1632,7 +1626,22 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 ```
 <!-- round-log-check-ops:end -->
 
-Then run this whole block and read its last line:
+**1. Check that nothing is in progress.** Replace `owner/repo` with the repository (and the two label
+names, if the project renamed them). `IDLE` means no open item carries `doing/agent` or `pending/review`;
+`BUSY: …` lists the ones that do — wait until they reach a person or are merged and run it again;
+`UNKNOWN` means the list could not be read, so nothing is known: run it again.
+
+<!-- round-log-busy-ops:begin -->
+```bash
+(
+  REPO=owner/repo
+  OUT="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(any(.labels[]; .name == "doing/agent" or .name == "pending/review")) | .number')" || { echo "UNKNOWN: could not read the open items"; exit 1; }
+  if [ -z "$OUT" ]; then echo "IDLE"; else echo "BUSY:" $OUT; exit 1; fi
+)
+```
+<!-- round-log-busy-ops:end -->
+
+**2. Turn it off.** Run this whole block and read its last line:
 
 - `ROUND_LOG=off` — saved and read back as `false` (the line above it is `RESULT=saved`, or
   `RESULT=unchanged` when it was already off).
@@ -1664,6 +1673,33 @@ Then run this whole block and read its last line:
 )
 ```
 <!-- round-log-off-ops:end -->
+
+**3. Run the check from step 1 again.** `IDLE`: done. `BUSY: …`: a dispatch started between the first
+check and the save may still carry the round-log instructions — turn the round log back on with the
+block below (same last-line words as step 2, `ROUND_LOG=on` when it worked), wait until those items
+reach a person or are merged, and start again from step 1. With the setting on again, such a session
+writes into its record as before.
+
+<!-- round-log-on-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"true"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = true ]; then echo "ROUND_LOG=on"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-on-ops:end -->
 
 To make it the default for every project, change the one empty-value branch of `round_log_enabled` in `scripts/_lib.sh` — every
 project without the line then has it on.

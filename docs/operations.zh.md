@@ -1364,17 +1364,10 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 
 <details><summary>关掉</summary>
 
-写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。改完**立刻**生效，不只管新派工。已有的记录原样留着、照常被统计；从下一次发评论起，
-每个 agent 的交付和结论都恢复成单独的评论，进行到一半的来回就在原记录那里结束。已经开着的 agent 会话，提示词里仍是往返记录的写法，
-这份写法本身已经说明了中途被关掉时怎么办：
-
-| 关掉时条目在哪一步 | 接下来 |
-|---|---|
-| 等复审（挂着 `pending/review`） | 复审派工时已没有往返记录这一段，结论单独发 |
-| 复审或 worker 已派出、还没读评论区 | 读取时：托管且开了外部内容保护的条目（用 `outsider-read.sh` 读）看不到往返记录视图；其余条目（用 `round-log.sh show` 读，它不看开关）照样看得到。看不到视图，提示词要它单独发；看得到，写入命令拒收（`RESULT=rejected`，退出码 2），提示词同样要它单独发 |
-| 已经读过、还没发出 | 手里已有那次交付的编号，写入命令拒收，改成单独发 |
-| 被打回返工中（`pending/agent` / `doing/agent`） | worker 一方同上面两行 |
-| 已交给人或已合并 | 没有变化：这些评论本来就单独发 |
+写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被统计。改完立刻生效：往返记录的写入命令每次运行都按当时的配置判断，
+受保护读取（`outsider-read.sh`，托管且开了外部内容保护的条目用它读）也不再附上拆好的往返视图。已经开着的 agent 会话仍按它开始时的提示词
+写，所以正处在来回中间的会话，可能被写入命令拒收，或者在受保护的条目上找不到要回应的交付而停下。只在没有条目处于 agent 之间的来回时关，
+分四步：先查、关掉、再查一次、再查发现有就重新打开。
 
 不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
 
@@ -1384,7 +1377,20 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 ```
 <!-- round-log-check-ops:end -->
 
-再整段运行下面这一段，看最后一行：
+**1. 先查有没有正在来回的条目。** 把 `owner/repo` 换成仓库名（项目改过这两个标签名的，也一并换掉）。`IDLE` = 没有打开的条目挂着
+`doing/agent` 或 `pending/review`；`BUSY: …` 列出挂着的条目——等它们交到人手上或合并后再查；`UNKNOWN` = 列表读不到，什么都不知道，重查。
+
+<!-- round-log-busy-ops:begin -->
+```bash
+(
+  REPO=owner/repo
+  OUT="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" --jq '.[] | select(any(.labels[]; .name == "doing/agent" or .name == "pending/review")) | .number')" || { echo "UNKNOWN: could not read the open items"; exit 1; }
+  if [ -z "$OUT" ]; then echo "IDLE"; else echo "BUSY:" $OUT; exit 1; fi
+)
+```
+<!-- round-log-busy-ops:end -->
+
+**2. 关掉。** 整段运行下面这一段，看最后一行：
 
 - `ROUND_LOG=off`：已保存，读回是 `false`（上一行是 `RESULT=saved`；本来就是关的时是 `RESULT=unchanged`）。
 - `NOT_WRITTEN: …`：配置脚本明确说了什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
@@ -1411,6 +1417,30 @@ bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject |
 )
 ```
 <!-- round-log-off-ops:end -->
+
+**3. 再跑一次第 1 步的检查。** `IDLE`：完成。`BUSY: …`：第一次检查和保存之间开始的派工可能仍带着往返记录的提示词——用下面这段把往返记录重新打开
+（最后一行的说法和第 2 步相同，成功时是 `ROUND_LOG=on`），等这些条目交到人手上或合并后，从第 1 步重来。开关重新打开后，这类会话照旧写进记录。
+
+<!-- round-log-on-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"true"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = true ]; then echo "ROUND_LOG=on"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-on-ops:end -->
 
 要让所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
 
