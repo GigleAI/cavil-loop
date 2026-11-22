@@ -17,6 +17,7 @@ SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总�
 3 = 读到空，但其中有沙盒外的 tmux 服务（打印它们）。
 这是尽力清理：读清单是一个个进程地读，扫描途中被过继过来的进程可能漏掉。
 """
+import getopt
 import os
 import select
 import signal
@@ -159,6 +160,32 @@ def owns(sockdir, path):
     return os.path.realpath(path).startswith(base + os.sep)
 
 
+# tmux 自己的全局选项（tmux.c 的 getopt 串）：合并写法（`-2S 地址`、`-uL名字`）照 getopt 拆开
+TMUX_GLOBAL_OPTS = "2c:CDdf:lL:NqS:T:uUvV"
+
+
+def tmux_socket(argv, env):
+    """这次 tmux 调用实际会连的服务地址，照 tmux 自己的顺序：-S；否则 -L 名字在 TMUX_TMPDIR 下；
+    否则 TMUX 里记的；否则 TMUX_TMPDIR 下的 default（TMUX_TMPDIR 没设或为空时用 /tmp）。
+    看不懂的全局选项抛 getopt.GetoptError（调用方当「不在」拒绝）。"""
+    opts, _ = getopt.getopt(argv, TMUX_GLOBAL_OPTS)
+    sock = label = None
+    for o, v in opts:
+        if o == "-S":
+            sock = v
+        elif o == "-L":
+            label = v
+    if sock:
+        return sock
+    tmpdir = env.get("TMUX_TMPDIR") or "/tmp"
+    base = "%s/tmux-%d" % (tmpdir, os.getuid())
+    if label:
+        return "%s/%s" % (base, label)
+    if env.get("TMUX"):
+        return env["TMUX"].split(",", 1)[0]
+    return base + "/default"
+
+
 def stray_tmux(pid, real, sandbox):
     """pid 是 tmux 服务且不在沙盒地址上 → 说明文字；否则 None。"""
     try:
@@ -177,6 +204,17 @@ def stray_tmux(pid, real, sandbox):
 
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["check"]:
+        # 包装用：check <服务目录> <tmux 的参数…>，这次调用连的地址在服务目录里退出 0，否则 1（打印地址）
+        try:
+            sock = tmux_socket(args[2:], os.environ)
+        except getopt.GetoptError as e:
+            print("看不懂的 tmux 全局选项（%s）" % e)
+            return 1
+        if owns(args[1], sock):
+            return 0
+        print("服务地址 %s" % sock)
+        return 1
     if args[:1] == ["owns"]:
         # 包装用：owns <服务目录> <地址>，在里面退出 0，不在 1，判断不了 2
         try:

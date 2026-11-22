@@ -25,7 +25,9 @@
 #   adds `-f /dev/null` (a server restarted mid-test reads no user config either — restarting is
 #   allowed, the maintainer's choice) and refuses every call once the exit has begun. Isolation is
 #   checked at run time (PR #660 review round 6, the maintainer chose this over more text rules): the
-#   wrapper works out the socket a call will really use, in tmux's own order (`-S`; else `-L` under
+#   wrapper asks `check` in `tests/lib/tmux_sandbox_reap.py`, which splits tmux's global options with
+#   tmux's own getopt string (combined forms like `-2S path` included; an option it does not know is
+#   refused), works out the socket the call will really use in tmux's own order (`-S`; else `-L` under
 #   `TMUX_TMPDIR`; else the socket in `TMUX`; else `default` under `TMUX_TMPDIR`, `/tmp` when unset),
 #   and refuses, and records, the call when that socket is not this run's — and any record fails the
 #   file; the exit also looks at every tmux server among the processes reparented to the test and fails
@@ -189,33 +191,11 @@ if [ -e "\$d/closed" ]; then echo "tmux 沙盒已关闭，拒绝：tmux \$*" >&2
 # 运行时核对这次调用连的是本次运行的专用服务（PR #660 复审第 6 轮，维护者选 A）：
 # 设了 TMUX 就看它指的 socket，没设就看 TMUX_TMPDIR；全局选项 -S 给的 socket 也要在里面。
 # 不符就拒绝、记进 violations，收尾时整个文件判失败。
-# 这次调用实际会连的服务地址，按 tmux 自己的顺序：-S 给的；否则 -L 名字在 TMUX_TMPDIR 下；
-# 否则 TMUX 里记的；否则 TMUX_TMPDIR 下的 default（TMUX_TMPDIR 没设或为空时 tmux 用 /tmp）。
-# 归不归本次运行只用一条规则判断：tmux_sandbox_reap.py owns（解析成真实路径后在服务目录里），
-# 收尾认沙盒外服务也用它（PR #660 复审：两边原来各按文字前缀判断，范围也不一样）。
-bad=""; sock=""; lab=""; want=""
-for a in "\$@"; do
-    if [ -n "\$want" ]; then
-        case "\$want" in S) sock="\$a" ;; L) lab="\$a" ;; esac
-        want=""; continue
-    fi
-    case "\$a" in
-        -S) want=S ;;
-        -L) want=L ;;
-        -[cfT]) want=x ;;
-        -S?*) sock="\${a#-S}" ;;
-        -L?*) lab="\${a#-L}" ;;
-        -*) ;;
-        *) break ;;
-    esac
-done
-if [ -z "\$sock" ]; then
-    if [ -n "\$lab" ]; then sock="\${TMUX_TMPDIR:-/tmp}/tmux-\$(id -u)/\$lab"
-    elif [ -n "\${TMUX-}" ]; then sock="\${TMUX%%,*}"
-    else sock="\${TMUX_TMPDIR:-/tmp}/tmux-\$(id -u)/default"
-    fi
-fi
-python3 "\$lib/tmux_sandbox_reap.py" owns "\$d/s" "\$sock" || bad="服务地址 \$sock"
+# 这次调用实际会连的服务地址归不归本次运行，整件事交给 tmux_sandbox_reap.py check：它照 tmux 自己的
+# getopt 串拆全局选项（合并写法也认），按 tmux 的顺序算出地址，再用 owns（解析成真实路径后在服务目录
+# 里）判断；收尾认沙盒外服务也用 owns（PR #660 复审：原来包装自己在 shell 里拆选项，漏了合并写法）。
+bad=""
+why=\$(python3 "\$lib/tmux_sandbox_reap.py" check "\$d/s" "\$@" 2>&1) || bad="\${why:-判断服务地址失败}"
 if [ -n "\$bad" ]; then
     printf '%s | tmux %s\n' "\$bad" "\$*" >> "\$d/violations"
     echo "tmux 沙盒：这次调用连的不是本次运行的专用服务（\$bad），拒绝：tmux \$*" >&2

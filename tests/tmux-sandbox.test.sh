@@ -508,14 +508,21 @@ tmux -S "$TMUX_TMPDIR/../dotdot.sock" ls > /dev/null 2>&1; echo "rc5=$?"
 ln -s "$OUT" "$TMUX_TMPDIR/link"
 tmux -S "$TMUX_TMPDIR/link/viasym.sock" ls > /dev/null 2>&1; echo "rc6=$?"
 TMUX_TMPDIR="$TMUX_TMPDIR/link" tmux ls > /dev/null 2>&1; echo "rc7=$?"
-# -L 名字落在本次运行的服务目录里：照常放行
+# 合并短选项、紧贴的参数（复审 #8）
+tmux -2S "$OUT/combined.sock" ls > /dev/null 2>&1; echo "rc8=$?"
+tmux -qS"$OUT/attached.sock" ls > /dev/null 2>&1; echo "rc9=$?"
+tmux -Z ls > /dev/null 2>&1; echo "unknown=$?"
+# -L 名字落在本次运行的服务目录里：照常放行（单独写、和别的短选项合并写）
 tmux -L other new-session -d -s lab "sleep 30"; echo "lab=$?"
+tmux -uL other2 new-session -d -s lab2 "sleep 30"; echo "lab2=$?"
 echo CASE-RAN
 EOF
 chk "连错服务：以失败退出" "$CASE_RC" "1"
-chk "连错服务：七种写法都被拒绝" "$(grep -c -E '^rc[1-7]=1$' "$T/rtbad.out")" "7"
-chk "连错服务：收尾列出七条拒绝" "$(grep -c '^  服务地址 ' "$T/rtbad.out")" "7"
-chk "-L 落在服务目录里：放行" "$(grep -c '^lab=0$' "$T/rtbad.out")" "1"
+chk "连错服务：九种写法都被拒绝" "$(grep -c -E '^rc[1-9]=1$' "$T/rtbad.out")" "9"
+chk "连错服务：收尾列出九条地址拒绝" "$(grep -c '^  服务地址 ' "$T/rtbad.out")" "9"
+chk "看不懂的全局选项：拒绝并记下" "$(grep -c '^unknown=1$' "$T/rtbad.out"):$(grep -c '^  看不懂的 tmux 全局选项' "$T/rtbad.out")" "1:1"
+chk "合并写法的地址上没起服务" "$([ -e "$T/rtbad.d/combined.sock" ] || [ -e "$T/rtbad.d/attached.sock" ] && echo yes || echo no)" "no"
+chk "-L 落在服务目录里：单独写、合并写都放行" "$(grep -c -E '^lab2?=0$' "$T/rtbad.out")" "2"
 chk "连错服务：父目录分量、符号链接指过去的地方没起服务" "$([ -e "$T/rtbad.d/viasym.sock" ] || ls "$T/rtbad.d"/tmux-* >/dev/null 2>&1 && echo yes || echo no)" "no"
 
 echo "    共用的归属规则：tmux_sandbox_reap.py owns"
@@ -527,6 +534,13 @@ chk "owns：父目录分量出了服务目录" "$(owns "$OW/s/../x.sock")" "out"
 chk "owns：符号链接出了服务目录" "$(owns "$OW/s/link/x.sock")" "out"
 chk "owns：临时根里、服务目录外" "$(owns "$OW/x.sock")" "out"
 chk "owns：服务目录本身不算" "$(owns "$OW/s")" "out"
+echo "    包装算地址：tmux_sandbox_reap.py check，单独写和合并写结论一致"
+ck() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@" > /dev/null && echo in || echo out; }
+chk "check：-2 -S 外面 / -2S 外面 / -2S外面" "$(ck -2 -S "$OW/x.sock" ls) $(ck -2S "$OW/x.sock" ls) $(ck -2S"$OW/x.sock" ls)" "out out out"
+chk "check：-u -L 名字 / -uL 名字 / -uL名字（都在服务目录里）" "$(ck -u -L n ls) $(ck -uL n ls) $(ck -uLn ls)" "in in in"
+chk "check：-f 的参数不当地址（-fS 是配置文件名 S）" "$(ck -f S ls) $(ck -fS ls)" "in in"
+chk "check：-S 在子命令之后不算全局选项" "$(ck capture-pane -p -S -)" "in"
+chk "check：看不懂的全局选项" "$(ck -Z ls)" "out"
 chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
 
 REAL_TMUX=$(command -v tmux)
