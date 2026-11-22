@@ -24,6 +24,64 @@
 # 给桌面客户端读的行（GitHub#387 简化配对）：status 另给 HOST= / PORT= / DEVICES=（数字，读不到是 unknown），
 # pair 另给 HOST= / CODE= / EXPIRES=（失效时刻，秒）。HOST= 只在读到机器名时出现。
 # status 在服务运行时另给 ENTRY_CODE=same|differs|unknown（入口在跑的代码和磁盘上的比，GitHub#533）。
+
+# ── Remote access: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Remote access (GitHub#387: `scripts/remote-access.sh`, `scripts/remote-access/remote_access.py`,
+# `scripts/project-service.sh`, the `CAVIL_REMOTE_ACCESS_*` names in `_names.sh`, the commands in
+# `docs/operations{,.zh}.md` behind `<!-- remote-access-ops:begin -->`) →
+# `tests/remote-access.test.sh` (~1.5 min; real scripts and a real service process under a fake HOME,
+# the fake scheduler and a fake `tailscale` / `sudo` from `tests/fixtures/remote-access-fakes.sh`;
+# requests come from `tests/fixtures/remote-access-client.py`, written from the documented protocol
+# and deliberately **not** importing the service — keep it that way, it is the cross-check). The
+# client side is `client/src-tauri/crates/core/src/remote.rs` → `cd client && npx vitest run
+# test/unit/remote.test.ts` and `npx playwright test test/e2e/remote.spec.ts` (the real back end
+# against the real service behind `tests/fixtures/remote-access-front.py`, a stand-in for Tailscale's
+# HTTPS forwarding). It is off unless a person runs `enable` / `pair`; the service listens on loopback
+# only and the one way in is a tailnet-only `tailscale serve` forward — never bind another address,
+# never open a funnel. "Who is calling" is the forwarded address looked up with `tailscale whois`; a
+# failed or unreadable lookup is a refusal, never "anonymous, let in". Every Tailscale and scheduler
+# read in the script is three-way (yes / no / unknown) and unknown changes nothing. The stop / start
+# rule exists twice — `project-service.sh` here and `service()` in the client's `daemon.rs` — and
+# `client/test/unit/remote.test.ts` runs both on the same scenarios: change one, change the other. **A
+# test must never reach the real `sudo` or the real `tailscale`**: this machine lets `sudo -n
+# tailscale` run without a password, and a test that fell through to it registered a real forward on
+# the dev box — the fixture puts a fake `sudo` first on `PATH`; keep any new test of this area on that
+# `PATH`. The replay guard must hold across a restart: handled requests are written to `nonces.json`
+# before they are carried out (a client clock may run up to 120 s fast, so "signed before the service
+# started" proves nothing — code review round 1), and an unreadable record means no signed request for
+# 240 s, never "nothing was handled". A forward is this feature's only when its port is in the `ports`
+# list — the shape alone (`port → same local port`) is what on-demand previews register too; the list
+# is written before registering and struck only after the removal is read back, and `disable` / a port
+# change release every listed port. A forward query that exits 0 with no output is "unknown", not
+# "none". The same goes for the feature's own records (code review round 2): `ports`, `port` and the
+# device list are each read three ways through one loader (`state_load`: absent / readable / not
+# readable — unreadable, or one line that is not a port), every command loads before it reads,
+# registers, stops or removes anything, and "not readable" stops `enable` / `pair` / `disable` with
+# nothing changed and the file not overwritten — never filter a record down to "the lines I
+# recognise", that turns "cannot read" into "empty". A list write that fails before registering
+# registers nothing; one that fails after a removal ends as `partial`, never `disabled`. Pairing
+# without a terminal (maintainer's request on PR #400): the client's own-machine switch, pairing code,
+# void and paired-computer list (`client/src-tauri/crates/core/src/remote_host.rs`,
+# `client/src/renderer/RemoteHostBlock.tsx`) run the same `remote-access.sh` commands and read its
+# `HOST=` / `CODE=` / `EXPIRES=` / `DEVICES=` / `DEVICE=` lines — never a second implementation of
+# open / close / code / revoke; the switch shows what `status` reads back, and an unreadable status is
+# "状态未知" with no switch. The "添加远程 daemon" machine list (`Remote::tailnet`) reads this computer's
+# `tailscale status --json` and asks each online machine one unsigned `/v1/hello` through the usual
+# checks: only a refused connection is "未打开", anything else that is not our entry is "不确定", and an
+# unreadable device list is never an empty one. The remote entry can only be opened on the machine
+# itself; never add a way to open it from another computer. The doc commands are run verbatim in an
+# empty environment; keep the two copies identical. A project's settings from another computer
+# (GitHub#530: `GET` / `POST /v1/projects/<key>/config`, `Remote::config_get` / `config_set`, the
+# `remote` mode of `ProjectConfigDialog.tsx`) → `tests/remote-access.test.sh` §7b (a stand-in in front
+# of the real `project-config.sh` counts get / set calls: a malformed body runs neither, a well-formed
+# but read-only setting runs get only, a real save runs both) plus the `GitHub#530` cases in
+# `client/test/unit/remote.test.ts` (remote vs local answers on the same scenarios) and
+# `client/test/e2e/remote.spec.ts`. The machine runs its own `project-config.sh`, never a second
+# implementation of what may be changed; the request-shape check exists twice
+# (`config_request_problem` in the service, `valid_setting` / `valid_value` / `valid_rev` in
+# `daemon_config.rs`) and both are run against `tests/fixtures/config-request-shapes.json` — change
+# both together. No signed answer to a save is `unconfirmed`, never "saved" or "not written"
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

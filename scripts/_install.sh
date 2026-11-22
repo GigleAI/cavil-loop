@@ -7,6 +7,23 @@
 #
 # 依赖：调用方先 source scripts/_names.sh（名字表）。
 
+# ── The scripted install interface: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The scripted install interface (GitHub#313: `setup.sh --yes`, `scripts/_install.sh` —
+# `cavil_agent_deps` is the one dependency rule both `setup.sh` and the status script use,
+# `cavil_render_plist` the one plist renderer both install and refresh use, `cavil_systemd_probe` /
+# `cavil_launchd_probe` the scheduler reads — `install-status.sh`, `disconnect-project.sh`,
+# `launchd-refresh.sh`, the commands in `docs/operations{,.zh}.md` behind `<!--
+# install-scripts-ops:begin -->` / `<!-- install-scripts-mac-ops:begin -->`) →
+# `tests/install-scripts.test.sh` (~30 s; real scripts under a fake HOME and fake `systemctl` /
+# `launchctl` / `plutil` / `uname`). Without `--yes`, `setup.sh`'s output, files and scheduler state
+# must equal the merge-base copy on Linux and macOS. A scheduler read that fails, is empty or prints
+# an unknown word is "unknown", never "stopped", and then nothing is deleted or replaced. The doc
+# commands are run verbatim in an empty environment; keep the two copies identical. Group 8 reruns
+# install / status / project settings / refresh / disconnect under a single-byte locale generated in
+# the sandbox (`localedef` + `LOCPATH`), where Linux's bash reads variable names the way macOS's bash
+# 3.2 does (GitHub#411)
+#
+
 # ── 依赖清单 ──
 # cavil_required_cmds <os> [agent 程序名]：按 setup.sh 一直以来的顺序逐行写出必需的命令：
 # 通用工具、agent 程序（给了才写）、调度器（Linux：systemctl timeout；macOS：launchctl）。

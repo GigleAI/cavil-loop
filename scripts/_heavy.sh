@@ -12,6 +12,52 @@
 #     就一定有过分组；分组没了 = 这次运行一个进程都不剩，也不会再启动。
 #   - 进程身份 = 进程号 + 启动时间。只比进程号会把复用了同一个号的别的进程当成原来那个。
 
+# ── Heavy tests one at a time, and stopping an item's tests when it ends: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Heavy tests one at a time, and stopping an item's tests when it ends (GitHub#343:
+# `HEAVY_TEST_COMMANDS`; `scripts/heavy-test.sh` — the queue wrapper a worker runs in its session;
+# `scripts/_heavy.sh` — the one implementation of "scope state", "item generation" and "is the worker
+# that started this test still there", sourced by both the wrapper and `_lib.sh`; `heavy_*` /
+# `item_lock_reexec` in `_lib.sh`; the item lock at the top of the three dispatch scripts and
+# `cleanup-issue.sh`; step 0c in `agent-poll.sh`; `prompts/heavy-test.md`; the commands in
+# `docs/operations{,.zh}.md` behind `<!-- heavy-test-ops:begin -->`) → `tests/heavy-test.test.sh`
+# (~2.5 min; the real wrapper, the real dispatch / cleanup scripts, real tmux on a private socket, a
+# stand-in for systemd) plus `tests/heavy-test-systemd.test.sh` (~20 s; real `systemd-run --user
+# --scope`, not in CI). The next run is let through when the previous run's scope is empty, not by who
+# holds a lock: a run record can only be written by a process already inside its own scope, so "scope
+# not found" proves that run will never start; the command under test inherits no lock descriptor.
+# Scope state is read from explicit words only — a failed query, empty output or an unknown word
+# counts as still running (no record removed, nothing let through, nothing stopped, no worktree
+# removed). Dispatch and cleanup each re-run themselves under the item lock (`flock -o`: the flock
+# process holds the lock and does not pass the descriptor on — otherwise it leaks through a freshly
+# started tmux server into the worker, and the lock is held for as long as the worker lives); cleanup
+# bumps the item's generation as soon as it holds the lock, and the wrapper checks the generation and
+# writes its record under the same lock (shared), so the two cannot interleave. Lock order is fixed:
+# poll lock → item lock, queue lock → item lock; dispatch and cleanup never take the queue lock. The
+# stand-in only checks decisions; "a process cannot leave its scope, the whole scope is stopped,
+# nothing outside it is touched" is checked only in the real-systemd file; both files run the doc
+# commands verbatim (including with another item already holding the queue: a run to stop is always
+# named by its id, `--id-file` hands a run its own id, never pick one out of the account-wide list),
+# and the two doc copies must be identical. "This machine cannot use scopes" must be a fact visible on
+# the spot (not Linux / not cgroup v2 / no binaries / no user-manager socket); a user manager that
+# exists but did not answer this time is "unknown" — exit 70, no degrading (the degraded mode cannot
+# see existing scopes). Scopes are stopped only through `heavy_stop_unit`, which re-reads the state
+# itself right before stopping and sends nothing when that read fails. Run records are read only
+# through `heavy_run_load` (read / file already gone / unreadable or unrecognised — three outcomes;
+# each of the ten fields is checked for "is this line there", and a missing line is not an empty value
+# — the ownership fields statedir / item / gen are either all present, or all explicitly empty for a
+# hand-run; the field table sits above that function in `_heavy.sh`; the wrapper reads its own record
+# back through the same function after writing it, and refuses to run when the environment carries
+# only part of an ownership): an unreadable record must never be filtered out as "queued" or "not this
+# project's" — the scope name follows from the file name, the record is removed only once that scope
+# is confirmed gone, and until then it blocks the queue and worktree removal and is not stopped; never
+# judge a run record from `heavy_field`'s empty string again. A launch record is written before the
+# worker starts (pid pending), only marked — never deleted — once the launch is confirmed ended, and
+# removed at item cleanup: the wrapper lets nothing through for a launch id with no record, so
+# deleting the record would let a late request from an ended worker start again. With
+# `HEAVY_TEST_COMMANDS` unset the prompts, the GitHub calls and the files in the state directory equal
+# the merge-base scripts' (the test diffs them)
+#
+
 # 运行记录里取一个字段。记录是「键=值」逐行，值不换行。文件不在 / 读不到 → 空。
 heavy_field() {   # <记录文件> <键>
     local line

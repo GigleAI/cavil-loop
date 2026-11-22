@@ -18,6 +18,47 @@
 # --keep-name 只给周报：周报文件名本来就带每期唯一的戳（PDF 用它找本机矢量图），原样保留。
 #
 # stdout 只有地址（一行一个），其余说明都在 stderr。退出码：0 全部发出；1 拒绝或失败；2 用法错误。
+
+# ── One publish entry and the enforced server-side check for comment images: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# One publish entry and the enforced server-side check for comment images (GitHub#613:
+# `scripts/publish-asset.sh`, `scripts/public-assets/{serve,rules,strict}.mjs`, `switch.sh`,
+# `usage.sh`, `asset_publish_fill` / `asset_project_key` in `_lib.sh` and its call after
+# `concurrent_work_fill` in the three dispatch scripts, `prompts/asset-publish.md`, the `--auto` call
+# in `poll-entry.sh`, the publish branch of `weekly-report/run.sh`, the commands in
+# `docs/operations{,.zh}.md` behind `<!-- public-assets-rollback:begin -->`) →
+# `tests/public-assets-strict.test.sh` (~40 s; the real service through `run.sh`, a fake `systemctl`
+# that really starts and stops it, the real dispatch script and weekly `run.sh`) plus
+# `tests/public-assets.test.sh` and `tests/reply-layout-prompts.test.sh`. "Is the server-side check in
+# force" has one definition, `statusCheck` in `strict.mjs` (the service's own status file: strict on,
+# legacy list usable, recorded pid alive with the same start time — **and** the switch's acceptance
+# record `accepted.json`, written only after its verification passed, naming exactly that process;
+# strict mode running without it is `strict-unverified`, never "in force") — the publish command, the
+# switch and the weekly report all ask it; unreadable is never "in force". Where the service really
+# serves (directory, listening port, path prefix) is taken from that same answer and nothing else: a
+# status file missing any of them is `unknown`, and no caller falls back to a configured or default
+# value (PR #623 review round 6: the switch's check assumed `/review-assets/` and a working service
+# with a custom `PUBLIC_ASSETS_PREFIX` was rolled back). The switch refuses while any registered
+# project has only the early `WEEKLY_REPORT_ASSET_URL` and no `WEEKLY_REPORT_ASSET_ROOT_URL` (the new
+# address cannot be derived), so an automatic switch never stops a weekly report. Project configs are
+# read one way only, `scripts/weekly-report/_asset_mode.sh` (`project_conf_load` in a child,
+# `project_conf_source` in place: inherited values removed, then `set -a; .` — the values after
+# loading, never the file's text), by the weekly report, the publish command and the switch's
+# pre-check and verification; which configs are projects is only `strict.mjs keys`, and either one
+# failing to read is "cannot tell" → no switch (PR #623 review rounds 2–3 each found a third reader
+# with its own parsing). The only trusted legacy state is the `PUBLIC_ASSETS_LEGACY_SHA=` line in the
+# service config: present = the list governs and is never rebuilt, absent = never in force; never
+# rebuild a list from the directory as it is now. In strict mode a file is read whole into memory and
+# judged, compared and sent from that one buffer — never stream from disk after judging. The cache
+# keyed by file identity holds content facts only (the bytes, their SHA-256, the credential findings);
+# whether a path may be served, its extension / format and its legacy-list entry are judged again on
+# every request, because one identity can sit at several paths (hard links) — caching a verdict let
+# one path's answer decide another's (PR #623 review round 5). An old image is judged by the legacy
+# list alone (path in the list, content SHA-256 equal) — never make it depend on the project list: one
+# unreadable project config would then break every old image in posted comments (PR #623 review round
+# 4); only a path not in the list needs the project list, and an unreadable one refuses that path.
+# Without `PUBLIC_ASSETS_STRICT=1` the service answers exactly like the merge-base copy (the test
+# diffs a set of requests); with no image address the worker prompts are untouched.
+#
 set -euo pipefail
 
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"

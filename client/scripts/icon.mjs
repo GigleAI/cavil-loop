@@ -26,6 +26,16 @@
 // No dependencies: PNG decode / encode and .icns reading are below, so the same
 // code runs in the unit tests (Linux), by hand, and on the macOS CI runner.
 
+// ── The logo images in `docs/logo/`: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+// The logo images in `docs/logo/` (GitHub#310: `logo.png` at the top of both READMEs,
+// `social-preview.png` for the repository's Settings → Social preview) → `cd client && npx vitest run
+// test/unit/icon.test.ts`. Never hand-edit them: they are drawn from the app icon's artwork
+// `client/build/icon-source.png` by the same function as the app icon (`renderBody` in
+// `client/scripts/icon.mjs`); rerun `node client/scripts/icon.mjs docs` and commit the output. Keep
+// them out of `docs/images/` — `tests/doc-diagrams.test.sh` diffs that whole directory against the
+// diagram generator
+//
+
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { inflateSync, deflateSync } from 'node:zlib';
 import { join, dirname } from 'node:path';

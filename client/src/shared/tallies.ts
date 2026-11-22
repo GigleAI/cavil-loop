@@ -12,6 +12,32 @@
 // What is kept: `null` = never changed (the default table); otherwise the whole table. A saved value
 // that is not a valid table is not shown half: the default is shown and Settings says so.
 
+// ── The view bar's fold: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+// The view bar's fold (GitHub#634: each row's `fold` in Settings → 顶栏计数 — `never` / `zero` / `always`;
+// absent = `tallyFold` in `client/src/shared/tallies.ts` decides, in this order: a row counting the
+// parked label (GitHub#643, below) folds always, then the default row of the same id, then `zero`;
+// `folded` on each entry from `tallyEntries`; the row / fold drawing and focus rules in
+// `client/src/renderer/TallyBar.tsx`) → `cd client && npx vitest run test/unit/tallies.test.ts
+// test/unit/flowTally.test.ts && npm run test:e2e -- flow-tally` (both `flow-tally.spec.ts` and
+// `flow-tally-fold.spec.ts`; the latter moves counts by changing labels in the fake GitHub and
+// syncing). Folding only moves where a number is drawn: which number is lit, its "显示已关闭" switch and
+// the search a second click gives back are always worked out on the whole list — never filter the
+// entries before `litTally` / `tallyClick`. A saved table without `fold` is not broken (old tables);
+// an unknown value breaks the whole table like any other bad field. Keyboard focus follows the number
+// between the row and the fold. UI tests click a number through `press` in `client/test/e2e/tally.ts`
+// (it opens the fold first when the number is folded) and read the table order from `data-order`, not
+// from DOM order. A row counting the parked label (GitHub#643: `tallyFold` with `ParkedFold`,
+// `parkedScope` / `commonParked` / `soleLabel` in `tallies.ts`, `viewBarParked` in `flowTally.ts`) —
+// one following the parked flow label, or a condition written by hand picking just one label — folds
+// always by default, before the id is looked at, while the shared parked label is not empty (empty
+// turns this rule off even when a repository has a name of its own) and, for a written condition, when
+// every repository the ticked sources can hold uses that name as its parked label — the view bar and
+// Settings' fold picker take it from the same inputs (label settings + ticked sources, never the items
+// in hand); a Project ticked means the repositories cannot be told, so then only an unrenamed shared
+// name counts → `cd client && npx vitest run test/unit/tally-parked-fold.test.ts && npm run test:e2e
+// -- flow-tally-fold --grep 643`
+//
+
 import type { SourceConfig, TallyColor, TallyDef, TallyFlow, TallyFold, TallySource } from './types';
 import { t, zhKey } from './i18n';
 import { parseFilter } from './filter';

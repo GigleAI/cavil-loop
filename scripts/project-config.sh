@@ -31,6 +31,48 @@
 # 退出码：0 = get 输出了 JSON / set 结果是 saved、unchanged；1 = 用法错误、没有这个项目；
 #   2 = 没写（changed / invalid / not_editable / busy / unreadable / verify_failed / backup_failed / write_failed）；
 #   3 = 缺 jq；4 = saved_then_changed。
+
+# ── Reading and changing a project's everyday settings: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Reading and changing a project's everyday settings (GitHub#388: `scripts/project-config.sh`,
+# `scripts/config-fields.txt`, the client's `daemon_config.rs` / `ProjectConfigDialog.tsx`, the
+# commands in `docs/operations{,.zh}.md` behind `<!-- project-config-ops:begin -->`) →
+# `tests/project-config.test.sh` (~30 s; the real script under a fake HOME) and
+# `tests/project-config-poll.test.sh` (~15 s; real `agent-poll.sh` rounds before and after a real
+# save), plus `client/test/unit/project-config.test.ts` and `client/test/e2e/daemon-config.spec.ts`
+# for the form. Only settings registered in `config-fields.txt` are read at all, only `edit` ones are
+# written; **never register a command, hook, token, URL, folder or name** — the window could then run
+# anything or read a credential (the test asserts the list by name pattern). A registered setting is
+# editable only when the config has it on exactly one unindented top-level line as a plain literal
+# whose value equals what the config loads to; anything else is shown with the reason. "Top level" is
+# read from bash's own parse — the file wrapped in a function body and printed by `declare -f`, where
+# a top-level assignment is the line indented exactly four spaces — never from the file's indentation:
+# an unindented assignment inside `if true; then … fi` was taken for editable and rewritten (PR #399
+# code review round 1). "Editable" and "missing, may be appended" are judged from the same evidence,
+# the number of times the name occurs as a word in that normalized code (`mentions`): zero and unset =
+# missing; exactly one, and it is the top-level assignment line = editable; anything else is
+# show-only. Never decide "missing" from "no line starts with `KEY=`": `if false; then KEY=2; fi` on
+# one line has no such line, was reported missing, and a save appended a top-level line over it (round
+# 2). An unreadable parse makes every setting show-only — not known is not absent. The value shown is
+# a separate question from editability: it is always what the daemon works with — unset or empty after
+# loading means the registered default (`effective`), so a line inside a branch that did not run shows
+# the default, not an empty field. Each row's "value when the line is missing" must be what the daemon
+# really uses: checked against `config-notices.txt` and the template, against a real `_lib.sh` load of
+# an empty config, and — for the ones defaulted only where they are used (`${X:-n}`) — against the
+# real consumer: poll rounds for concurrency, the two retry caps, cleanup after merge and the conflict
+# check with its day limit (a real conflict, real `merge-tree`), the real
+# `post-merge-retrospective.sh` for the model it hands to the model program
+# (`tests/project_config_retro_test.py`). Every registered default is checked against its consumer
+# this way; a new row needs its own. Change a default in both places. A save works from a private copy
+# of the file (never a hard link — that is another name for the same mutable file), compares the file
+# with the caller's fingerprint once more right before the rename, and **never writes the config after
+# the rename**: no rollback, no automatic restore (an earlier design restored a "kept" copy and
+# overwrote a newer outside save — design review round 2). What cannot be prevented is stated, not
+# hidden: an editor storing between the last check and the rename, or through a file it opened
+# earlier, loses its edit while the result may still be `saved`; the test pins those outcomes as they
+# are, by wrapping the real `cp` / `mv` (no test switch in the script). "Could not load" is
+# `unreadable` with no values, never "nothing set"; no `RESULT=` line is `unconfirmed` on the client —
+# neither "saved" nor "nothing written"
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

@@ -498,6 +498,18 @@ trust_fingerprint() {
     if [ -e "$1" ]; then cksum < "$1"; else echo absent; fi
 }
 
+# ── Folder-trust records and the trust dialog: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Folder-trust records and the trust dialog (GitHub#108: `agent_trust_key` / `agent_trust_paths` /
+# `AGENT_TRUST_PROMPT_*` in the drivers, `trust_config_locked_update` / `agent_trust_dirs` in
+# `drivers/_common.sh`, `agent_prepare_trust` / `agent_launch_trust_gate` in `_lib.sh`, setup step 1b)
+# → `tests/agent-trust-paths.test.sh` (~50 s by default, ~2 min with `MUTATION=1`). The dialog is
+# recognized by its structure on real screen captures (`tests/fixtures/trust-dialog/`), never by one
+# phrase — a conversation quoting it must not get killed. Which directory an agent trusts by was
+# measured on the real CLIs, not inferred — neither inherits trust from a parent inside a git repo,
+# and submodules differ per agent; change a rule only after re-measuring. Every write to
+# `~/.claude.json` / `~/.codex/config.toml` goes through the shared per-file lock: each project's poll
+# lock is its own, and two unlocked writers silently drop each other's entries
+#
 # 在「按配置文件划分」的共享锁里改一份配置文件。driver 的 agent_trust_paths 都走这里。
 #
 #   trust_config_locked_update <cfg> <render_fn> <verify_fn> <key>...

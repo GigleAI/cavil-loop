@@ -1,4 +1,37 @@
 #!/usr/bin/env python3
+
+# ── Agent hit its usage limit: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Agent hit its usage limit (GitHub#341: `ENABLE_USAGE_LIMIT_PAUSE`, `USAGE_LIMIT_FALLBACK_SECS`,
+# `scripts/usage_limit.py`, `AGENT_USAGE_LIMIT` / `agent_account_dir` / `agent_session_record` in the
+# drivers, the `usage_limit_*` block in `_lib.sh` — `usage_limit_gate` at the top of both dispatch
+# functions, `usage_limit_tick` (step 0a) and the pace cap in `agent-poll.sh`) →
+# `tests/usage-limit.test.sh` (~2.5 min; real `agent-poll.sh` and dispatch scripts, real tmux on a
+# private socket, the stateful fake GitHub, panes showing the real captures in
+# `tests/fixtures/usage-limit/`). The screen rules are structural and were written from those captures
+# — add a rule only with a real capture next to it (`README.md` there says how each was taken; there
+# is none for a weekly limit or for a CLI that exits on launch, and neither is matched). Recognition
+# needs four things together: the notice is the last block on the pane, the agent is idle, the
+# registered session's record shows no model reply / tool output / prompt containing the sentence
+# since this dispatch, and screen + record are unchanged across two rounds; anything unreadable is
+# "not enough evidence" and nothing happens. Every dispatch entry goes through the one gate — add a
+# new entry point there. The pause ends at its time or when its file is deleted, never because some
+# session looks busy (busy is terminal text, not proof the account works, and another account's
+# session would clear it). The hand-over is three writes (comment, add `pending/human`, remove
+# `doing/agent`); before each the item, its PR (base, head, source), its label events and the local
+# session (tmux session, recorded pane, **the process in that pane — pid plus start time — and the
+# role's registered agent session id**: `worker_session_launch` swaps programs inside the same pane,
+# so an unchanged pane id proves nothing, code review round 1) are re-read and compared whole with
+# what was recorded at recognition — the only difference allowed is the daemon's own previous write,
+# told apart by the label event's actor plus the step recorded **before** the write was sent (a lost
+# response or a kill between write and bookkeeping must resume, not look like a human's edit). A
+# confirmed change stops the hand-over and **nothing is undone** (taking the daemon's `pending/human`
+# back once left an item with no flow label at all — proposal review round 2); a stopped hand-over
+# leaves a marker for that screen + record size so the same screen is not handed over twice. The
+# feature never kills, types into or resumes a session, and with the switch off the poller's GitHub
+# calls, tmux calls and `state.json` equal the merge-base copy's (the test diffs them). The look /
+# lift commands in `docs/operations{,.zh}.md` (behind `<!-- usage-limit-ops:begin -->`) are run
+# verbatim in an empty environment; keep the two copies identical
+#
 """Recognise "the agent hit its subscription usage limit" from a worker pane (GitHub#341).
 
     usage_limit.py detect --agent claude|codex --screen FILE

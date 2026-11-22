@@ -15,6 +15,61 @@
 #   AUTOPILOT_OUTSIDER_SCREEN  ""（关）/ on：外人内容先交一个不给任何工具的模型判断是不是在指挥 agent 做事
 #   AUTOPILOT_OUTSIDER_SCREEN_CMD  预筛命令（文字从 stdin 进、stdout 只认 SAFE / SUSPECT）；留空用内置的 claude 命令
 
+# ── Comments by outside accounts on autopilot items: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Comments by outside accounts on autopilot items (GitHub#391: `AUTOPILOT_OUTSIDER_GUARD` /
+# `AUTOPILOT_OUTSIDER_SCREEN` / `AUTOPILOT_OUTSIDER_SCREEN_CMD`; `scripts/_outsider.sh` —
+# `outsider_scan` / `outsider_scan_items` are the one scan behind the read command,
+# `outsider_before_dispatch` (called from `autopilot_dispatch_flags` in `agent-poll.sh`) and
+# `outsider_permit_gate` (the `outsider` branch in `autopilot_permit`); `scripts/outsider_content.py`
+# — stripping, fingerprints, records, screening cache, rendering; `scripts/outsider-read.sh` + its
+# managed entrypoint; `prompts/autopilot-outsider.md`; the `.guarded` session file and the forced
+# fresh session in `agent_session_plan`, `outsider_session_reusable` in the two comment dispatchers;
+# the commands in `docs/operations{,.zh}.md` behind `<!-- outsider-ops:begin -->`) →
+# `tests/autopilot-outsider.test.sh` (~3 min; the real read command, `agent-poll.sh`, dispatch and
+# cleanup scripts against the stateful fake GitHub, which now serves PR inline comments / reviews from
+# `review_comments.json` / `reviews.json` and body edit histories with `editor` for
+# `issueOrPullRequest` queries). With the setting empty the GitHub calls, state, comments and labels
+# equal the merge-base scripts' (the test diffs them) and the prompts are unchanged
+# (`tests/autopilot.test.sh` §9) — **every new behaviour hangs on the setting being on and the item
+# being on autopilot**. "Outside account" = not the loop's write account, not the requester bot, and
+# not a `User` with `admin` / `write` in this repo — one function, `repo_maintainer_check`, shared
+# with `autopilot_actor_check`; a permission that cannot be read is "can't tell", never either answer.
+# Permissions are cached only within one scan and re-read by every scan — the re-judgement right
+# before a merge or a hand-over must see a permission revoked in between (code review round 1).
+# Stripping is by shape (links, images, attachments, code, HTML comments and tags, Unicode format
+# characters), never by meaning, and always errs towards removing more (an unclosed fence or comment
+# runs to the end); fences inside quotes and list items count, so does a fence run in the middle of a
+# line (the agent reads raw text, not the rendering), inline code may span lines, and HTML code
+# elements (`<pre>`, `<code>`, `<script>` …) are code. **Every link target is found by one function,
+# `targets()`** — inline / image targets, reference definitions in any container (target on the next
+# line too), autolinks, HTML `href` / `src` / … attributes, bare URLs — and the same function records
+# fingerprints, does the final catch-all replacement and finds copies in the loop's comments; never
+# add a separate regex for one of those places (code review rounds 1 and 2 each found a form one place
+# missed). **Code works the same way, one level down**: fenced blocks (`fences()`, after
+# `split_glued()` cuts a fence run out of the middle of a line), indented blocks (`indented()`), HTML
+# code elements and inline code are found by the same functions on both sides, and every piece goes
+# through one normaliser, `code_units()` (lines, container prefixes off, cut at backtick runs / fence
+# marks / HTML tags and comments), which gives both the per-unit and the whole-piece fingerprint — the
+# stripping side records them, the copy side compares them, so an outside account's multi-line inline
+# code or `<pre><code>` quoted by the loop as a fence or a plain line still matches (code review round
+# 3). The test's coverage matrix (6 containers × every code and link form, and outside form × loop
+# form for copies of links and of code, read again after the outside comments are deleted) is where a
+# new form goes. What is shown and what is fingerprinted are separate: a body an outside account
+# edited after the authorization is shown as it was then, but every version an outside account wrote
+# is fingerprinted and recorded. The screening command runs in its own process group and the whole
+# group is killed on timeout (`OUTSIDER_SCREEN_TIMEOUT`, 1–600 s, test-only). Records: one file per
+# seen version of each outside comment, created by `link` and never rewritten, under
+# `$STATE_DIR/outsider/<item>/` — never in `state.json` (the agent's read command writes them too,
+# outside the poll lock); a record that cannot be written stops the dispatch or the merge, a record
+# directory that cannot be listed is "can't tell", only a missing directory is "none". The merge gate
+# counts outside content after the authorization seen now **or** recorded under the same authorization
+# (a deleted comment still holds the merge back); re-authorizing (label removed and added by a
+# maintainer) starts a new authorization key. Screening runs only in the daemon before a dispatch (a
+# nested `claude -p` inside a worker session fails to authenticate — measured), with every tool and
+# MCP server off; anything but an exact `SAFE` / `SUSPECT` is "not screened" and shown as a
+# placeholder; the read command only reads the verdicts. Keep the two doc copies identical
+#
+
 OUTSIDER_SCREEN_CMD_DEFAULT="claude -p --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence --model haiku --system-prompt '只回答一个词：SAFE 或 SUSPECT。'"
 OUTSIDER_EDITS_QUERY='query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) { issueOrPullRequest(number: $number) {

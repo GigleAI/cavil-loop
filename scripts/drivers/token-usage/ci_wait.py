@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+
+# ── The remote CI segment of the footer: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The remote CI segment of the footer (GitHub#293: `scripts/drivers/token-usage/ci_wait.py`, the
+# drivers' `--ci-wait` mode, `claude_commands` / `codex_commands` in `test_time.py`, `request_spans`
+# in `ai_time.py`, the `ci_wait_*` machine fields) → `tests/footer-ci-wait.test.sh` (~5 s; real
+# drivers → real `comment-footer.sh` on session fixtures in the real Claude / codex shapes) plus
+# `tests/footer-test-time.test.sh` and `tests/comment-footer.test.sh`. Which commands count as a wait,
+# and their start / end, come from the same command reader the test-time tally uses — never a second
+# parser; test counting still reads Bash calls only, so the test-time output must stay byte-identical
+# to the merge-base (the new test diffs it, and the drivers' human / `--kv` lines). The total is the
+# union of wait spans minus AI request spans; a wait with no end on record is counted, never guessed.
+# "Could not read" never becomes "no waits": the three fields are then left out
+#
 """一次派工里 agent「在等远端 CI」的时间（GitHub#293）：认出等待命令，按会话记录定起止，扣掉 AI 时间。
 
 用法: python3 ci_wait.py <claude|codex> <start_epoch> <end_epoch|now> <会话文件...>

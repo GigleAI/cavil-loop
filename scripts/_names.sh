@@ -13,6 +13,16 @@
 #
 # 只定义变量和函数，不做任何 I/O；可以被任何脚本在任何时刻 source。
 
+# ── New vs pre-rename names: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# New vs pre-rename names (which config / state / unit / override path is used, setup on an old
+# install, deployer switching both skill links) → `tests/cavil-names.test.sh`,
+# `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh` (old and new previews on one
+# machine), `tests/migrate-legacy.test.sh` (moving an old install: idle projects only, resumable, old
+# timer on/off state kept), `tests/preview-legacy-adopt.test.sh` (old previews moved to the new units:
+# resumable after a failure, old link kept until all are moved, registration prints no URL unless the
+# preview came up). Any new path goes through `scripts/_names.sh`, never a hard-coded old or new name
+#
+
 CAVIL_NAME="cavil-loop"
 
 # 配置项的新旧名字（GitHub#97）：<新名字的值> <旧名字的值> → 新名字有值用新的，否则用旧的。

@@ -1,4 +1,41 @@
 #!/usr/bin/env python3
+
+# ── The round log's per-section fold titles and the client's summary of it: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The round log's per-section fold titles and the client's summary of it (GitHub#651: `section_title`
+# / `first_line` / `wall_secs_of` / `section_text` in `scripts/round_log.py`, the title kept by
+# `parse_record`; `roundLogSections` / `roundLogOf` / `isRoundLog` in
+# `client/src/shared/agentMetrics.ts`, `wallSecs` in `client/src/data/detail.ts`, the `rounds` /
+# `latest` head in `client/src/renderer/detailHtml.ts`; the first-line rule in `prompts/round-log.md`)
+# → `tests/round-log.test.sh` group 11 (~5 s of the ~1 min file; real `round-log.sh post`, footers
+# from the real `comment_footer.render`) and `cd client && npx vitest run
+# test/unit/round-log-summary.test.ts`. Each new section is wrapped in `<details><summary>⏱️ <time> ·
+# worker|复审 · <first line></summary>` **outside** its markers, so cutting is unchanged: the read
+# command, the weekly report and `pr-time-stats.py` see byte-identical sections (the test writes one
+# set of deliveries with the pre-change writer, fixed commit `10622996`, and with the current one and
+# compares `units`, `expand_github_comments`, the top version and the read view). The title is made
+# **only** by the writer; the client reads that line and never derives a sentence itself. The sentence
+# is the section's first text line after blank lines, whole-line HTML comments (the round marker),
+# quote lines and rules, footer excluded — never "the first `##` heading first" (a worker's status
+# line would lose to a later "## 验证结果"). A section's seconds have one valid range on both sides: a
+# non-negative integer, leading zeros ignored, at most 2^53−1 (`MAX_WALL_SECS` =
+# `Number.MAX_SAFE_INTEGER`); anything else, very long digit strings included, is "no record" — never
+# an exception that keeps the title from being written (PR #655 review round 1). The client test feeds
+# one list of values to `wall_secs_of` and `wallSecsOf`. Both sides also share one whitespace set for
+# the record and the round-log markers — the six ASCII whitespace characters (`WS` in both files),
+# used for every trim, the field split and the marker lines — never the language's own `strip()` /
+# `trim()` / `split()` / `\s`: Python takes U+0085 for a space and JavaScript takes U+FEFF, so one
+# record read a time on one side and none on the other (PR #655 review round 2); the JavaScript record
+# pattern carries the `s` flag so its `.` takes the line and paragraph separators Python's `.` takes.
+# The test runs twelve characters (the six, plus U+0085, U+FEFF, NBSP, U+2028, U+2029, U+001C, U+3000)
+# at every position through both and requires the same verdict and title. "No record" is never 0: the
+# title says 耗时未记录, the client's sum gets "≥", a sum past the safe range shows no time, and a record
+# that starts with the round-log header but cannot be cut shows no time at all (its last line may be
+# one section's usage record). Rendering is checked on real HTML, not on source lines: the shell test
+# renders the record with the vendored markdown-it-py and walks the `<details>` tree, the client test
+# puts that HTML through `buildTimeline` / `timelineDocument` and parses the result with parse5 —
+# sibling section folds, none open, each with exactly its own footer inside. Sections written before
+# this change keep their `### role · time` header and simply have no title
+#
 """往返记录（GitHub#610）：一段 agent ↔ agent 的来回只占一条评论，每次交付在末尾追加一节。
 
 这里是**唯一**懂记录格式的地方。写入命令（round-log.sh post）、读取（round-log.sh show 和托管条目的

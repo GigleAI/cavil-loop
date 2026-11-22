@@ -12,6 +12,17 @@
 # The verdict rule matches `pr_conflict_verdict` in _lib.sh and is cross-checked against it by
 # tests/pending-human-conflict.test.sh: GitHub's head commit of the PR (not the local HEAD) is merged
 # with origin/<base>; merge-tree exit 1 is a conflict only when its first line is a tree id.
+
+# ── Conflict check before a PR is handed on: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Conflict check before a PR is handed on (GitHub#82) → `tests/conflict-check-prompts.test.sh`. Since
+# GitHub#599 the check is `scripts/conflict-check.sh`, called as `cavil_step conflict-check <PR>` from
+# `issue-comment.template.md` (§ A), `pr-comment.template.md` and `review.template.md` (step 2C); the
+# worker-side handling section is identical in the two worker templates. The test checks the
+# `cavil_step` definition block is identical in all four composed prompts, that the step comes before
+# the label flip / verdict, and runs the composed definition in a real git worktree with a fake `gh`.
+# The verdict rule is `pr_conflict_verdict`'s: `tests/pending-human-conflict.test.sh` runs the script
+# and the daemon on the same PRs
+#
 set -uo pipefail
 
 # shellcheck source=_step.sh
