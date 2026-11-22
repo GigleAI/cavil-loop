@@ -171,17 +171,22 @@ off_run() {   # <scripts 根> <配置行（可空）> <场景> → 输出一份�
         readfail) : > "$GD/F_pulls_8_files" ;;
         packagejson) files '[{"filename":"client/package.json"}]' ;;
     esac
+    local all=""
     for i in 1 2 3; do
         tick "$root/scripts"
-        case "$sc" in dotgithub|readfail) ;; *) echo "── 第 $i 轮调用"; cat "$CALLS" ;; esac
+        case "$sc" in dotgithub|readfail) ;; *) all="$all── 第 $i 轮调用"$'\n'"$(compat_merge_calls < "$CALLS")"$'\n' ;; esac
     done
+    # 合并了：合并请求之后的那一段按新规则做（见 compat_cut_after_merge），只比到合并请求为止
+    if printf '%s' "$all" | grep -qE ' -X PUT [^ ]*/pulls/[0-9]+/merge( |$)'; then
+        printf '%s' "$all" | compat_cut_after_merge; return
+    fi
+    printf '%s' "$all"
     # daemon 翻标签时假 GitHub 把条目的更新时间记成「现在」，state 里引用它的地方按秒变：抹成同一个占位
     # 托管判定规则的版本（AUTOPILOT_JUDGE_REV，写进 .autopilot.takeover / .denied 的值开头）按规矩随规则改动而变（GitHub#619 起），
     # 不是这里要比的行为：两边都抹成同一个占位
-    echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'
+    echo "── state"; jq -S 'del(.autopilot.handoff) | del(.merge_followup) | '"$COMPAT_MERGE_STATE_JQ" "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body | sub("\\n<!-- cavil-loop:autopilot-handover [^>]*-->$"; "")]' "$GD/comments.json"
-    echo "── 合并后交接记录（去掉时间）"; jq -S '(.autopilot.handoff // {}) | map_values(.body)' "$STATE"
 }
 if ! compat_skip "没配清单时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
     for sc in clean dotgithub emptypages readfail packagejson; do
@@ -485,8 +490,13 @@ cmp_run() {   # <scripts 根> <开关配置行（可空）> <场景>
     if [ -n "$line" ]; then fresh "$ON" "$line"; else fresh "$ON"; fi
     happy
     case "$sc" in only) files "$T_ONLY" ;; mix) files "$T_MIX" ;; esac
-    for i in 1 2 3; do tick "$root/scripts"; echo "── 第 $i 轮调用"; cat "$CALLS"; done
-    echo "── state"; jq -S . "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'   # 规则版本同上
+    local all=""
+    for i in 1 2 3; do tick "$root/scripts"; all="$all── 第 $i 轮调用"$'\n'"$(compat_merge_calls < "$CALLS")"$'\n'; done
+    if printf '%s' "$all" | grep -qE ' -X PUT [^ ]*/pulls/[0-9]+/merge( |$)'; then   # 见 compat_cut_after_merge
+        printf '%s' "$all" | compat_cut_after_merge; return
+    fi
+    printf '%s' "$all"
+    echo "── state"; jq -S 'del(.merge_followup) | '"$COMPAT_MERGE_STATE_JQ" "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g; s/"r[0-9a-z]+\|/"<规则版本>|/g'   # 规则版本同上
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
 }

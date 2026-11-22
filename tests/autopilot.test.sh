@@ -304,7 +304,7 @@ Refs #3" "$H1" "pending/merge,autopilot"
     tick
     # GitHub#461：正文带关闭关键词的托管 PR 照合（合并即关 issue）；Fixes: #7 绑 #7，Refs #3 不关 issue
     chk "Fixes: #7（带冒号）+ 另有 Refs #3 → 合并，不交回 worker" "$(merged 8)/$(has_label 8 pending/agent)" "1/no"
-    chk "  → 交接记下「合并即关」" "$(jq -r '.autopilot.handoff["8"].closes // false' "$STATE")" true
+    chk "  → 交接记下「合并即关」" "$(jq -r '.merge_followup.prs["8"].closes // false' "$STATE")" true
     fresh; happy
     mkpr 8 feature/issue-7 "做了 X。
 
@@ -1743,8 +1743,9 @@ CONF
     done
     if [ "$same" = 0 ]; then
     chk "关闭时：两轮轮询的 GitHub 调用和改动前逐条一致" \
-        "$(diff <(sed "s|$W/new|W|g" "$W/new/gh/calls.log") <(sed "s|$W/old|W|g" "$W/old/gh/calls.log") >/dev/null && echo same || echo diff)" same
-    chk "关闭时：state.json 和改动前逐字节一致" "$(cmp -s "$W/new/state/state.json" "$W/old/state/state.json" && echo same || echo diff)" same
+        "$(diff <(sed "s|$W/new|W|g" "$W/new/gh/calls.log" | compat_merge_calls) <(sed "s|$W/old|W|g" "$W/old/gh/calls.log" | compat_merge_calls) >/dev/null && echo same || echo diff)" same
+    chk "关闭时：state.json 和改动前逐字节一致（合并清理那一段见 compat_merge_calls）" \
+        "$(cmp -s <(jq -S "$COMPAT_MERGE_STATE_JQ" "$W/new/state/state.json") <(jq -S "$COMPAT_MERGE_STATE_JQ" "$W/old/state/state.json") && echo same || echo diff)" same
     fi
     chk "到达性 · 关闭时的轮询确实读了 issue / PR 列表" \
         "$(grep -c "repos/example/ap/pulls -f state=open" "$W/new/gh/calls.log")" 2

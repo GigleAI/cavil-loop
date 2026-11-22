@@ -658,11 +658,17 @@ off_run() {   # <scripts 根> <配置行（可空）> <场景>
         clean) ;;
         outsider) cm 7 1201 stranger 2026-02-01T00:00:00Z '外人 https://x.example'; rv 1202 stranger 2026-02-01T00:00:00Z 'r' ;;
     esac
-    for i in 1 2; do tick "$root/scripts"; echo "── 第 $i 轮调用"; cat "$CALLS"; done
-    echo "── state"; jq -S 'del(.autopilot.handoff)' "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
+    local all=""
+    for i in 1 2; do tick "$root/scripts"; all="$all── 第 $i 轮调用"$'\n'"$(compat_merge_calls < "$CALLS")"$'\n'; done
+    echo "── 本机记录"; ls "$W/state" | grep -c outsider || true
+    # 合并了：合并请求之后的那一段按新规则做（见 compat_cut_after_merge），只比到合并请求为止
+    if printf '%s' "$all" | grep -qE ' -X PUT [^ ]*/pulls/[0-9]+/merge( |$)'; then
+        printf '%s' "$all" | compat_cut_after_merge; return
+    fi
+    printf '%s' "$all"
+    echo "── state"; jq -S 'del(.autopilot.handoff) | del(.merge_followup) | '"$COMPAT_MERGE_STATE_JQ" "$STATE" | sed -E 's/20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z/<时间>/g'
     echo "── 标签"; jq -S . "$GD/labels.json"
     echo "── 评论"; jq -S '[.[] | .[] | .body]' "$GD/comments.json"
-    echo "── 本机记录"; ls "$W/state" | grep -c outsider || true
 }
 if ! compat_skip "关着时的调用、state、评论、标签与改动前" "$SANDBOX/old" "$REPO_DIR" scripts; then
     for sc in clean outsider; do

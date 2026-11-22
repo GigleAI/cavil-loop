@@ -1557,7 +1557,7 @@ if ! compat_skip "功能关闭时的调用、state.json、标签与改动前" "$
         : > "$CTL/tmux.log"
         tick 0; tick 200; tick 200
         mkdir -p "$TMP/off.$tag"
-        cp "$CALLS" "$TMP/off.$tag/calls"; cp "$GD/labels.json" "$TMP/off.$tag/labels"
+        compat_merge_calls < "$CALLS" > "$TMP/off.$tag/calls"; cp "$GD/labels.json" "$TMP/off.$tag/labels"   # 合并列表那一行见 compat_merge_calls
         jq -S . "$STATE" > "$TMP/off.$tag/state"
         # 窗格编号、进程号每次起 server 都从头数，两边一致；抓的是参数原文
         # 两边脚本目录不同（日志脱敏管道里带着脚本的路径），换成同一个占位再比

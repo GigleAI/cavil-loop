@@ -940,7 +940,7 @@ if gh pr list --repo "$REPO" --state merged --limit 30 \
             fi
             # 逐条看合并发现已落盘、清理还在「待重试」的记录（列表发现的，和托管合并后现读确认的）；
             # 清理已终止的（归属未知、或被挤出窗口）、已清理的不在这里
-            issue_n=$(mf_get '.prs[$p].target // ""' --arg p "$prnum" | jq -r .)
+            issue_n=$(mf_get '.prs[$p].work // .prs[$p].target // ""' --arg p "$prnum" | jq -r .)
             if [ -z "$issue_n" ]; then
                 # 正文读不到、分支名也认不出属于哪个 issue（GitHub#656）：不回落到 PR 编号去清理，留给维护者
                 log "auto-cleanup: PR #$prnum 认不出属于哪个 issue，不做本机清理（本机还剩什么由维护者确认）"

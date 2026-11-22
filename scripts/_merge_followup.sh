@@ -139,9 +139,12 @@ mf_discover() {   # <列表文件>
     done < <(jq -c '.[]' "$list" 2>/dev/null)
     if [ -s "$d/new.jsonl" ]; then
         # 托管预存：分支提交和核准提交一致才接上（不一致 = 合进去的不是复审过的那一版，说明作废）
+        # 托管预存：交接目标按托管的绑定（绑 issue = 那个 issue，没绑 = PR 本身），不按分支名猜——分支 feature/issue-7
+        # 撞上本仓库无关的 #7 时，清理按工作编号照旧（work），交接不碰 #7
         mf_set 'reduce ($n[]) as $e (.; .prs[$e.key] = (
-                    (if (.prs[$e.key].ap // null) != null and .prs[$e.key].ap.head == $e.value.head_sha
-                     then $e.value + {ap: (.prs[$e.key].ap + {pre: "found"})} else $e.value end)))' \
+                    ($e.value + {work: $e.value.target}) as $v
+                    | (if (.prs[$e.key].ap // null) != null and .prs[$e.key].ap.head == $v.head_sha
+                       then $v + {target: (.prs[$e.key].ap.target // $v.target), ap: (.prs[$e.key].ap + {pre: "found"})} else $v end)))' \
             --slurpfile n "$d/new.jsonl" || rc=1
         if [ "$rc" != 0 ]; then rm -rf "$d"; return 1; fi
         for pr in $(jq -r 'select(.value.owner == "known") | .value.target' "$d/new.jsonl" | sort -u); do
@@ -199,7 +202,7 @@ mf_reread_tick() {
                     false\|unknown) note="PR #$pr 上可能已有一条兜底评论，未能确认" ;;
                 esac
             fi
-            mf_set '.prs[$p] += ($x[0] + {body: "ok", owner: "known", target: $t, rereads: (.prs[$p].rereads + 1)})
+            mf_set '.prs[$p] += ($x[0] + {body: "ok", owner: "known", target: $t, work: $t, rereads: (.prs[$p].rereads + 1)})
                     | (if $note != "" then .prs[$p].fb_note = $note else . end)
                     | (if .prs[$p].fb != null then .prs[$p].fb.superseded = true else . end)
                     | .prs[$p].handed = null' \
@@ -230,7 +233,7 @@ mf_record_from_pr() {   # <PR> [托管说明] [说明已发 true|false]；现读
     printf '%s' "${2:-}" > "$f.d"
     branch=$(jq -r '.head.ref // ""' "$f.pj")
     target=$(pr_to_issue_num "$pr" "$branch" "$body")
-    mf_set '$j[0] as $j | .prs[$p] = ((.prs[$p] // {}) + {target: $t, owner: "known", body: "ok", found: true, cleanup: "done", rereads: 0,
+    mf_set '$j[0] as $j | .prs[$p] = ((.prs[$p] // {}) + {target: $t, work: $t, owner: "known", body: "ok", found: true, cleanup: "done", rereads: 0,
                 merged_at: ($j.merged_at // ""), sha: ($j.merge_commit_sha // ""), base: ($j.base.ref // ""),
                 head_ref: ($j.head.ref // ""), head_sha: ($j.head.sha // ""), title: ($j.title // ""), migrated: true} + $x[0])
             | (if $d != "" then .prs[$p].ap = {pre: "found", desc: $d, desc_sent: ($s == "true"), title: ($j.title // ""), head: ($j.head.sha // "")} else . end)' \
@@ -361,7 +364,18 @@ mf_try_fail() {   # <目标> <原因>：一次真正尝试了读写却没成功�
 
 # ── T6–T8：交接一个目标 ──
 mf_target_tick() {   # <目标> [兜底 PR]
-    local n="$1" fb="${2:-}" c1 c2 fp v sent bf rc pr own fv
+    local n="$1" fb="${2:-}" c1 c2 fp v sent bf rc pr own fv labs
+    # 做出这个 PR 的那一轮留下的 doing/agent：会话已经不在（合并清理刚收掉它，或早就没了）就不是「新一轮」，
+    # 先摘掉（主干合并后也摘它）；会话还在才算有人接着在干，交接照表 1 第 3 行不动标签
+    if [ -z "$fb" ] && [ -n "${LABEL_AGENT_DOING:-}" ] \
+       && labs=$(gh api "repos/$REPO/issues/$n" --jq '[.labels[].name]' 2>/dev/null) \
+       && printf '%s' "$labs" | jq -e --arg D "$LABEL_AGENT_DOING" 'index($D) != null' >/dev/null 2>&1 \
+       && ! session_alive "$(tmux_session_name "$n")"; then
+        if run_gh "合并后交接：#$n 摘掉上一轮留下的 $LABEL_AGENT_DOING" \
+            gh_write api -X DELETE "repos/$REPO/issues/$n/labels/$(printf '%s' "$LABEL_AGENT_DOING" | jq -sRr @uri)" >/dev/null; then
+            log "  合并后交接：#$n 的 $LABEL_AGENT_DOING 没有对应的会话，按上一轮留下的摘掉"
+        fi
+    fi
     if ! c1=$(mf_target_conclude "$n" "$fb"); then mf_try_fail "$n" "读不到 #$n 的状态"; return 1; fi
     fp=$(printf '%s' "$c1" | jq -r .fp)
     if [ "$(mf_get '.targets[$n].fp // ""' --arg n "$n" | jq -r .)" != "$fp" ]; then

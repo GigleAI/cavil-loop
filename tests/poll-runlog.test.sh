@@ -526,13 +526,9 @@ scenario() {   # <被测根目录> <名字> [多出来的配置行...]
     env CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$root/scripts/agent-poll.sh" >/dev/null 2>&1; r3=$?
     {
         echo "rc=$r1/$r2/$r3"
-        # 合并清理那一段（GitHub#656）：列表调用多读了几项（正文、合并时间…），比较时统一成同一行。假 GitHub 没开列表时
-        # 对列表原样答 `[]`，改动前的脚本按行读、把它当成编号为「[]」的 PR（对它打标签、记进已清理），现在按 JSON 读没有
-        # 这个 PR；这些对「[]」的调用和记录与本测试无关，比较时去掉
-        echo "--calls"; sed "s#$W#<W>#g" "$CALLS" | sed -E 's/^(gh pr list --repo [^ ]+ --state merged --limit 30) .*/\1 <合并列表>/' \
-            | grep -vE '^gh pr view \[\] |/issues/\[\]( |/|$)'
+        echo "--calls"; sed "s#$W#<W>#g" "$CALLS" | compat_merge_calls   # 合并清理那一段见 compat_merge_calls
         echo "--labels"; jq -S -c . "$GD/labels.json"
-        echo "--state"; jq -S -c 'if has("cleaned_prs") then .cleaned_prs |= map(select(type == "number")) else . end' "$W/state/state.json"
+        echo "--state"; jq -S -c "$COMPAT_MERGE_STATE_JQ" "$W/state/state.json"
         echo "--tmux"; cat "$W/tmux.log" 2>/dev/null
     } > "$SANDBOX/$name.digest"
 }

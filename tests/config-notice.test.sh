@@ -136,13 +136,7 @@ log_has() { grep -cF -- "$1" "$W/state/poll.log" 2>/dev/null || true; }
 
 # 提示 issue 的那几种动作：开、在某条上读 / 评论 / 关
 notice_calls() { n_calls "^gh api( -X [A-Z]+)? $R/issues( |/[0-9]+( |/comments))"; }
-# 合并清理那一段（GitHub#656）：列表调用多读了几项（正文、合并时间…），比较时统一成同一行；这里的假 GitHub 没开
-# 列表（不带 FAKE_GH_LISTS），对列表一律原样答 `[]`——改动前的脚本按行读，把它当成了编号为「[]」的 PR、对它打标签，
-# 现在按 JSON 读、没有这个 PR。这些对「[]」的调用和配置提示无关，比较时去掉
-calls_norm() {
-    sed 's/[0-9]\{10,\}//g' "$CALLS" | sed -E 's/^(gh pr list --repo [^ ]+ --state merged --limit 30) .*/\1 <合并列表>/' \
-        | grep -vE '^gh pr view \[\] |/issues/\[\]( |/|$)' || true
-}
+calls_norm() { sed 's/[0-9]\{10,\}//g' "$CALLS" | compat_merge_calls; }   # 合并清理那一段见 compat_merge_calls
 ticks_calls() { tick "$1"; calls_norm; tick "$1"; calls_norm; }   # 两轮的调用合在一起
 # 早先版本开的提示 issue：开着、带标记、挂 pending/human
 legacy_issue() {
