@@ -123,6 +123,32 @@ tmux_sandbox_start() {
 d='$_TMUX_SANDBOX_DIR'
 real='$_TMUX_SANDBOX_REAL'
 if [ -e "\$d/closed" ]; then echo "tmux 沙盒已关闭，拒绝：tmux \$*" >&2; exit 1; fi
+# 运行时核对这次调用连的是本次运行的专用服务（PR #660 复审第 6 轮，维护者选 A）：
+# 设了 TMUX 就看它指的 socket，没设就看 TMUX_TMPDIR；全局选项 -S 给的 socket 也要在里面。
+# 不符就拒绝、记进 violations，收尾时整个文件判失败。
+bad=""
+case "\${TMUX-}" in
+    "") [ "\${TMUX_TMPDIR-}" = "\$d/s" ] || bad="TMUX_TMPDIR=\${TMUX_TMPDIR-（没设）}" ;;
+    "\$d/s/"*) ;;
+    *) bad="TMUX=\$TMUX" ;;
+esac
+gs=""; want=""
+for a in "\$@"; do
+    if [ -n "\$want" ]; then [ "\$want" = S ] && gs="\$a"; want=""; continue; fi
+    case "\$a" in
+        -S) want=S ;;
+        -[cfLT]) want=x ;;
+        -S?*) gs="\${a#-S}" ;;
+        -*) ;;
+        *) break ;;
+    esac
+done
+if [ -n "\$gs" ]; then case "\$gs" in "\$d/s/"*) ;; *) bad="-S \$gs" ;; esac; fi
+if [ -n "\$bad" ]; then
+    printf '%s | tmux %s\n' "\$bad" "\$*" >> "\$d/violations"
+    echo "tmux 沙盒：这次调用连的不是本次运行的专用服务（\$bad），拒绝：tmux \$*" >&2
+    exit 1
+fi
 "\$real" -f /dev/null "\$@"; rc=\$?
 if [ "\$rc" -eq 0 ]; then
     new=0; name=""; prev=""
@@ -227,8 +253,18 @@ _tmux_sandbox_exit() {
         fi
         "$_TMUX_SANDBOX_REAL" -S "$_TMUX_SANDBOX_DIR/s/tmux-$(id -u)/default" kill-server >/dev/null 2>&1
         local reap
-        reap="$(python3 "$_TMUX_SANDBOX_LIB/tmux_sandbox_reap.py" "$$" 2>&1)"
+        if [ -s "$_TMUX_SANDBOX_DIR/violations" ]; then
+            echo "tmux 沙盒：有 tmux 调用没连到本次运行的专用服务（已拒绝）：" >&2
+            sed 's/^/  /' "$_TMUX_SANDBOX_DIR/violations" >&2
+            bad=1
+        fi
+        reap="$(python3 "$_TMUX_SANDBOX_LIB/tmux_sandbox_reap.py" "$$" --tmux "$_TMUX_SANDBOX_REAL" --sandbox "$_TMUX_SANDBOX_DIR" 2>&1)"
         r=$?
+        if [ "$r" -eq 3 ]; then
+            # 进程都收掉了，但其中有 tmux 服务不在本次运行的地址上：测试的某个子进程绕过了沙盒
+            echo "tmux 沙盒：发现沙盒外的 tmux 服务（本次运行的子进程起的，已结束）：${reap}" >&2
+            bad=1; r=0
+        fi
         if [ "$r" -eq 0 ]; then
             local sessions servers
             sessions=$(grep -c '^session ' "$_TMUX_SANDBOX_DIR/log" 2>/dev/null)

@@ -412,7 +412,8 @@ date +%s.%N > "$OUT/t0"
 EOF
 t1=$(now)
 chk "以失败退出" "$CASE_RC" "1"
-chk "报了时限到了还有进程" "$(grep -c '秒后仍有进程' "$T/budget.out")" "1"
+# 时限到时最后一次 SIGKILL 可能刚好让进程退出：报「仍有进程」或「没读到连续空清单」都是时限用完
+chk "报了时限用完" "$(grep -c -E '秒后仍有进程|秒内没读到连续' "$T/budget.out")" "1"
 chk "收尾用时不到 3 秒（时限 1 秒）" "$(awk -v e="$(elapsed "$(cat "$T/budget.d/t0")" "$t1")" 'BEGIN { print (e < 3) ? "yes" : e }')" "yes"
 d=$(sandbox_dir_of budget)
 chk "临时目录保留着" "$([ -n "$d" ] && [ -d "$d" ] && echo yes)" "yes"
@@ -480,6 +481,47 @@ chk "没给命令：返回 125" "$(cat "$D/rc.nocmd")" "125"
 chk "env -u 普通变量：那个变量没了，PATH / TMUX_TMPDIR 原样" "$(cat "$D/envu")" "unset|$p_path|$p_dir"
 chk "命令名之后的 PATH= 是参数：照常跑" "$(cat "$D/rc.after")" "0"
 chk "命令名之后的 PATH= 不进环境" "$(cat "$D/after")" "$p_path"
+
+echo "【19】运行时核对：连错服务的调用被包装拒绝，绕过包装起的沙盒外服务被收尾报出（维护者选 A）"
+run_case rtok <<'EOF'
+tmux_sandbox_start
+tmux new-session -d -s rt-issue1 "sleep 30" && echo NEW-OK
+tmux capture-pane -p -S - -t '=rt-issue1:' > /dev/null && echo CAPTURE-OK
+tmux -S "$(tmux_sandbox_socket)" has-session -t '=rt-issue1' && echo EXPLICIT-OK
+# 窗格里的程序：TMUX 由 tmux 自己设，指向专用服务
+tmux new-session -d -s rt-issue2 "tmux display-message -p inpane > '$OUT/inpane' 2>&1; sleep 30"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$OUT/inpane" ] && break; sleep 0.2; done
+EOF
+chk "正常调用：退出码 0" "$CASE_RC" "0"
+chk "正常调用：建会话、capture-pane -S -、显式 -S 都放行" "$(grep -c -e NEW-OK -e CAPTURE-OK -e EXPLICIT-OK "$T/rtok.out")" "3"
+chk "正常调用：窗格里调 tmux 放行" "$(cat "$T/rtok.d/inpane" 2>/dev/null)" "inpane"
+chk "正常调用：没有拒绝记录" "$(grep -c '连的不是本次运行的专用服务' "$T/rtok.out")" "0"
+
+run_case rtbad <<'EOF'
+tmux_sandbox_start
+TMUX_TMPDIR="$OUT/elsewhere" tmux ls > /dev/null 2>&1; echo "rc1=$?"
+env -u TMUX_TMPDIR tmux ls > /dev/null 2>&1; echo "rc2=$?"
+tmux -S "$OUT/other.sock" ls > /dev/null 2>&1; echo "rc3=$?"
+TMUX="/tmp/tmux-0/default,1,0" tmux ls > /dev/null 2>&1; echo "rc4=$?"
+echo CASE-RAN
+EOF
+chk "连错服务：以失败退出" "$CASE_RC" "1"
+chk "连错服务：四种写法都被拒绝" "$(grep -c -E '^rc[1-4]=1$' "$T/rtbad.out")" "4"
+chk "连错服务：收尾列出四条拒绝" "$(grep -c -e '^  TMUX_TMPDIR=' -e '^  -S ' -e '^  TMUX=' "$T/rtbad.out")" "4"
+chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
+
+REAL_TMUX=$(command -v tmux)
+run_case rtstray <<EOF
+tmux_sandbox_start
+# 绕过包装（绝对路径、另一个地址）起服务：沙盒外的服务，它是本测试的子孙
+D=\$(mktemp -d /tmp/cvstray.XXXXXX) || exit 1; tmux_sandbox_own_dir "\$D"; echo "\$D" > "\$OUT/dir"
+TMUX_TMPDIR="\$D" "$REAL_TMUX" -f /dev/null new-session -d -s stray "sleep 300"
+"$REAL_TMUX" -S "\$D/tmux-\$(id -u)/default" display-message -p '#{pid}' > "\$OUT/pid"
+EOF
+chk "沙盒外服务：以失败退出" "$CASE_RC" "1"
+chk "沙盒外服务：收尾报出" "$(grep -c '发现沙盒外的 tmux 服务' "$T/rtstray.out")" "1"
+chk "沙盒外服务：已被结束" "$(alive_all "$T/rtstray.d/pid")" "0"
+chk "沙盒外服务：它的临时目录照样删掉" "$(d=$(cat "$T/rtstray.d/dir" 2>/dev/null); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
 
 echo
 echo "通过 $pass / 失败 $fail"

@@ -581,7 +581,14 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   quoting and `"$@"` are already resolved. The script re-runs the test as a subreaper, points `TMUX_TMPDIR` at a private directory,
   clears `TMUX` (it wins over `TMUX_TMPDIR`), and puts a `tmux` wrapper first on `PATH` that always
   adds `-f /dev/null` (a server restarted mid-test reads no user config either — restarting is
-  allowed, the maintainer's choice) and refuses every call once the exit has begun. The exit runs the
+  allowed, the maintainer's choice) and refuses every call once the exit has begun. Isolation is
+  checked at run time (PR #660 review round 6, the maintainer chose this over more text rules): the
+  wrapper refuses, and records, any call whose server is not this run's — `TMUX` pointing elsewhere,
+  or no `TMUX` and a `TMUX_TMPDIR` that is not this run's directory, or a global `-S` outside it — and
+  any record fails the file; the exit also looks at every tmux server among the processes reparented
+  to the test and fails the file when one listens outside this run's directory (a child that lost
+  `PATH` and ran the real tmux elsewhere). Not caught at run time: a child that bypasses the wrapper
+  and talks to a server that was already running before the test (it starts no new server). The exit runs the
   registered clean-ups each in its own subshell under the test's own options (`set -u` still holds),
   writes the close marker, kills the server and stops every process reparented to the test (servers,
   pane programs that ignore SIGHUP, leftover background jobs) — a whole batch at a time, every wait

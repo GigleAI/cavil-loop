@@ -9,7 +9,12 @@ SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总�
 某个进程退出后它的子进程又会被过继过来，所以循环读清单，直到连续 3 次（间隔 0.2 秒）
 都读到空，总时限 10 秒。
 
-退出码：0 = 读到空（打印「结束了 N 个进程」）；1 = 时限到了还有活着的；2 = 读清单出错。
+带 --tmux <真 tmux> --sandbox <沙盒目录> 时，结束之前先看每个进程是不是 tmux 服务（可执行文件就是
+真 tmux）：是的话从 /proc/net/unix 找它监听的 socket，不在沙盒目录里（或找不到）就记下来——那是
+测试的某个子进程绕过沙盒、在别的地址上起的服务（PR #660 复审第 6 轮，维护者选 A）。
+
+退出码：0 = 读到空（打印「结束了 N 个进程」）；1 = 时限到了还有活着的；2 = 读清单出错；
+3 = 读到空，但其中有沙盒外的 tmux 服务（打印它们）。
 这是尽力清理：读清单是一个个进程地读，扫描途中被过继过来的进程可能漏掉。
 """
 import os
@@ -115,8 +120,62 @@ def stop_batch(parent, pids, deadline):
             os.close(fd)
 
 
+def unix_paths():
+    """socket inode → 路径（/proc/net/unix）。"""
+    out = {}
+    with open("/proc/net/unix") as f:
+        next(f)
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 8:
+                out[parts[6]] = parts[7]
+    return out
+
+
+def server_sockets(pid):
+    """这个进程开着的 unix socket 的路径；进程已不存在 → None。"""
+    paths = unix_paths()
+    found = []
+    try:
+        fds = os.listdir("/proc/%d/fd" % pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    for fd in fds:
+        try:
+            t = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if t.startswith("socket:["):
+            p = paths.get(t[8:-1])
+            if p:
+                found.append(p)
+    return found
+
+
+def stray_tmux(pid, real, sandbox):
+    """pid 是 tmux 服务且不在沙盒地址上 → 说明文字；否则 None。"""
+    try:
+        exe = os.readlink("/proc/%d/exe" % pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    if exe != real:
+        return None
+    socks = server_sockets(pid)
+    if socks is None:
+        return None
+    if any(s.startswith(sandbox + "/") for s in socks):
+        return None
+    return "%d（%s）" % (pid, " ".join(socks) if socks else "找不到它的 socket")
+
+
 def main():
-    parent = int(sys.argv[1])
+    args = sys.argv[1:]
+    real = sandbox = None
+    if "--tmux" in args:
+        real = os.path.realpath(args[args.index("--tmux") + 1])
+    if "--sandbox" in args:
+        sandbox = os.path.realpath(args[args.index("--sandbox") + 1])
+    parent = int(args[0])
     skip = {os.getpid()}
     if os.getppid() != parent:
         skip.add(os.getppid())   # 调用方的命令替换子 shell
@@ -124,17 +183,29 @@ def main():
     deadline = time.monotonic() + budget
     empty = 0
     stopped = 0
+    checked = set()
+    strays = []
     try:
         while time.monotonic() < deadline:
             kids = children(parent, skip)
             if not kids:
                 empty += 1
                 if empty >= EMPTY_ROUNDS:
+                    if strays:
+                        print("结束了 %d 个进程，其中沙盒外的 tmux 服务：%s" % (stopped, "、".join(strays)))
+                        return 3
                     print("结束了 %d 个进程" % stopped)
                     return 0
                 time.sleep(max(0.0, min(0.2, deadline - time.monotonic())))
                 continue
             empty = 0
+            if real and sandbox:
+                for pid in kids:
+                    if pid not in checked:
+                        checked.add(pid)
+                        why = stray_tmux(pid, real, sandbox)
+                        if why:
+                            strays.append(why)
             stopped += stop_batch(parent, kids, deadline)
         left = children(parent, skip)
     except OSError as e:
