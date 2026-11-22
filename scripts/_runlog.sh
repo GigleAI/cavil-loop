@@ -27,6 +27,42 @@
 #
 # 只定义变量和函数，source 时不做任何 I/O。
 
+# ── Poll run log: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Poll run log (GitHub#344: `scripts/_runlog.sh`, `scripts/poll-history.sh`, the `runlog_*` calls in
+# `agent-poll.sh` / `poll-entry.sh`, `runlog_probe_note` in `pace_probe`, `ENABLE_POLL_RUN_LOG` /
+# `POLL_RUN_LOG_*`) → `tests/poll-runlog.test.sh` (~1.5 min; real `poll-entry.sh` / `agent-poll.sh` /
+# `poll-history.sh` against the stateful fake GitHub). Three rules. **It records, it never decides**:
+# nothing in the poller reads these files, every public function swallows its errors and returns 0,
+# and the test diffs the poller's GitHub calls, labels, `state.json`, dispatches and exit codes with
+# the log on, off, unwritable, and against the merge-base scripts. **A round writes only its own
+# files** — a killed round is never given a record afterwards (the maintainer's choice in #344; four
+# design-review rounds failed to close the hand-over windows of doing it), `poll-history.sh` shows its
+# progress file against the process list instead, and "cannot tell" (process list unreadable, or
+# without the viewer's own pid in it) is never shown as "did not finish". **No free text in a
+# record**: numbers, fixed words and format-checked values only — no source line, no `BASH_COMMAND`,
+# no command output. Every file goes through one writer, `_runlog_put`: make room first (down to cap −
+# 1, or give up the write), temp file, rename, trim — so a directory stays within its cap however many
+# rounds are killed mid-write; the test kills ten rounds in a row at "renamed, not trimmed" and at
+# "temp file half written" in each of the five directories and counts after every kill. The idle
+# probe's one call is tallied only by `runlog_probe_note` (200 / 304 = success, anything else =
+# failed) whether or not it goes through `timeout` — `pace_probe` runs it with `RUNLOG_NO_TALLY=1` so
+# the `gh` counting function skips it; counting it by exit code made the same 304 a failure without
+# `timeout` and a success with it (PR #390 review round 1). Any other call wrapped in `timeout`
+# bypasses the counting function and must be tallied at its call site. **Counting writes nothing per
+# call**: a round creates one file of 20000 `x` bytes, the main shell opens three read-only
+# descriptors on it and deletes it; counting once is reading one byte, and since the read position
+# belongs to the open file, subshells (`x=$(gh …)`) share it — at the end the bytes left behind each
+# descriptor give calls, failed calls and the probe result. Do not go back to appending a line per
+# call: two review rounds on PR #390 found three ways an appended tally lost calls and still looked
+# complete (`>>` recreating a file another round had evicted; the file deleted between the
+# end-of-round check and the read, read as 0; one append failing mid-round and writes recovering
+# later), and any evidence of a failed write is itself a write. Counters that could not be set up or
+# read back are "unknown" for the whole group, never 0 field by field. The look-up and turn-off steps
+# in `docs/operations{,.zh}.md` (behind `<!-- poll-history-ops:begin -->` / `<!--
+# poll-history-off-ops:begin -->`) are run verbatim in an empty environment; keep the two copies
+# identical
+#
+
 # 被 poll-entry.sh / agent-poll.sh 在加载配置之前 source：那时只有 _names.sh 可用。
 if [ -z "${CAVIL_STATE_HOME:-}" ]; then
     # shellcheck source=_names.sh

@@ -1563,6 +1563,14 @@ review label or back to the dispatch label) is appended as a short section: what
 next agent needs, the usage footer. The full current version (whole proposal / whole delivery
 summary) sits at the top of the record and is replaced by the latest one.
 
+Each section is folded into one line titled "⏱️ the section's time · worker or 复审 (review) · the first
+line of the section"; the full text opens below it. A worker writes that first line as a one-sentence
+summary starting with ✅ (delivered), ❓ (a question for the reviewer) or ❌ (not finished, something
+failed); a review's first line is its `## ✅ …` / `## ❌ …` verdict heading. A first line without an
+emoji gets 📝, and a section with no usage record says "耗时未记录" (time not recorded). In the desktop
+client's activity list the record's line shows the sum of the sections' times ("≥" in front when a
+section has no record), how many deliveries and reviews it holds, and the last section's sentence.
+
 - **Stay separate**: every comment to a human, the review verdict that queues an autopilot merge
   (the merge check only accepts the test record in a comment created after the review was dispatched), daemon
   comments, waiting-on-prerequisite notes. A new comment by anyone in between ends the record; the next delivery

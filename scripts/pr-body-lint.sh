@@ -14,6 +14,48 @@
 # 块和行内的种类都由 CommonMark 解析器认：仓库里已有的 markdown-it-py（tests/lib/vendor/，随发布一起带着），
 # 不另写逐行的猜测——行内代码（跨行的也算）、代码块、HTML 注释里的标签、HTML 属性值里的字都不算折叠。
 # 退出码：0 = 合格；1 = 不合格；2 = 用法错误、文件读不了或解析器加载不了（不输出 ok）。
+
+# ── PR body layout: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# PR body layout (GitHub#644: the 「PR 正文版式」 section, byte-identical in `issue-comment.template.md` and
+# `pr-comment.template.md`, placed before the hard-rule section; § A step 3 sends with `--body-file`;
+# `scripts/pr-body-lint.sh` called as `${CAVIL_STEP_DIR}/pr-body-lint.sh`, registered in
+# `skill-deploy.sh`, `release-entry.sh` and the step-dir all-or-none check in `_lib.sh`; the
+# first-sentence rule moved to `scripts/_concurrent_work_defs.sh` so the check and the concurrent-work
+# list read one rule) → `tests/pr-body-lint.test.sh` (~3 min on a loaded box; the real command on
+# sample bodies, and the prompts written by the real dispatch scripts for new issue, issue comment,
+# split sub-issue, PR comment and review). It checks three things only — the first sentence, link
+# lines outside folds, the autopilot summary — and not whether every section is folded or folds are
+# balanced (the maintainer's choice on PR #650, Q1 = B, after five review rounds each found a new form
+# the fold judgement misread; the prompt asks the worker to check sections itself). Block and inline
+# kinds come from the vendored CommonMark parser (`tests/lib/vendor/`, shipped with the release as
+# part of the repository), never from line-by-line guesses: PR #650 review rounds 1–2 each found a
+# form a hand-written scanner got wrong (inline code with a tag, also across a line break). Inside
+# HTML, a tag is what the parser's own `HTML_TAG_RE` matches from each `<` (round 3: a `<details>`
+# inside a quoted attribute value was read as a tag); one scanner (`Scan`) is fed every HTML block and
+# every inline HTML / text token in document order, so comment and raw-text state carries across
+# tokens (round 4: an inline `<textarea>…</textarea>` is three tokens), and the link-line check reads
+# each line's visible text from that same scanner, HTML blocks included (round 4: `Closes #N` right
+# under `<summary>` in one HTML block); the autopilot summary is judged on exactly what the daemon
+# copies after the merge: the markers and the extraction live in one file,
+# `scripts/_autopilot_summary.sh` (`autopilot_summary_extract`, used by `autopilot_merged_comment` and
+# by the check), which finds a marker by its text on any line — so marker text inside a text box or
+# inline code is rejected, because the daemon would start copying there (round 5); fold depth changes
+# in one place, `Scan._tag` (an extra closing tag stops at zero, as in a browser), and the summary
+# check is an allowlist: everything the scanner sees goes through one record, `Scan.seen` — every
+# Markdown block except an HTML block, every non-text inline item, every HTML tag other than
+# `<details>` / `</details>`, every non-blank text — so between the markers and outside the three
+# folds only blanks, comments and fold tags themselves may appear, whether the other content is
+# written in Markdown or HTML (post-narrowing review rounds 1–2: a fenced block, then `<hr>` / `<img>`
+# slipped through a list of visible kinds), and the check imports the parser with bytecode writing
+# off, so a release directory gains no `__pycache__`. The check reads only the local file — never
+# GitHub, never the body text in its output — and opening / editing the PR keeps the existing `gh`
+# steps: four design-review rounds on #644 found that letting the command send the request, adopt an
+# existing PR or recover an unknown result each opened a new failure path unrelated to folding, so
+# those were dropped (the maintainer's guidance on #644: GitHub text has an edit history,
+# simultaneous-edit overwrites are not must-fix). The reviewer gets no layout gate (#644 Q1 = A):
+# deciding whether the current body was written by the agent this round has no reliable evidence on
+# GitHub
+#
 set -euo pipefail
 
 usage() { echo "用法：bash $(basename "$0") <正文文件>" >&2; exit 2; }

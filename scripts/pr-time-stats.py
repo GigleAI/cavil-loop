@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# ── AI and test time per merged PR: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# AI and test time per merged PR (GitHub#593: `scripts/pr-time-stats.py`, the subsection in
+# `docs/operations{,.zh}.md` under the comment usage footer) → `tests/pr-time-stats.test.sh` (~5 s;
+# the real script against a fake `gh` that serves fixture files per request path, a fixture run log).
+# The maintainer chose an **estimate** (#593 Q1 = B): footer values are added up with no
+# de-duplication across dispatches, overlapping same-agent dispatches are only marked — do not quietly
+# turn it into the exact attribution that six design-review rounds kept finding new double-counting
+# variants in. "Unknown" is never 0: a PR with no footer, or a footer without `ai_secs`, is left out
+# of that column's average; any read that fails or a list that is not read whole exits 2 with no
+# report. It is expensive on the shared GitHub allowance (two requests per CI attempt; three runs in
+# one hour exhausted the 5,000 on 2026-11-20): finished attempts are cached locally and only failed
+# reads are retried — keep it that way. The PR → work number rule is `pr_to_issue_num` in `_lib.sh`;
+# the test diffs the Python copy against it on one set of inputs — change both together
+#
 """每个已合并 PR 的 AI 耗时和测试耗时（估算，GitHub#593）。只读：只读 GitHub、本机测试流水，不写任何地方。
 
 口径是维护者在 #593 选定的「估算」（Q1 = B），不做跨派工去重：

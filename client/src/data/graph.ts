@@ -28,6 +28,30 @@
 //   through a finished item, or the PR itself as the start, never counts the issue behind it); an issue
 //   with no open blocker of its own whose PR is held shows "它的 PR 被挡住" instead.
 
+// ── The dependency graph's PR ⇢ issue links: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+// The dependency graph's PR ⇢ issue links (GitHub#636: `GraphLink` / `links`, `prBlocked` and the
+// gated walk for "挡住后面 N 项" in `client/src/data/graph.ts`, `prsNaming` in `client/src/data/prNest.ts`,
+// the links in `lifted` in `graphLayout.ts`, the dashed `glink` lines, the "它的 PR 被挡住" badge and
+// summary line in `GraphView.tsx`) → `cd client && npx vitest run test/unit/graph-links.test.ts
+// test/unit/loop-blocked.test.ts test/unit/graph-prs.test.ts && npm run test:e2e -- graph`
+// (`graph-links` reads its items through the real `fetchRepo` against the fake GitHub; every case runs
+// again with the items reversed). A link is not a blocking arrow: "被 N 项挡住" never counts it, arrows
+// are drawn and counted exactly as before. Which PRs a link joins to an issue node is one rule — the
+// summary's "linked PRs" (`issuePrLinks`) for an issue a source holds, `prsNaming` (the same
+// description rule `issuePrLinks` uses) for an issue known only from another item's relations — never
+// a second reading of a PR's body, and never from the order of the items (the board's "under the first
+// issue" claim, `prHosts`, gives a different answer per order). "挡住后面 N 项" crosses a link only on a
+// walk that reached the PR along arrows through open nodes alone: each queue entry carries an "all
+// open so far" flag, a node seen only with the flag off may be entered once more with it on, never the
+// other way round (design review rounds 1–4 on #636 found three variants: a closed PR, a PR nobody
+// holds, a path through a finished item while another item holds the PR). `prBlocked` (open issue, no
+// open blocker of its own, an open link from a PR that an open blocker holds) drives both the card
+// badge and the summary line — for an issue in no source as well (PR #641 review round 1: the summary
+// hid the line behind `n.item`). The layout treats a link like an arrow (`lifted`), so a link whose
+// ends lift to one member (a PR in the box of the issue it is linked to) does not take part and the
+// boxes are laid out as without it
+//
+
 import type { IssueStateReason, Item, ItemKind, ItemState, RelatedIssue } from '../shared/types';
 import { labelAt, loopCandidate, type LabelFor } from './loopBlocked';
 import { issuePrLinks, prHosts, prsNaming } from './prNest';

@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+
+# ── The footer's test time: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The footer's test time (GitHub#244: `scripts/drivers/token-usage/test-time.sh` / `test_time.py`, the
+# run id and run record in `tests/run.sh`) → `tests/footer-test-time.test.sh` (~20 s; real
+# `tests/run.sh` in a real git worktree, real `comment-footer.sh`; `MUTATION=1` adds seventeen broken
+# copies, the rejected design versions and the code-review round-1 and round-2 versions among them, ~5
+# min). A session command is linked to a run record only by the id printed in that command's own
+# output (codex: its item in the `exec` cell output plus later polls of its `session_id`) — never by
+# start time, directory, or another command's output; Claude and codex feed one set of rules, and the
+# test checks both give the same answer on one scenario; "belongs to this round" is one condition (the
+# call was sent at or after the dispatch start), applied in one place per agent — never per counter;
+# "could not link" and "no record" stay runs, never 0
+#
 """评论 footer 的「测试花了多久」（GitHub#244）：项目测试耗时命令（COMMENT_FOOTER_EXTRA_CMD）的内置实现。
 
 由 test-time.sh 调用；comment_footer.py 在 worktree 里跑它，环境变量带上

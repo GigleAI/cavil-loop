@@ -16,6 +16,41 @@
 #     fixed words and numbers in `stage` / `diag`. A best-effort local log keeps the raw text.
 #   - Retries happen here, never in the agent.
 
+# ── Step scripts the templates run: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Step scripts the templates run (GitHub#599: `scripts/flip-label.sh`, `scripts/conflict-check.sh`,
+# `scripts/pr-feedback.sh`, their shared `scripts/_step.sh`, the `cavil_step` / `flip_label` block in
+# the four base templates, the `${CAVIL_STEP_DIR}` placeholder, `--body` of the footer command) →
+# `tests/step-scripts.test.sh` (~5 s; the composed prompts' own `cavil_step` block run under `bash
+# -euo pipefail`, the stateful fake GitHub). The result protocol is the whole point: a script writes
+# `STARTED` to fd 3 before its first request and one JSON object at the end, nothing else ever reaches
+# fd 3 (children run with `3>&-`), the scripts never `exec`; a script whose marker write fails exits
+# 65 before any request (`step_start || exit 65`, a lint in the test); `cavil_step` accepts a result
+# only through the stable table it carries inline (`tests/fixtures/step-result-stable.jq`: exactly one
+# object, `step` = the script it ran, a `status` in the table, every field the table lists for it) and
+# treats anything else as "outcome unknown". That file is **never edited**: a template is rendered at
+# dispatch and may call the script of a later release, so it is the contract between every template
+# and every future script (PR #607 review rounds 2–5: a copy next to the entrypoints, an inline copy
+# of the current table, and a check with no fields each left one direction broken — a newer script's
+# valid result rejected, or a success missing the data the next step reads accepted). Each script
+# checks its own result with `scripts/step-result.jq` from its own release before writing it
+# (`step_result`); that table must keep every step, status and field of the stable one and may only
+# add — the test checks the superset, the four inline copies, and runs a template rendered against one
+# release with the entrypoint already switched to a newer one (`tests/skill-deploy.test.sh`). A new
+# status reads as "outcome unknown" in an older template, never as success; no status is ever renamed
+# or given another meaning — flip-label's `done` is the one way to say "target reached" in every
+# version and prints `EXIT=<code>` plus the result, `RESULT=not-started` (fd 3 empty — the only proof
+# nothing was sent; the exit code proves nothing, a script that sent a request can still exit 127) or
+# `RESULT=none` (did not finish, outcome unknown). Label hand-over contract: add first, delete only
+# after a read-back shows every add, `done` only from the final read-back; a label that must stay goes
+# into `--add` (the reviewer's "rounds used up" adds `pending/review` back — the daemon removed it at
+# dispatch). When a flip is not `done` the agent writes no further label at all, it only comments (the
+# maintainer chose this over a second write path, #599 Q1 = B). Every `flip_label` call in `prompts/`
+# is listed in `tests/fixtures/flip-label-calls.txt`; a new or changed call updates that file. Scripts
+# the agent runs that need no daemon state go through `entrypoints/` like the footer: add a new one to
+# `skill-deploy.sh`, `release-entry.sh`, the all-or-none check in `_lib.sh`, and the table in
+# `step-result.jq` together
+#
+
 STEP_FD=""
 STEP_REPO=""
 STEP_ARGS=()

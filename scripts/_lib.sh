@@ -471,6 +471,60 @@ labels_have_requester_bot_wait() {
 # 要不要再记一行日志，**从不参与判断**；文件坏了、丢了只会多记几行。
 # REQUESTER_BOT_WAIT_LOGGED=1 = 这一次拦住的原因（同一个等待标签、同一次挂上）已经记过日志。
 REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
+# ── Requests filed by the requester bot on autopilot, and not picking up an item whose waiting label was removed early: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Requests filed by the requester bot on autopilot, and not picking up an item whose waiting label was
+# removed early (GitHub#162: the requester-bot denials removed from `autopilot_authorization` — who
+# added the label decides, not who filed the request, and the bot account's own label still does not
+# count; `requester_bot_wait_hold` in `_lib.sh` and its three callers — the greedy pass and
+# `collect_autopilot_rows` in `agent-poll.sh`, `autopilot_takeover_permit` for a PR with no flow
+# label; `prompts/autopilot-requester-bot.md`, appended by `compose_prompt_template` only when both
+# features are on and the item is on autopilot) → `tests/requester-bot-wait.test.sh` (~10 s;
+# `MUTATION=1` adds sixteen broken copies — one per call site and per rule, including putting a
+# verdict cache back and dropping the rules revision — plus two whole implementations swapped in: the
+# versions rejected in code review rounds 1 and 2, ~3 min) plus the bot cases in
+# `tests/autopilot.test.sh` (§2, §7, §12b, §13j, each run with only the account set and with the
+# feature fully on). The hold is judged from GitHub's label history ordered by **event id**, never
+# from whether this machine saw the waiting label (a label added and removed between two polls must
+# still be caught) and never by timestamp; unreadable or id-less history means "no pick-up this
+# round". No verdict is cached at all — GitHub's `updated_at` is whole seconds, so a cache keyed on it
+# reused a stale "go" across a same-second label event and a stale "hold" across a label-config change
+# (code review round 1); the log-dedup file never feeds the decision. The two "judged, unchanged,
+# skip" records autopilot keeps (`.autopilot.denied`, `.autopilot.takeover`) carry
+# `AUTOPILOT_JUDGE_REV` in their value: **bump it whenever a rule change can turn an old "no" into a
+# "yes"**, or records written by the previous version keep short-circuiting the new rule after an
+# upgrade (code review round 2; `tests/requester-bot-wait.test.sh` §5 runs a pinned old commit first,
+# then upgrades with the state kept). Explicit dispatch labels are not gated: they are the "carry on".
+# With the feature off the function reads nothing. The bot's reply without a dispatch label
+# (GitHub#619): when the waiting label was removed and the bot account posted an answer carrying `<!--
+# requester-bot-reply wait=E -->` on a line of its own (E = the latest "waiting label added" event
+# id), `requester_bot_wait_hold` returns 3 and none of its three callers picks the item up itself —
+# each calls `requester_bot_backfill`, which builds one identity string twice from fresh reads
+# (`requester_bot_backfill_doc`: item, PR identity, waiting / removal events, every marked answer's id
+# / author / body fingerprint / update time, and that path's own go-ahead checks — for autopilot the
+# authorization place, event position / time and actor; for a PR the takeover verdict `backfill` from
+# `autopilot_takeover_permit`) and, only when both agree with each other **and** with the caller's
+# first verdict (one field set, read by `requester_bot_ident` on both sides and also part of the
+# string the two fresh reads compare: the judgement's *inputs*, never its derived results — an item's
+# state, every label, author, parent-issue URL and body fingerprint (the body must be present as a
+# string or `null`, an explicitly empty body still counts; a missing field or another type is "not
+# read in full", never an empty body — the maintainer kept PR backfill with that rule, #626 review
+# round 6 = A), a PR's draft flag / base / head / source branch / source repo (binding and the
+# split-sub-issue check are functions of exactly these), the authorization identity plus, for a split
+# sub-issue, the same fields of the parent issue the authorization read; for a PR with no flow label
+# the takeover's own first verdict plus the same fields of the PR and its bound issue —
+# `requester_bot_first_key` / `requester_bot_auth_doc` / `requester_bot_take_doc`), adds
+# `LABEL_PENDING_AGENT_DEFAULT` and nothing else; any change after the first verdict
+# (re-authorization, a new commit, turning into a draft, any label added or removed, a body edit that
+# changes the binding, a parent link removed) writes nothing that round and is judged afresh next
+# round; the next round dispatches it the explicit way. Never let it dispatch or write
+# `pending/review` itself: an earlier design that did needed cross-round proof of which run left which
+# label / worker and failed six review rounds (#619 Q = A). At most once per round
+# (`REQUESTER_BOT_BACKFILLED`); a lost answer is not resent. Accepted limits: a stop added between the
+# backfill and the next round's dispatch does not hold it, and the bot's own dispatch label arriving
+# after the dispatch removed it dispatches again — the bot keeps adding `pending/agent` (label-mode
+# ordinary items only go on it). Comments are read only on items held with the waiting label already
+# removed; with the feature off nothing changes
+#
 requester_bot_wait_hold() {   # <编号>
     local n="$1" rows sorted e L lf key tmp u cm cid clogin cupd cb64 csha reps="" other_mark="" plain=""
     # 每行：事件编号、labeled / unlabeled、标签名、操作账号（摘标签的事件用来认 GitHub#619 的「等待已摘」）
@@ -901,6 +955,17 @@ case "$DISPATCH_MODE" in
     *) echo "❌ DISPATCH_MODE 只能是 label 或 greedy，实得：$DISPATCH_MODE" >&2; exit 1 ;;
 esac
 
+# ── The parked label: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The parked label (GitHub#463: `LABEL_PENDING_LATER`, its entry in `greedy_skip_label_list`, the
+# label in `setup.sh`) → `tests/later-label.test.sh` (~6 s; real `agent-poll.sh` against the stateful
+# fake GitHub: greedy and autopilot's "label only" pickup skip it while items next to it are queued, a
+# trigger label still dispatches it, and with the line set to an empty value the GitHub calls and
+# `state.json` equal the merge-base scripts'; since GitHub#551 a missing line means on —
+# `${LABEL_PENDING_LATER-pending/later}`, no colon, so only *unset* takes the default and an empty
+# value stays the human's "off"; `setup.sh` (`config_value_or_default`) and the settings dialog
+# (`effective` for `label` rows) read it the same way) plus `tests/setup-label-colors.test.sh` and
+# `tests/config-notice.test.sh`. It only goes into the shared blocking list — never a separate check
+#
 # greedy 模式的挡工 label。挂了其中任何一个就不派工——每一条都有非它不可的理由：
 #   pending/human  用户明确要人接手（这是用户唯一需要记住的那个「停」）
 #   doing/agent    已经有 worker 在跑，再派一次就是同一条活开两个 session
@@ -1627,6 +1692,16 @@ POLL_IDLE_PROBE_MAX_SECS="${POLL_IDLE_PROBE_MAX_SECS:-600}"
 # 11 位 epoch ≈ 公元 5138 年；时长类（间隔 / 门槛）用 9 位 ≈ 31 年。都远超任何真实取值，
 # 超了就只能是坏数据。
 PACE_MAX_DIGITS=11
+# ── Poll pace / idle + failure backoff: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Poll pace / idle + failure backoff → `tests/poll-pace.test.sh` (~40s: the end-to-end groups really
+# do spawn `agent-poll.sh` a few hundred times — do not run it under a 30-second command timeout, a
+# half-finished run looks like a failure); the idle probe and its cap (GitHub#252) →
+# `tests/poll-probe.test.sh` (~40 s idle box, real `agent-poll.sh` against a fake `gh` that answers
+# conditional requests the way the real one does — 304 exits 1, the 304 ETag drops `W/`; with the
+# probe off it diffs the GitHub calls and pace state against the merge-base copy; `MUTATION=1` adds
+# seven broken copies). `poll-pace.test.sh` runs with the probe off, since its tiers are the ladder's
+# own
+#
 pace_num() {
     local v="$1" max="${2:-$PACE_MAX_DIGITS}"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
@@ -3119,6 +3194,26 @@ repo_trusted() {   # <owner/repo>
 # 打开列表里就带着，不多发请求）。这个字段整个不存在（旧接口、测试夹具）= 没有父。
 # 拆分标记写 `<!-- agent-split-from: #P -->`（P 是父 issue 在它自己仓库里的编号），也认带仓库名的 `owner/repo#P`。
 SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WHY=""
+# ── Splitting on autopilot, sub-issues inheriting the parent's autopilot, the issue left open after an autopilot merge, trusted repos: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Splitting on autopilot, sub-issues inheriting the parent's autopilot, the issue left open after an
+# autopilot merge, trusted repos (GitHub#233: `split_parent_check` / `autopilot_authorization_split` /
+# `autopilot_labeled_or_parent` / `autopilot_snapshot_labeled`, the `Refs #N` binding in
+# `autopilot_pr_binding` (the closing-keyword bounce in `autopilot_permit` was removed in GitHub#461),
+# `autopilot_merged_comment` / `autopilot_merged_handoff` behind `merged_issue_label`,
+# `sub_issue_rollup_parent` / `sub_issue_rollup_discover`, `TRUSTED_REPOS` in `blocked_decide`) →
+# `tests/autopilot-split.test.sh` (~1 min by default; `MUTATION=1` adds thirteen broken copies, ~12
+# min) plus `tests/autopilot.test.sh`. The fake GitHub serves a second repo from
+# `$FAKE_GH_DIR/repos/<owner>__<repo>/` and parent / sub-issue relations (`parent_issue_url`,
+# `subs.json`). A sub-issue is judged on three places — sub-issue, PR, parent — by the same rule as
+# issue + PR; "is this a split sub-issue" has three outcomes and "cannot read" never becomes "not a
+# sub-issue" (that would dispatch an autopilot item without its rules). Every pre-filter that used to
+# require the item's own label goes through `autopilot_labeled_or_parent`; add a new entry point
+# there, not with its own `autopilot_has_label`. The post-merge hand-over never touches labels once
+# any flow label is on the issue, and re-reads the issue right before flipping. With `TRUSTED_REPOS`
+# empty a blocked marker with only bare `#N` is read exactly as before; an `owner/repo#N` naming
+# another repo is handed to a human and never read as this repo's `#N` (GitHub#243 — see the next
+# entry)
+#
 split_parent_check() {   # <issue 编号> <issue JSON>
     local num="$1" ij="$2" url prepo pnum author body me pj
     SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WHY=""
@@ -3395,6 +3490,19 @@ closed_done_flow_labels() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# ── `Done` on issues closed by hand as completed: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# `Done` on issues closed by hand as completed (GitHub#159: `closed_done_enqueue` /
+# `closed_done_drain` / `closed_done_label` / `closed_done_flow_labels` in `_lib.sh`, the enqueue +
+# drain in `agent-poll.sh` § 4) → `tests/closed-issue-done.test.sh` (~20 s by default, real
+# `agent-poll.sh` against the stateful fake GitHub with `FAKE_GH_LISTS=1`; `MUTATION=1` adds fourteen
+# broken copies, ~4.5 min). Only `completed` writes; `not_planned` / `duplicate` / reopened write
+# nothing and leave the queue; anything unreadable or unknown stays queued. "Done" means `Done`
+# present **and** every workflow label confirmed gone — a DELETE is a success only on 2xx or 404. A
+# finished or given-up entry is marked `"done"`, never deleted, until the issue is also in
+# `cleaned_issues` — the cleanup re-enqueues every tick it fails, and deleting would restart the retry
+# count forever (code review round 1). The two merge-path `--remove` lists are left as they are; the
+# test diffs their calls against the merge-base copy
+#
 closed_done_enqueue() {
     local issue="$1" state_file="$2" tmp
     # 只收编号：列表接口异常时 § 4 读到的可能是别的字符串，进了队也永远清不掉
@@ -3479,6 +3587,52 @@ closed_done_label_run() {
     return 1
 }
 
+# ── Autopilot merge closes the issue and keeps `pending/human` as a reminder: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Autopilot merge closes the issue and keeps `pending/human` as a reminder (GitHub#461: the `closes`
+# flag of `.autopilot.handoff` set at merge time — body has a closing keyword **and** the base is the
+# default branch — the closes-mode branch of `autopilot_handoff_judge` with
+# `autopilot_handoff_cmp_after`, `closed_reminder_facts`, the step loop `closed_done_label` +
+# `closed_done_judge` / `closed_done_cmp_after`, the `closes` todo in `autopilot_merged_comment`,
+# `@@LABEL_DONE@@` in the autopilot prompts; the fake GitHub's `merge_closes` / `default_branch`
+# files) → `tests/autopilot-merge-close.test.sh` (~45 s; real `agent-poll.sh` against the stateful
+# fake GitHub) plus `tests/closed-issue-done.test.sh`, `tests/autopilot.test.sh`,
+# `tests/autopilot-split.test.sh`. "Is this `pending/human` a post-close reminder" is decided by
+# **position in the event history** (last "labeled `pending/human`" after the last "closed"), never by
+# timestamp — the merge's close and the daemon's label often share a second. The sweep reads the event
+# history for **every** issue closed as completed, reminder or not (PR #478 review round 1: skipping
+# it when no reminder was on let an unreadable history still write). Events unreadable, an event
+# without an id, or history contradicting the labels (no "closed" event; label on, no "labeled" event)
+# = undecidable, nothing written. `closed_reminder_facts` is the one reader for both: it returns the
+# last close, whether the last "labeled" comes after it, the reminder state the history implies (last
+# reminder event labeled = on / unlabeled = off / none) and the whole list of close / reopen /
+# reminder events; the state must match the labels (`closed_reminder_consistent`), anything else is
+# undecidable (review round 2: a contradicting answer was treated as "a human removed it"). "Added
+# after the close, history says off, label absent" means a human has seen it — the hand-over never
+# adds it back; never decide that from the local "daemon added it" flag (round 1). After each write
+# the event list must be the old one plus exactly the daemon's own event for that step
+# (`closed_reminder_ev_after`: none for another label; one `labeled` / `unlabeled` by the write
+# account for `pending/human`) — never a wildcard (round 2: a human adding and removing the reminder
+# between two writes slipped through). The history also yields the open / closed state (last closed /
+# reopened event) and it must match the issue's state (round 3: an old "closed" event was taken as
+# proof the issue is still closed). **Any** round that does not finish — unreadable, contradicting,
+# changed by someone, a failed write — is a stop **for the whole poll round** (`issue_halt_round` /
+# `issue_halted_round`): the retry queue and the closed-issue sweep later in the same round skip that
+# issue without counting a try, and the next round starts from fresh reads (round 3: the retry queue
+# picked it up again from a new baseline within the same round). The mark is set in exactly two
+# places, the entry wrappers `autopilot_merged_handoff` (only when the hand-over record says `closes`,
+# or cannot be read) and `closed_done_label`, on every non-zero return — never by individual branches
+# (round 4: an "unknown" exit forgot to set it and a same-round retry finished the hand-over). Which
+# kind a record is comes from its own three-way reader, `autopilot_handoff_mode` (closes / refs /
+# unknown), never from `autopilot_state_get`, whose outer `// ""` turns `false` into an empty string
+# (round 5: every old `Refs #N` hand-over was then halted for the round) Both the sweep and the
+# closes-mode hand-over write one label at a time: judge twice from fresh reads before each write, and
+# after each write the next reading must equal "previous reading + the daemon's own step"
+# (`*_cmp_after`), anything else stops the round — a reminder re-added or the issue reopened after the
+# judgement is never overwritten. Sweep fixtures need the real shape (every label has its "labeled"
+# event, a closed issue has its "closed" event). A record without `closes` (a `Refs #N` PR, a
+# non-default base) runs the old hand-over unchanged; the test diffs `Refs`, non-autopilot and
+# plain-closed writes against the merge-base scripts
+#
 # 读 issue 的事件记录，判定「关闭」与 pending/human 提醒的事实（GitHub#461）。清扫和合并即关的交接都只用这一个。
 # 先后按事件在记录里的位置比（GitHub 按发生先后给出，分页拼接后不变），不比时间戳。
 # stdout 一行五段：
@@ -3790,6 +3944,36 @@ blocked_trusted_json() {
     printf '%s' "${TRUSTED_REPOS:-}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]' | jq -Rsc '[splits("[ \t\n]+")] | map(select(. != ""))'
 }
 
+# ── Waiting on another item: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Waiting on another item (GitHub#157: `LABEL_PENDING_BLOCKED`, the `blocked_*` block in `_lib.sh` —
+# `blocked_decide` / `blocked_apply` / `blocked_tick`, `blocked_handoff_section` — the 3f step and the
+# pace cap in `agent-poll.sh`, `prompts/blocked-handoff.md`) → `tests/blocked-label.test.sh` (~1 min
+# by default; `MUTATION=1` adds seventeen broken copies, ~4 min). It runs the real poller against the
+# stateful fake GitHub (`blocked_by.json` is the native relationship) and the real dispatch scripts
+# for the prompts. With the label set to an empty value it diffs the poller's calls, `state.json` and
+# the rendered / composed prompts against the merge-base scripts byte for byte (since GitHub#551 a
+# missing line means on, `${LABEL_PENDING_BLOCKED-pending/blocked}`). The progress records in
+# `blocked_resume` are pruned only when both the issue and the PR list were read whole — a failed list
+# is "cannot tell", never "nobody waits" (GitHub#551). One decision function, judged twice — the
+# second time from fresh reads right before writing, and the two results must be identical; "can't
+# read" never becomes "done" or "no prerequisite". The split rule ("prerequisite → wait for a human")
+# is overridden by the appended section, never by editing the templates, so projects that replace a
+# whole template still get it and the off state stays byte-identical. Prerequisites in another repo
+# (GitHub#243: `OWNER/REPO#N` in the marker, *Blocked by* entries from another repo; the fake GitHub
+# serves them from its `repos/<owner>__<repo>/` directories) are a prerequisite `{r, n}` (r empty =
+# this repo, lowercased otherwise); only repos on `TRUSTED_REPOS` are read (GitHub#233) — any other
+# repo, including every one when the list is empty, is `foreign` and handed to a human, never read as
+# this repo's `#N`; listed ones go through the same outcome code, read-only with the polling identity;
+# 404 / 410 / a non-rate-limit 403 from another repo is a failed ending handed to a human with the
+# reason, any other read failure stays "undecidable". Comments for this-repo-only items stay word for
+# word (§9c diffs them against the merge-base scripts). Which marker counts (GitHub#429) is one
+# function, `blocked_mark_pick`, which the desktop client's dependency graph mirrors in
+# `client/src/data/loopBlocked.ts` (`pickLoopMark`); both run the same cases with the same expected
+# answers from `tests/fixtures/blocked-marks.json` → `tests/blocked-mark-parse.test.sh` (~1 s) and
+# `client/test/unit/loop-blocked.test.ts`. Change both together; the one documented difference (the
+# client does not know the write account, so it admits only owner / member / collaborator markers) is
+# a case of its own (`clientWant`)
+#
 # 判定。stdout 一行 JSON（键固定顺序，两次判定直接按字符串比）：
 #   {v, event, set:[{r,n}], resume, pre:[{r,n,o}], why}
 #   v = resume（全部完成）/ failed（有前置失败收场）/ none（读全了却没有前置）
@@ -4465,6 +4649,15 @@ requester_bot_done_drain() {   # <state_file>
 # 「查不到」绝不等于「没冲突」：拉取失败、对象不在、merge-tree 报错一律算「还不知道」，
 # 下轮再判，同一对最多判 PENDING_HUMAN_CONFLICT_MAX_TRIES 次。
 
+# ── Re-checking `pending/human` PRs for conflicts with their base: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Re-checking `pending/human` PRs for conflicts with their base (GitHub#86) →
+# `tests/pending-human-conflict.test.sh` (~10 s by default; with `MUTATION=1` it also reruns every
+# scenario on seven deliberately broken copies of the scripts and fails if any of them slips through —
+# ~1 min. Both modes cross-check the daemon's verdict against the worker's hand-off conflict-check
+# snippet on the same PRs). It counts every GitHub call — the whole point of the design is that an
+# unchanged base costs zero extra calls. If you change the hand-off snippet's verdict rules, change
+# `pr_conflict_verdict` in `_lib.sh` the same way
+#
 # 输出 clean / conflict / unknown。$1 = PR 编号，$2 = 目标分支名，$3 = 目标分支当前提交，
 # $4 = 快照里看到的 PR 提交。
 pr_conflict_verdict() {
@@ -4760,6 +4953,62 @@ AUTOPILOT_AUTH_KIND=""; AUTOPILOT_AUTH_NUM=""; AUTOPILOT_AUTH_T=""; AUTOPILOT_AU
 AUTOPILOT_PR_EVENTS=""; AUTOPILOT_PLACE=""; AUTOPILOT_PLACE_EVENTS=""; AUTOPILOT_AUTH_CANDS=""
 AUTOPILOT_PLACE_COPY=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
 
+# ── Autopilot label: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Autopilot label (GitHub#114: `LABEL_AUTOPILOT` / `LABEL_PENDING_MERGE`, the `autopilot_*` block in
+# `_lib.sh` — PR↔issue binding, authorization from the issue's label events, the merge pass —
+# `collect_autopilot_rows` / `autopilot_dispatch_flags` in `agent-poll.sh`,
+# `prompts/autopilot-{worker,worker-pr,review}.md`) → `tests/autopilot.test.sh` (~3.5 min by default;
+# `MUTATION=1` runs 120 broken copies plus five previous implementations swapped in whole, ~2.5 min
+# each — `AUTOPILOT_MUT_SHARD=K/N` runs every N-th one so N processes can share the load). It runs the
+# real poller against a stateful fake GitHub (`tests/lib/fake_github.py`: labels, label events,
+# comments, the merge endpoint, failure and mid-round hooks). With the feature off it diffs the
+# poller's GitHub calls, `state.json` and all four composed prompts against the merge-base copy byte
+# for byte. The three judgements (binding / authorization / stop) each have one implementation used at
+# dispatch and in the merge permit. Everything a merge depends on is judged in one pure function,
+# `autopilot_permit`, which the merge pass calls twice — to decide, and again from fresh reads right
+# before the merge request. Add any new merge condition there, never as a separate re-read, and never
+# exempt a remote input on the grounds that it "cannot change" (comments can be edited or deleted).
+# Any new daemon-side merge-path write goes through `gh_write`; "can't read" must never become
+# "authorized", "passed" or "no conflict". Turning it off is just the config line (GitHub#124):
+# `autopilot_off_sweep` runs only when `LABEL_AUTOPILOT` is empty and only on PRs recorded under
+# `autopilot.prs`, so a project that never had autopilot on stays byte-identical; it records the
+# hand-over in state before touching GitHub, converges the labels, posts the note only if the PR has
+# none yet, and clears the record last — so any failed step or killed process is resumed next round
+# (§11). The label may also go on an existing PR (GitHub#128): `autopilot_authorization` then takes
+# both the issue and the PR and applies one rule — authorization comes only from a maintainer's
+# "added" event that still stands and is later than every "removed" event on either place — used by
+# dispatch, the merge permit and the takeover (`autopilot_takeover_permit`, also judged twice, once
+# more from fresh reads right before writing). Never decide from "the label is not on the PR now": a
+# removed label is a stop, so the PR's events are always read. A takeover candidate is a PR carrying
+# the label, or one carrying only `pending/human` whose bound issue carries it; any other flow label
+# alongside `pending/human` means work in progress and is never taken over; undecidable rounds during
+# takeover (judged on the round's last decision) count separately from the merge pass; at the cap the
+# hand-off is recorded first; its only basis is "cannot decide", so every attempt re-runs the same
+# takeover permit and the task is dropped (normal takeover path instead) as soon as the PR is
+# decidable — never let a stale hand-off out-rank a newer maintainer action (§12). A PR bound to no
+# issue counts too (GitHub#142): `autopilot_pr_kind` is the one classifier (bound / PR-only / not
+# eligible) used by dispatch, the merge permit, the takeover and its re-check; PR-only means the body
+# closes no issue of this repo, and then `autopilot_authorization "" "" <pr> <pr JSON>` looks at the
+# PR alone and also requires the **description at the moment of the label** (`autopilot_body_at`,
+# GitHub's `userContentEdits` history; same-second revisions all have to qualify; a deleted revision
+# is "not accepted", an unreadable or incomplete history is "undecidable") to be PR-only — never the
+# current body alone, or "rejected, body edited, old label suddenly valid" comes back. Nothing about
+# it is stored locally. Bound PRs must not trigger a single history read (§13). The PR carries the
+# label too (GitHub#190): `autopilot_mirror_tick` (between takeover and merge) copies the issue's
+# label onto the bound PR with the write identity and takes **only its own copy** back once
+# authorization is definitely gone. A copy is "the last label event on the PR is by the loop's write
+# account" (`autopilot_place_strip_copy`) and is treated as absent wherever authorization is judged —
+# it never authorizes, never starts a takeover, never triggers a "not accepted" comment. Add and
+# remove are one pure judgement `autopilot_mirror_judge`, run twice like the permits; every identity
+# field (PR state / head / base / source / branch, binding, issue state, `pending/human` on both
+# sides, the copy's event position, the authorization event) is one string compared whole — a new
+# field goes into that string. Within one judgement the PR's label events are read twice on the
+# removal path (to spot the copy, then inside the authorization); both reads must point at the same
+# copy event or the round is undecidable — a maintainer re-adding in between must never be deleted (PR
+# #203 review round 1, §14i). The merge permit requires the label on a bound PR (missing =
+# undecidable). Healthy autopilot PRs cost zero calls in that pass and in takeover (in-flow PRs are
+# skipped from the snapshot) — keep it that way (§14)
+#
 # 托管标签配了（不管复审关卡在不在）
 autopilot_configured() { [ -n "$LABEL_AUTOPILOT" ]; }
 # 真正生效：托管标签 + 复审关卡都在。没有复审 = 没人把关，不托管。
@@ -5541,6 +5790,45 @@ autopilot_daemon_sig() { printf '<sub>cavil-loop daemon @ %s 自动留言</sub>'
 #   PR 另外要：merged、draft 是布尔值；head.sha、head.ref、base.ref 是非空字符串
 #   标签事件：是「页的数组」，每页是数组；加 / 摘标签的事件 id 是数字、不重复，label.name 是字符串
 
+# ── Autopilot hand-over: stopping when a maintainer changes something between its writes: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Autopilot hand-over: stopping when a maintainer changes something between its writes (GitHub#382:
+# `autopilot_fp_place` / `autopilot_fingerprint` / `autopilot_fp_expect` / `autopilot_fp_is_own_write`
+# / `autopilot_handover_rejudge` / `autopilot_label_delete`, `autopilot_to_human`,
+# `autopilot_halt_dequeue`, `autopilot_off_write` / `autopilot_off_sweep` in `_lib.sh`, the reason
+# codes `AP_STOP` and `AP_PARENT` set by `autopilot_permit`) → `tests/autopilot-handover.test.sh`
+# (three parts, ~7 min in all; real `agent-poll.sh` against the stateful fake GitHub, which can now
+# run a hook before / after a comment is posted and lose a comment's response) plus
+# `tests/autopilot.test.sh`, `tests/autopilot-human-paths.test.sh` and
+# `tests/autopilot-split.test.sh`. Three flows, two rules. The flows: handing a PR to a human (note →
+# add `pending/human` → remove `pending/merge`, one function for every reason), a PR carrying both
+# labels (remove `pending/merge` only), and the sweep after autopilot is turned off (add → remove →
+# note). The rules: **the judgement is sandwiched by the baseline** — take the fingerprint, judge,
+# take it again; whatever was judged earlier is only a trigger — and **every later write compares a
+# fresh fingerprint with "baseline + the daemon's own confirmed writes"**, anything else stops the
+# round. The fingerprint is one string compared whole: a new input to a hand-over decision goes into
+# it (or into the permit, which is re-run before every write), never into a separate check. Ids are
+# compared only between label events of one item — never with comment ids, never by timestamp
+# (measured on #337: a later comment had a smaller id than an earlier label event). "This queueing" is
+# the id of the last "added `pending/merge`" event; the note's hidden marker carries it, so a note is
+# deduplicated per queueing and a re-queued commit gets a new one. The hand-over keeps no local to-do
+# (the labels and the note on the PR are the progress); the off-sweep must keep one (labels first,
+# note last), so its record carries the baseline, the expected state and the pending write, and a
+# state that is neither "expected" nor "expected + exactly the pending write" drops the record instead
+# of rebuilding a baseline from the present — a bare flag re-added the `pending/human` a maintainer
+# had removed (design review round 2). Never remove `pending/merge` first: the permit no longer sees
+# the PR and every later re-judgement is void. "Cannot read" (item, label events, comments, an event
+# without an id, events that contradict the current labels) is never "unchanged": nothing is written.
+# The same goes for an answer that came back incomplete: the field rules live in one place,
+# `autopilot_fp_place` (state must be `open` / `closed`, a PR's `merged` / `draft` must be booleans,
+# labels must be named, head / base must be there), and a missing field or an unknown word is "cannot
+# read", never defaulted to "not merged" / "not a draft" / "closed" — a response without `merged` was
+# once handed over in full, and an unknown `state` dropped an off-sweep to-do that still owed its note
+# (code review round 1). A test that kills the poller mid-request waits for the fake GitHub's `done_…`
+# file before asserting what GitHub holds, never a fixed sleep. Fixtures must have the real shape —
+# every label on an item has its "labeled" event, and the fake GitHub numbers events by position so
+# hand-written and daemon-written ones order the way they happened. With no hand-over in a round the
+# GitHub calls equal the merge-base scripts' byte for byte (the test diffs eight such scenarios)
+#
 # 一处的现状。结果在 AF_PLACE（一行 JSON）、AF_EVENTS（这一处的标签事件 [{id,event,name,actor}]，按编号排序）；
 # 分不清时 return 1、AF_WHY 是原因。在调用方自己的 shell 里调。
 autopilot_fp_place() {   # <编号> <pr|issue> [仓库]
@@ -7340,6 +7628,35 @@ worker_alive() {   # <tmux_session>
     esac
 }
 
+# ── Switching the program inside a live worker session: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Switching the program inside a live worker session (GitHub#197: `worker_session_launch` in
+# `_lib.sh`, used by the issue-comment and PR-comment dispatchers instead of kill-session +
+# new-session) → `tests/session-switch-keeps-client.test.sh` (real tmux on a private socket, the real
+# dispatch scripts; an attached terminal is a `tmux -C` control-mode client under `timeout` — never a
+# background `script` pseudo-terminal, which grows without bound and once took down the whole
+# machine). The session must survive the switch, the old program must be gone even though it ignores
+# SIGHUP, and a program that exits must still take the session with it. `pipe-pane -o` is a toggle,
+# not idempotent: `start_session_logging` checks `pane_pipe` first. The worker pane is identified by
+# the pane id recorded in the session option `@worker_pane` when the daemon creates it — never by list
+# order or "the current pane": `split-window -b` puts a human's pane first, and picking it killed the
+# human's program and left the old worker running (PR #219 review round 1). A session with several
+# panes and no record is not guessed at: everything in it is stopped and the session rebuilt. Every
+# pane decision goes through one lookup, `worker_pane_lookup` (found / single / gone / multi /
+# unknown); any failed or malformed tmux read is `unknown`, and on `unknown` nothing is killed,
+# started or re-recorded — the dispatch fails before flipping the label and the next round retries (PR
+# #219 review round 2: a failed read had been taken for "pane gone" and started a second worker, or
+# for "no record" and rebuilt the whole session). The same lookup carries the log-pipe state (one
+# `list-panes` read), and `start_session_logging` never uses `pipe-pane -o` — `-o` is a toggle, so one
+# misread closed a live log (review round 3); without `-o` an open pipe is just replaced. Every other
+# read that drives an action is three-way too: `tmux_session_matches_worker` (0 same / 1 different / 2
+# unreadable → the dispatcher exits before injecting or switching) and `worker_alive` (0 / 1 / 2,
+# session existence from a successful `list-sessions`, never `has-session`, whose "error" and "absent"
+# look the same; only 1 retires the conversation and restarts). The test injects those failures
+# through a thin wrapper in front of the real tmux, holds each for two rounds and checks the state
+# after every round (a toggle can cancel itself over two rounds), then requires a clean switch once
+# reads recover. tmux option commands need `-t "=name:"` (with the colon) for an exact match;
+# `"=name"` is rejected
+#
 # 在 worker session 里起一条命令（GitHub#197）。
 #
 # - session 不在：照旧 `tmux new-session -d`，记下新窗格。
@@ -7800,6 +8117,26 @@ config_notice_log_line() {   # <KEY>
     log "⚠️ 配置提示：本项目配置里没有 ${key}，这个新功能现在是关着的（$(config_notice_field "$key" 3)）。要开就在 $CONFIG_FILE 里加 ${line:-$key=...}；不开就写 $key=$(config_notice_field "$key" 4)"
 }
 
+# ── Telling an existing project about new settings its config lacks: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Telling an existing project about new settings its config lacks (GitHub#289; log only since
+# GitHub#428: `scripts/config-notices.txt`, `CONFIG_NOTICE_UNSET` recorded right after `source
+# "$CONFIG_FILE"` in `_lib.sh`, `config_notice_tick`, `$STATE_DIR/config-notice.json`) →
+# `tests/config-notice.test.sh` (~35 s; real `agent-poll.sh` started the way `poll-entry.sh` starts
+# it, plus one run through the real `poll-entry.sh`, against the stateful fake GitHub). Every key
+# assigned in `cavil-loop.config.example` must be registered there as `notice` (off when missing, on
+# in the template) or `quiet` with a reason — the test fails on an unregistered key. "Missing" means
+# unset right after the config is sourced; an empty value is "decided: off". A missing key gets one
+# `poll.log` line, nothing else: **no GitHub call at all** — no issue opened, an old notice issue
+# neither read, commented on nor closed, an old `CONFIG_NOTICE_ISSUE` line ignored; the test asserts
+# zero calls next to the log line that proves the tick ran, and diffs the calls against the merge-base
+# copy run with `CONFIG_NOTICE_ISSUE=false`. The state file keeps only `logged`; fields an earlier
+# version wrote (`issue`, `issued`) are dropped on the next scheduled poll even when nothing new is
+# logged. The tick only runs in a poll the scheduler started: `poll-entry.sh` hands
+# `CAVIL_SCHEDULED_POLL=1` to `agent-poll.sh` alone, which stores it as `POLL_SCHEDULED` and unsets it
+# before anything else runs — never gate on `CODING_AGENT_RELEASE_ROOT`, worker sessions inherit it.
+# The look-up steps in `docs/operations{,.zh}.md` (behind `<!-- config-notice-ops:begin -->`) are run
+# verbatim in an empty environment by the test; keep the two copies identical
+#
 config_notice_tick() {
     [ "${POLL_SCHEDULED:-}" = 1 ] || return 0
     local f missing st logged new_log k changed=0
@@ -8233,6 +8570,49 @@ _concurrent_work_log_file() {   # <说明> <文件>
     return 0
 }
 
+# ── Telling the worker what else is in progress: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Telling the worker what else is in progress (GitHub#340: `ENABLE_CONCURRENT_WORK_HINT` — renamed
+# from `CONCURRENT_WORK_HINT` in GitHub#356, the old name is no longer read and a config that only has
+# it gets the missing-setting notice — the `concurrent_work_*` block in `_lib.sh` —
+# `concurrent_work_text` builds the list, `concurrent_work_fill` puts it into the prompt —
+# `prompts/concurrent-work.md`, the `${CONCURRENT_WORK}` placeholder, the one call after the `sed` in
+# each of the three dispatch scripts) → `tests/concurrent-work.test.sh` (~4 min; the real dispatch
+# scripts against the stateful fake GitHub and a local bare origin). Since GitHub#598 each item is one
+# line — number, state, title, a one-sentence summary, the directories it touches — never file names,
+# and the whole list is capped at `CONCURRENT_WORK_MAX_BYTES` (default 6000, 2000–20000, anything else
+# = 6000 with a log line), whole lines only, the closing "N more" line included. The summary is the
+# first sentence of the PR body (`concurrent_work_first_sentence`, one jq definition shared through
+# `CONCURRENT_WORK_JQ_DEFS`), else the subject of the newest non-merge commit in `base..branch` (two
+# dots: commits only on the branch, never main's newer ones), else "（没有摘要）"; a subject that cannot be
+# read is "摘要未能读取", never "no summary". The first sentence takes in the soft-wrapped lines of the same
+# paragraph, but a heading used as the summary stands alone, and two lines are joined without a space
+# only when both sides are Chinese / Japanese script (PR #604 review rounds 1–2). Directories go from
+# git's raw bytes to the text the agent reads in one file, `scripts/concurrent_work_dirs.py` — grouped
+# and counted on the raw bytes of `git diff -z`, then shown under a name that depends on that
+# directory's raw bytes alone — never on which other directories are listed with it — through a
+# one-to-one escaping (`\` → `\\`, the backtick and control / format / odd whitespace characters →
+# `\u{HEX}`, invalid bytes → `\xHH`; each escape has its own prefix, so the text decodes back to the
+# exact bytes), and a name over 80 characters is cut and carries the **full** 64-hex SHA-256 of its
+# raw bytes — never fewer digits: with 8, review round 5 brute-forced two real directory names that
+# cut to the same text and tag. Five review rounds on PR #604 each found the identity lost at a
+# different step (the quoted display form split one directory in two; decoding before grouping merged
+# two; the display printed two as the same `a\ufffd/`; a hash added only when two names in one item
+# looked alike made one directory read differently in two items, and an invalid byte and U+0085 shared
+# `\x85`; an 8-digit tag on cut names collided) — keep every step of that path in that file;
+# `tests/concurrent-work-dirs.test.sh` (~6 s) decodes every display name back with an independent
+# decoder and checks a name alone equals the same name listed with others. One function builds the
+# list and all four entry points (new issue, issue comment, PR comment, split sub-issue) are compared
+# on one fixture. The list is filled in **after** the `sed` pass and only where the placeholder is a
+# whole line: it is multi-line and carries titles other people wrote, so it must never be rendered
+# again. Files are relative to the PR's own base branch; an item with no PR is compared with the fixed
+# `main` that `dispatch-new-issue.sh` hands to `create-worktree.sh` — not `BASE_BRANCH`, which only
+# syncs the main checkout — and a base that cannot be fetched is "could not read", never a fall-back
+# to another branch. "Could not read" is never "nothing": a failed or half-read list makes the whole
+# section "could not read"; a failed `ls-remote` / fetch keeps the items and marks every file list
+# unread; "nothing pushed yet" needs a successful `ls-remote` that does not show the branch. It reads
+# only at dispatch — with the switch off the prompts and the GitHub calls equal the merge-base
+# scripts' byte for byte (the test diffs both) — and nothing in it may fail a dispatch
+#
 # 清单正文（不含标题和规则）。永远 return 0、永远有输出。
 concurrent_work_text() {   # <本次工作分支> <本次工作编号>...
     local tmp
@@ -9077,6 +9457,111 @@ case "$STUCK_WORKER_MAX_RESTARTS" in ''|*[!0-9]*) STUCK_WORKER_MAX_RESTARTS=1 ;;
 case "$STUCK_WORKER_MAX_GAP_SECS" in ''|*[!0-9]*) STUCK_WORKER_MAX_GAP_SECS=900 ;; esac
 STUCK_ACTED=0
 
+# ── An item stuck on `doing/agent` with a live session and nobody working: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# An item stuck on `doing/agent` with a live session and nobody working (GitHub#339:
+# `STUCK_WORKER_QUIET_SECS` / `STUCK_WORKER_STEP_GAP_SECS` / `STUCK_WORKER_MAX_RESTARTS`, the
+# `stuck_*` block in `_lib.sh` — `stuck_sample` / `stuck_doc` / `stuck_verdict` / `stuck_tick` /
+# `stuck_step_run` / `stuck_freeze` / `stuck_frozen` / `stuck_release_*` — step 0d and the three
+# dispatch call sites in `agent-poll.sh`, `scripts/stuck-release.sh`, `agent_screen_state` /
+# `agent_screen_rules_reset` in `drivers/_common.sh`, `prompts/stuck-nudge.md`) →
+# `tests/stuck-worker.test.sh` (six parts, ~22 min in all on CI; real `agent-poll.sh` and dispatch
+# scripts, the stateful fake GitHub, real tmux on a private socket with a fake agent whose screen is
+# set from a control file, clock moved with `POLL_FAKE_NOW`; no negative controls; `STUCK_ONLY=9,13`
+# runs only those groups). All detection is script comparison — never add a model call here. "Busy" is
+# sampled in one place, `stuck_sample`: the agent and role recorded on the session, the recorded
+# worker pane (by pane id, never the session's current pane), the screen judged in a subshell that
+# loads **that** agent's driver after `agent_screen_rules_reset` (a driver only overrides what it
+# cares about, so without the reset codex inherits claude's 20-line window); the four-state screen
+# rule is `agent_screen_state`, shared with prompt injection. Every per-round check, the nudge and the
+# pre-action re-read use it; any failed or unrecognised read is "unknown" and neither advances nor
+# resets. Before ending a session or writing to GitHub, `stuck_doc` re-reads the target, the bound
+# items and the local session and the whole identity string must equal the one stored when the idle
+# clock started, with the verdict judged again by the same `stuck_verdict` — add any new condition to
+# that document, never as a separate re-read. Protecting labels are one list per place
+# (`stuck_labels_protect target|bound`); `pending/PR` on the issue behind a PR does not protect. A
+# restart / hand-over is a fixed sequence of writes (restart: add the trigger label → remove
+# `doing/agent` → end the session; hand-over: comment → add `pending/human` → remove `doing/agent`),
+# **all done within one round**. Before the first write the record gets `.inflight` (a restart also
+# takes its budget then, `.restarts` + 1); it is cleared only when the whole sequence is done, and a
+# record still carrying it at the start of the next round (the poller was killed mid-way) is stopped
+# there as "outcome unknown" — `stuck_frozen_scan` already counts it as stopped, so the trigger label
+# the daemon itself added is never consumed as an ordinary dispatch (code review round 7). The stored
+# identity (`.id`) is changed only on evidence that the daemon's own write landed (the comment id from
+# the POST response; for a label, the item's label events after the write show exactly one new event
+# with that action and label by the write account); "the label the daemon meant to add is on the item"
+# is never evidence. Before every side effect, one gate, `stuck_step_gate` (`stuck_doc` equals `.id`
+# whole). Failing it before the first write restarts the clock; **anything wrong after the first write
+# (a write not confirmed on the spot, a change between two writes, an unreadable state) stops the item
+# right there** (`stuck_freeze`): no rollback, no retry, nothing continued next round. All six rounds
+# of code review found their bugs in "half-finished state continued / rolled back across rounds" — do
+# not bring back cross-round continuation, rollback of the daemon's own label, or a give-up counter. A
+# stopped item covers the target plus the bound items checked at that moment; **every pass that writes
+# to an item or touches its session asks `stuck_frozen` first** (the three queue collectors through
+# `stuck_dispatch_hold`, self-heal, session reaping, autopilot takeover / label mirror / merge /
+# off-sweep, the waiting-on-prerequisite check, relabeling the issue after a PR closed unmerged,
+# post-merge cleanup and issue label, the parent roll-up, the conflict check on `pending/human` PRs,
+# the hand-over after a usage limit, the CI failure report — a child process that gets the stopped
+# items from `stuck_frozen_items` as `none` / `all` / a list of numbers, never empty, and treats a
+# write to one as a failed write; a set but empty or malformed value is `all`) — any new pass of that
+# kind must ask too; `stuck_frozen`, `stuck_frozen_items` and `stuck_frozen_work` take their answer
+# from one reader, `stuck_frozen_scan` (the state file must be exactly one JSON object with an object
+# `stuck_workers`, anything else is `all`) — never a separate jq query: on an empty file jq succeeds
+# with no output, which one place read as "stopped" and another as "empty list", and the report was
+# written while the state was unknown (code review round 6); a queue entry held back this way is
+# neither counted as a retry nor recorded as done. Passes that only write to an already closed item do
+# not ask. Closing an item keeps the record (still stopped when reopened); only a merged PR drops it.
+# There are exactly two ways back. ① Resume by a human: the stop note carries a unique marker, is
+# posted only when two `stuck_gather` reads are identical, is recorded as "outcome unknown" before the
+# request, and an unknown outcome is settled by reading all comments for the one by the write account
+# with that marker (an incomplete read = do not repost), at most `STUCK_NOTE_MAX_TRIES` posts; the
+# resume baseline (the latest label-event id at that moment) is recorded only **after the note is
+# confirmed posted**; `stuck_release_doc` + `stuck_release_ok` judge three conditions (the last
+# flow-label event after the baseline is a human adding dispatch label X and is not the one already
+# used, X is the only flow label on the target now, open bound items carry no protecting label and no
+# `doing/agent`), called in three places from one implementation: the per-round screen (records the
+# candidate), enqueueing (picks the candidate only, never authorizes), and **`stuck_release_gate`
+# before the dispatch script's first outward action** (fresh read, must equal the candidate whole;
+# before letting it through it writes "instruction used + this dispatch's token" to
+# `$STATE_DIR/stuck-release/<work number>.used`, otherwise exits 76). The gate sits in `flip_to_doing`
+# / `inject_prompt_logged` / `worker_session_launch` and before `tmux new-session` on the new-issue
+# path, not once per dispatch script; in a resume dispatch `gh_write` lets through only the
+# `flip_to_doing` write (the ordinary failure comment and the flip to `pending/human` are not made).
+# `DISPATCH_STUCK_RELEASE` is moved into the unexported `STUCK_REL_CTX` and removed from the
+# environment as soon as `_lib.sh` loads — left there it leaks into the worker's tmux session and
+# blocks writes of any script of this tool the worker runs. The parent uses one pair,
+# `stuck_release_begin` / `stuck_release_finish`, at all three dispatch call sites: a resume dispatch
+# is closed **only** by finish — no `dispatch_failed`, the failure counter untouched, the comment
+# cursor not advanced; success = exit code 0 + `doing/agent` on the item and no dispatch label + the
+# flow-label events after the instruction are exactly the write account's "remove X" and "add
+# `doing/agent`" + the session's `@dispatch_token` is this dispatch's token, anything else stops the
+# item again (new marker, new note, new baseline, `.frozen.used` carried over — the same instruction
+# never dispatches twice); the evidence file is deleted only after "used" is in `state.json`;
+# `stuck_release_recover` at the start of every round settles a file left by a round that never
+# reached finish (parent killed: instruction used, item stopped again), and `stuck_release_begin` does
+# not dispatch while one is still there (code review round 2: the next dispatch deleted the file and
+# the same instruction dispatched again); there is one way to read a local record, `stuck_entry`: it
+# fails when it cannot read, and **there is no "unreadable = empty record" variant**; fields that
+# decide "delete / let through / write" are taken in one go with `stuck_fields` and an extraction that
+# fails stops the caller — never write `[ "$(… | jq …)" = true ]`, which silently takes the other
+# branch when jq fails (code review round 4: one failed read in the per-round loop was taken for "not
+# stopped, no progress", the stop record was deleted and the item went out as an ordinary dispatch);
+# every write to a record goes through `stuck_entry_set`, which refuses a result whose item type is
+# not issue / pr or whose number is not digits, a stopped record missing either, or a stopped record
+# whose type / number changed — so a field that failed to extract can never overwrite a valid record
+# (code review round 5: an item type that failed to extract while settling a leftover receipt was
+# written as empty, and neither way back worked any more); when the scope of a stop cannot be
+# extracted it is recorded as `scope_unknown` and `stuck_frozen` answers "stopped" for every item;
+# `stuck_frozen` counts an unreadable state as stopped, and `stuck_release_begin` does not dispatch
+# when it cannot read the state or the item is stopped without being a resume dispatch (code review
+# round 3: one failed read was taken for "the record is gone"); exiting before the gate is not a
+# dispatch, and only `STUCK_RELEASE_MISS_MAX` of those in a row use the instruction up and stop again.
+# ② Release on the machine, `scripts/stuck-release.sh`: holds the poll lock, reads the whole identity
+# with the same `stuck_release_doc`, reads again after the confirmation and deletes the record only
+# when both are identical; incomplete or changed = not released. The command block in
+# `docs/operations{,.zh}.md` behind `<!-- stuck-release-ops:begin -->` is run verbatim by the test in
+# an environment with only HOME and PATH; keep the two copies identical. With the setting absent the
+# poller's GitHub calls, tmux calls and `state.json` equal the merge-base copy's (the test diffs them)
+#
 stuck_enabled() {
     case "$STUCK_WORKER_QUIET_SECS" in ''|*[!0-9]*) return 1 ;; esac
     [ "$STUCK_WORKER_QUIET_SECS" -gt 0 ]
@@ -10469,6 +10954,46 @@ ASSET_PUBLISH_MARKER='本项目的公网出图地址：'
 ASSET_PUBLISH_HOWTO_PREFIX='- **怎么出图**：'
 ASSET_PUBLISH_STANDARD_PREFIX='- **评论配图标准（截图 / 预览图 / 原型图一律照此发）**：'
 
+# ── Which projects show images in comments: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Which projects show images in comments (GitHub#602: the per-project `WEEKLY_REPORT_ASSET_ROOT_URL=`
+# line in `~/.config/cavil-loop/<key>.conf`, the two bullets after "没配出图地址" in the three worker
+# templates — private-repository files are never embedded as images, public images hold only public
+# content — and the matching criteria in review step 2L ① / ④; the add / check / revert steps in
+# `docs/operations{,.zh}.md` behind `<!-- asset-url-ops:*:begin -->`) →
+# `tests/reply-layout-prompts.test.sh` (the bullets in every entry point, rendered by the real
+# dispatch scripts with and without an address) and `tests/asset-url-ops.test.sh` (~1 s; the doc steps
+# run verbatim with only HOME and PATH against a fake config). Turning a project on makes its
+# screenshots public: it is decided per project by a person, never by a fallback to the machine's
+# address. Add writes the address it added to `<key>.conf.asset-url-added`; revert compares with that
+# record — never with the source project's current address, which may have changed since (PR #605
+# review round 1) — removes only the added line, only when it is the one line and still equals the
+# record, and stops when there is no record. Every combination of address lines × record × failed
+# write has one documented outcome and next step (PR #605 review round 2, the third variant of this
+# root cause): a record with no address line is a leftover (a failed add, or a revert that removed the
+# line but not the record) — add rewrites it, revert clears it; the config file is only ever replaced
+# whole — add and revert write the complete new file next to it, check it, copy the old file's
+# permissions, and only then rename it over (PR #605 review round 3: an append cut short by a size
+# limit left half an address line that neither add nor revert could get past; the test makes that
+# short write for real with `prlimit --fsize`); a file that is not writable is `FAILED` before
+# anything is written; each block takes one snapshot first (add: the backup) and makes every decision
+# — how many address lines, which value — and the new file from that snapshot alone (PR #605 review
+# round 5: revert checked the address on one read and built the result from another, and deleted an
+# address changed in between) — right before the swap the file must still equal it (else `STOP`,
+# nothing changed), and the replaced file, kept through a hard link taken just before the rename, must
+# still equal it right after (else `CONFLICT`, that file is kept and named) — the same "compare once
+# more right before the rename, state what cannot be prevented" rule as `project-config.sh` (PR #605
+# review round 4: a save between read and rename was overwritten; the test pins both windows with
+# `chmod` / `mv` wrappers); not caught: an editor's own rename in the instant between the last check
+# and the swap — after six review rounds of variants the maintainer chose (PR #605 Q1 = A) to keep
+# this design and accept that window, stated in the docs, rather than route every writer of the file
+# through one lock (which still could not cover a person's editor) or drop the scripted steps; add and
+# revert of one project hold one lock, `<key>.conf.asset-url.lock` (`flock -w 60`), from the first
+# read to the last write, so they never interleave (re-dispatch review round 1: a revert that read
+# zero address lines deleted the record of an add that finished in between); revert reports `REVERTED`
+# only when the record is really gone, `PARTIAL` when the line is gone and the record is not; an
+# unreadable file is `STOP`. Never copy a backup back over the file (a later token change would be
+# lost). Keep the two doc copies identical
+#
 # 本项目的 key = 调度器给它的那份 <key>.conf 的名字。环境里没有直接给，所以看配置目录：
 # CODING_AGENT_CONFIG 指向本项目配置的那份（比真实路径）。正好一份才算数；没有或不止一份输出空。
 asset_project_key() {
@@ -10703,6 +11228,74 @@ price_fetch_tick() {
     done < <(env ${envs[@]+"${envs[@]}"} python3 "$_LIB_DIR/drivers/token-usage/price_fetch.py" 2>&1 || true)
     return 0
 }
+
+# ── Session registry: why every write needs evidence (moved from the root AGENTS.md, GitHub#658; read before changing) ──
+# **Every write to this registry needs positive evidence of ownership, and that is
+# the whole point.** There are exactly three writers, and each one now answers
+# "why do I believe this conversation is mine?":
+#
+# | writer | evidence |
+# |---|---|
+# | a freshly pinned id (claude) | we minted the id ourselves at launch |
+# | adoption (worker role only) | the id is in `.preexisting`, so it predates role tracking |
+# | read-back after launch (codex) | the session's **launch input** carries this launch's unique tag, or failing that equals this launch's prompt in full |
+#
+# **Adoption uses a positive criterion.** The worker role may only take over a
+# conversation listed in `.preexisting` — i.e. one that predates role tracking,
+# the only kind whose role genuinely cannot be known.
+# Asking the opposite question ("is this id currently registered to someone
+# else?") looks equivalent and is not: every way a registration can go missing
+# then turns another role's conversation into a free-for-all. Two such ways are
+# real — a forced new session used to delete the old id, and a codex id that the
+# post-launch read-back never resolved — and both ended with the worker resuming
+# the reviewer's conversation. Hence also: a forced new session **retires** the
+# old id instead of deleting it, and `cleanup-issue.sh` clears only the current
+# registrations, never the two files above (a worktree can be rebuilt at the same
+# path while the agent's history, keyed by cwd, is still sitting there).
+#
+# The read-back has the same trap one level down: "a session file that appeared
+# after I launched" is **not** evidence that I launched it. If an earlier role's
+# read-back timed out, that role's file can land inside the next role's window and
+# get claimed by it. So the read-back asks the driver to prove the candidate was
+# started with this dispatch's prompt (`agent_session_started_with`), refuses when
+# two candidates both claim it, and — for a driver that cannot prove anything —
+# only claims a lone candidate when no earlier launch for that work item was ever
+# left unresolved.
+#
+# Three details of that proof are load-bearing, all learned the hard way.
+#
+# *What counts as the launch input*: every user message **before the first
+# assistant reply**, not "the first user message". A real codex rollout opens
+# `session_meta → developer×3 → user(AGENTS.md, ~30k chars) → user(the dispatch
+# prompt) → assistant`, so the first user message is the repo's own instructions
+# and a check that stops there always says no — the role then never finds its own
+# session again. The boundary must not be widened to "search the whole
+# conversation" either: a later dispatch injecting a prompt into an existing
+# session would carry a marker too, and that session is not the one this launch
+# created.
+#
+# *How much of it to compare*: the **complete** message, never its first line and
+# never a prefix. Reading one line rejects every multi-line prompt (every template
+# here is multi-line), and comparing a prefix accepts another role's session
+# whenever two templates share a long opening. And because two launches can legitimately render a
+# byte-identical
+# prompt, `agent_session_plan` appends a one-line marker carrying a fresh uuid to
+# the prompt of any launch that will need a read-back — so "which launch" stays
+# answerable. Launches that can pin an id (claude) get no marker; their prompt is
+# untouched. Failing to claim is always allowed: the conversation stays
+# unowned and the role starts fresh, which costs context and never crosses roles.
+#
+# Same rule one level down: which sessions belong to a worktree is decided by
+# parsing `cwd` out of the session record with jq, not by grepping `"cwd":"…"` out
+# of the raw line. Measured at equal cost (200 files, 0.4s either way), and the
+# grep form silently returns nothing the day the writer adds a space.
+#
+# **Deciding which session to launch** is `agent_session_plan` + `agent_launch_command`
+# in `_lib.sh`. Two functions, not one, on purpose: `plan` sets globals
+# (`AGENT_LAUNCH_KIND`, `WORKER_SESSION_ID`) and therefore must run in the caller's
+# own shell, while the command string has to be produced inside `"$( )"`. Merging
+# them means the globals die in the command-substitution subshell and every
+# dispatch script trips `unbound variable` under `set -u`.
 
 # ── 会话注册表：(work number, agent, 角色) → agent 侧的 session id ──
 #
@@ -11134,6 +11727,24 @@ agent_prompt_argv_used() {   # <prompt_file> → 这次实际当参数传的那�
     if [ -n "$f" ] && [ -f "$f.argv.md" ]; then printf '%s' "$f.argv.md"; else printf '%s' "$f"; fi
 }
 
+# ── A dispatch prompt larger than one command-line argument may be: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# A dispatch prompt larger than one command-line argument may be (`agent_prompt_argv_file` /
+# `agent_prompt_argv_used` / `dispatch_prompt_refused` in `_lib.sh`, called through
+# `agent_launch_command` and at its six call sites in the three dispatch scripts) →
+# `tests/prompt-argv-limit.test.sh` (~10 s; real claude / codex drivers, the command really run, and
+# the real `dispatch-pr-comment.sh`). Every driver hands the whole prompt to its CLI as one argument;
+# Linux caps one argument at 131072 bytes including the NUL, and past that the CLI never starts (exit
+# 126) — GigleTutor-Web's PR-comment prompts reached 136 KB on 2026-11-20 and three PRs were handed to
+# a human as "corrupted session" after three self-heal rounds. Above the limit the argument becomes a
+# short instruction naming a per-launch copy of the prompt (`<prompt>.full-<uuid>.md`, never the fixed
+# per-item file the next dispatch overwrites) and its line count; the instruction itself is
+# `<prompt>.argv.md`, removed again on a launch under the limit, and it is what the codex read-back
+# compares (the launch tag is copied into it). At or under the limit the command is byte-identical to
+# before. A prompt that cannot be read, or cannot be handed over that way, is never launched: the
+# dispatch comments, moves the item to `pending/human` and exits 0 — never launch with an empty or
+# truncated prompt, and never let the label reach `doing/agent` for a session that cannot start. A
+# test that calls `agent_launch_command` must give it a prompt file that exists
+#
 agent_prompt_argv_file() {   # <prompt_file> → stdout：要 cat 进参数的文件；失败返回 1（原因已 log）
     local f="${1:-}" size max lines tag id full ptr
     if [ -z "$f" ] || [ ! -r "$f" ]; then

@@ -28,6 +28,17 @@
 # enable, legacy migration after enable) goes through cavil_unit_links_run, so
 # there is one rule, not four copies.
 
+# ── systemd unit links and release cleanup: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# systemd unit links and release cleanup (GitHub#109: `scripts/repair-unit-links.sh`, its four callers
+# — poll entry, deployer, `setup.sh`, legacy migration — and the deployer refusing to delete a release
+# a unit link still reaches) → `tests/repair-unit-links.test.sh` (~10 s; ~27 s with `MUTATION=1`,
+# fifteen broken copies) plus `tests/migrate-legacy.test.sh` §14. `systemctl enable` resolves the
+# template symlink into one `releases/<sha>/`, so **anything that enables a unit must run the repair
+# afterwards**. Starting a timer is gated on what systemd itself records (enabled + failed + result
+# `resources` = "unit file vanished while running"); the reload is gated on a durable mark that only a
+# successful `daemon-reload` clears — never on "did this run change a link"
+#
+
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
 

@@ -123,6 +123,10 @@
   },
   "（没有文字）": "(no text)",
   "这一轮 agent 的总耗时（取自评论末尾的用量记录）": "This agent round's total time (from the usage record at the end of the comment)",
+  "最新：": "Latest: ",
+  "{s} 节里有 {m} 节没有用量记录、未计入；已计入的 {k} 节相加": "{m} of {s} sections have no usage record and are not counted; the sum of the other {k}",
+  "{s} 节耗时相加（worker {w} 节、复审 {r} 节）；只算 agent 干活的时间，不含两节之间的等待": "The sum of {s} sections (worker {w}, review {r}); agent working time only, not the waits between sections",
+  "交付 {w} 次 · 复审 {r} 次": "delivered {w}× · reviewed {r}×",
   "在网页上看这一条": "View this on the web",
   "有 {n} 张图片不在 GitHub 的地址上，客户端不加载；{link}": {
     "one": "{n} image is not on a GitHub address and the client does not load it; {link}",
@@ -133,6 +137,8 @@
     "other": "{n} images are not on GitHub addresses and the client does not load them"
   },
   "离线或有修改在途时不能编辑": "Cannot edit while offline or while a change is on its way",
+  "引用回复": "Quote reply",
+  "离线或有操作在途时不能回复": "Cannot reply while offline or while an action is on its way",
   "编辑": "Edit",
   "：关": ": off",
   "：开": ": on",

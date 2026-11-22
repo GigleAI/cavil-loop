@@ -8,6 +8,7 @@ import { pickMergeMethod } from '../shared/mergePrefs';
 import { PREVIEW_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
+import { hasWords, quoteText, selectionMarkdown, withQuote } from '../data/quote';
 import { Person } from './Avatar';
 import { usePanelWidth } from './panelWidth';
 import { labelStyle, useDarkMode } from './colors';
@@ -15,7 +16,7 @@ import { Icon } from './Icons';
 import { createOpenSession, type OpenSession } from './openSession';
 import { KindBadge } from './KindBadge';
 import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Release } from './outsideClick';
-import { frameFindEscape, frameKey, useLayer, useShortcuts } from './keyboard';
+import { frameFindEscape, frameKey, setFrameQuote, takeFrameQuote, useLayer, useShortcuts } from './keyboard';
 import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
 import { pinnedLabels } from '../shared/pickOrder';
@@ -861,6 +862,8 @@ export function DetailPanel({
     if (tickOver) setPendingTick(null);
   }, [tickOver]);
   const canTick = canWrite && !busy && !waitingTick;
+  /** GitHub#653: "引用回复" works exactly while the reply box takes text (the same condition as the box) */
+  const canQuote = canWrite && !busy;
   // GitHub#381: the "wrap long lines" switch of the code blocks. The frame flips itself at the click and
   // reports it; kept in a ref (not state) so the report does not draw the frame again — the next drawing,
   // whatever causes it, carries the switch. Remembered with the other view settings.
@@ -874,9 +877,9 @@ export function DetailPanel({
   const frame = useMemo(() => {
     if (!detail) return { doc: '', render: '' };
     const render = `r${++renderSeq.current}`;
-    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current, web: state.githubWeb, offline: !canWrite }), render };
+    return { doc: timelineDocument(detail, isDark, unfold, { render, canTick, view: viewRef.current, pending: waitingTick, wrap: wrapRef.current, web: state.githubWeb, offline: !canWrite, canQuote }), render };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, unfold, isDark, canTick, canWrite, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked, lang]);
+  }, [detail, unfold, isDark, canTick, canWrite, canQuote, redraw, waitingTick?.entryId, waitingTick?.index, waitingTick?.checked, lang]);
   const doc = frame.doc;
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   /** GitHub#590: the reply preview's frame — the only other frame whose messages are taken (a web link only) */
@@ -955,8 +958,48 @@ export function DetailPanel({
     if (!canWrite) return;
     void load(false).then(() => setRedraw((n) => n + 1));
   };
-  const live = useRef({ tick, edit, setWrap, image, reread, render: frame.render, ids: [] as string[] });
-  live.current = { tick, edit, setWrap, image, reread, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  /**
+   * The one way the reply box gets new text from the person (GitHub#653: typing, and a quote put in by
+   * "引用回复" or R): a preview shown or still on its way is for the old text — it is dropped, so a late
+   * answer cannot cover the box again.
+   */
+  const changeReply = (text: string) => {
+    setReply(text);
+    if (!text.trim()) {
+      setEscKept(false);
+      // emptied: what is sent next is not that operation's kept comment any more
+      setReplyFromOp(null);
+    }
+    session.supersede('preview');
+    setPreview(null);
+  };
+  /**
+   * GitHub#653: a quote into the reply box — the words selected in the discussion, or (none selected) the
+   * entry's markdown source without what a reader never sees. Only while the box takes text, like R.
+   */
+  const quoteCaret = useRef(false);
+  const quoteIn = (text: string) => {
+    if (!item || !canWrite || busy || !hasWords(text)) return;
+    changeReply(withQuote(reply, quoteText(text)));
+    quoteCaret.current = true;
+  };
+  const quoteEntry = (entryId: unknown, selected: unknown) => {
+    if (typeof selected === 'string' && hasWords(selected)) return quoteIn(selectionMarkdown(selected));
+    const e = detail?.timeline.find((x) => x.id === entryId);
+    if (e?.quoteSource !== undefined) quoteIn(e.quoteSource);
+  };
+  // after a quote: the box has the keyboard, the cursor after the quote, the end in view
+  useLayoutEffect(() => {
+    if (!quoteCaret.current) return;
+    quoteCaret.current = false;
+    const box = replyBox.current;
+    if (!box) return;
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+    box.scrollTop = box.scrollHeight;
+  }, [reply]);
+  const live = useRef({ tick, edit, setWrap, image, reread, quoteEntry, render: frame.render, ids: [] as string[] });
+  live.current = { tick, edit, setWrap, image, reread, quoteEntry, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
   // One listener for the panel's whole life, in place before the first frame loads (a layout effect
   // runs right after the frame is inserted, before its document can run): a frame that loads fast
   // must not report before anyone listens.
@@ -965,7 +1008,7 @@ export function DetailPanel({
       const f = frameRef.current;
       // only the frame on screen, only its current rendering: anything else is dropped
       if (!f || ev.source !== f.contentWindow) return;
-      const m = ev.data as { q?: unknown; n?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown; url?: unknown } | null;
+      const m = ev.data as { q?: unknown; n?: unknown; quote?: unknown; text?: unknown; cavil?: unknown; render?: unknown; view?: unknown; entry?: unknown; index?: unknown; checked?: unknown; key?: unknown; mod?: unknown; shift?: unknown; alt?: unknown; code?: unknown; meta?: unknown; ctrl?: unknown; on?: unknown; id?: unknown; src?: unknown; url?: unknown } | null;
       const now = live.current;
       if (!m || typeof m !== 'object' || m.render !== now.render) return;
       const v = m.view as { open?: unknown; scroll?: unknown } | undefined;
@@ -979,7 +1022,14 @@ export function DetailPanel({
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
-      else if (m.cavil === 'key') frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl, m.alt ?? false);
+      else if (m.cavil === 'key') {
+        // GitHub#653: the words selected with it, for the "reply" key alone (taken by it, dropped right after)
+        setFrameQuote(m.quote);
+        frameKey(m.key, m.mod ?? false, m.shift ?? false, m.code ?? '', m.meta, m.ctrl, m.alt ?? false);
+        setFrameQuote(undefined);
+      }
+      // GitHub#653: "引用回复" on an entry, with the words selected in it (or none)
+      else if (m.cavil === 'quote') now.quoteEntry(m.entry, m.text);
       // GitHub#502: find on the page — the frame's count for a query, and a plain Esc while find is open
       else if (m.cavil === 'found') findFrameFound(findHost.current, m.q, m.n);
       else if (m.cavil === 'findEsc') frameFindEscape();
@@ -1138,7 +1188,12 @@ export function DetailPanel({
       if (!fieldsShown) showFields(true);
       setPicker('milestone');
     },
-    reply: focusReply,
+    // GitHub#653: R with words selected in the discussion quotes them (the frame sends them with the key)
+    reply: () => {
+      const q = takeFrameQuote();
+      if (q !== null) quoteIn(selectionMarkdown(q));
+      else focusReply();
+    },
     // GitHub#397: Esc goes back to the home tab; this tab stays open and keeps its unsent text, so a
     // key never drops a draft. (Dialogs and pickers are layers: their Esc never gets here. Neither does
     // a key pressed inside the isolated discussion frame — PR #171, the maintainer chose to keep it
@@ -1825,16 +1880,7 @@ export function DetailPanel({
           value={reply}
           placeholder={canWrite ? t('回复（支持 markdown）· 按 {key} 随时跳到这里', { key: keyText('reply') }) : t('离线时不能回复')}
           disabled={!canWrite || busy}
-          onChange={(e) => {
-            setReply(e.target.value);
-            if (!e.target.value.trim()) {
-              setEscKept(false);
-              // emptied: what is sent next is not that operation's kept comment any more
-              setReplyFromOp(null);
-            }
-            session.supersede('preview');
-            setPreview(null);
-          }}
+          onChange={(e) => changeReply(e.target.value)}
           onPaste={(e) => {
             if (!isImageOnlyPaste(e.clipboardData)) return;
             e.preventDefault();

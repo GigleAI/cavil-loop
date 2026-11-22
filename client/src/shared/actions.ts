@@ -171,10 +171,20 @@ export interface TimelineEntry {
   /** GitHub#205: the markdown source, present only when GitHub says this account may change it (body / comment) */
   editSource?: string;
   /**
+   * GitHub#653: what "引用回复" quotes when no words are selected — the markdown source without its
+   * HTML comments (data/quote.ts); absent when the source was not read or nothing visible is left
+   */
+  quoteSource?: string;
+  /**
    * GitHub#503: this round's total time in seconds, from the usage record on the last line of
    * the markdown source (body / comment only); absent when there is no valid record.
    */
   wallSecs?: number;
+  /**
+   * GitHub#651: the comment is a loop round log (one section per delivery / review); then
+   * `wallSecs` is the sum of the sections' known times. Absent for anything else.
+   */
+  roundLog?: { sections: number; workers: number; reviews: number; missing: number; latest?: string };
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }

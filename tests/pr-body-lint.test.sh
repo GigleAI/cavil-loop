@@ -307,9 +307,16 @@ BASE=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || true)
 [ -n "$BASE" ] && git -C "$REPO_DIR" archive "$BASE" | tar -x -C "$OLD"
 cp "$REPO_DIR/REVIEW.md" "$TMP/review-new.md"
 NEW_LINE='GitHub 上 issue / PR 的正文和评论都有修改历史'
-# 旧版审查标准 = 当前这份去掉新条目那一行。不从合并基点取：这一条进了主干以后，任何分支的合并基点
-# 都已经带着它（PR #657 的 CI：试合并的合并基点就是主干本身，这一条对每个 PR 都红）
-grep -vF -- "$NEW_LINE" "$TMP/review-new.md" > "$TMP/review-old.md" || :
+# 一条旧标准里本来就有、新旧都不变的条目：用来证明旧标准确实进了复审 prompt
+KEEP_LINE='GitHub、git、systemd、tmux 等任何一次读失败'
+# 旧审查标准 = 当前 REVIEW.md 去掉新条目那一行，不读任何历史提交：取合并基点的话，本测试合入后主干和之后每个 PR 的
+# 合并基点都已带新条目，「旧」与「新」是同一份，断言在主干和别的 PR 上都红（主干 c35f4540、PR #655 的 CI 都红过）；
+# 取固定历史提交又会在读不到时退成空文件、照样过（PR #655 复审第 4 轮）。构造不出就直接判红，不往下用
+grep -vF -- "$NEW_LINE" "$REPO_DIR/REVIEW.md" > "$TMP/review-old.md" || : > "$TMP/review-old.md"
+old_n=$(grep -cF -- "$NEW_LINE" "$TMP/review-old.md" || true); new_n=$(grep -cF -- "$NEW_LINE" "$TMP/review-new.md" || true)
+keep_n=$(grep -cF -- "$KEEP_LINE" "$TMP/review-old.md" || true)
+check "旧审查标准构造成功：去掉恰好一行新条目，其余条目都在" \
+    "$new_n $old_n $(( $(wc -l < "$TMP/review-new.md") - $(wc -l < "$TMP/review-old.md") )) $([ "$keep_n" -ge 1 ] && echo keep)" "1 0 1 keep"
 
 echo "── 【3】真实派工的成品 prompt ──"
 P=$(make_project new "$TMP/review-new.md")
@@ -351,12 +358,12 @@ else
     bad "取不到合并基点（git merge-base HEAD origin/main），没法对拍复审 prompt"
 fi
 has "$TMP/out-new/review.md" "$NEW_LINE" && ok "主干是新审查标准：复审 prompt 带新条目" || bad "新审查标准没进复审 prompt"
-check "旧版审查标准里确实只少了新条目那一行" \
-    "$(diff "$TMP/review-new.md" "$TMP/review-old.md" | grep -c '^<')/$(grep -cF -- "$NEW_LINE" "$TMP/review-old.md")" "1/0"
 P3=$(make_project oldmd "$TMP/review-old.md")
 dispatch_all "$REPO_DIR" "$P3" "$TMP/out-oldmd"
 [ -s "$TMP/out-oldmd/review.md" ] && ! has "$TMP/out-oldmd/review.md" "$NEW_LINE" \
     && ok "主干是旧审查标准：复审 prompt 没有新条目" || bad "旧审查标准下复审 prompt 出现了新条目（或没写出）"
+# 「没有新条目」只说明没出现；同时要求旧标准里的既有条目确实进了复审 prompt，旧标准没加载时这条会红
+has "$TMP/out-oldmd/review.md" "$KEEP_LINE" && ok "旧审查标准确实进了复审 prompt（既有条目在）" || bad "旧审查标准没进复审 prompt（既有条目不在）"
 
 echo "── 【5】命令目录：托管入口齐全才用入口目录 ──"
 mk_entries() {   # <HOME> <入口名...>
