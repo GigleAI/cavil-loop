@@ -5,12 +5,12 @@
 //     connected. Results are read back from the config file on disk, not from
 //     the back end's word.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, pathFor, wrapTool, type DaemonWorld, type Os, restoreWorld, snapshotWorld } from '../support/daemon-world';
 import { canEdit, configGroups, configLayout, draftChanges, fieldProblem, saveKind, saveWord, valueText, type ConfigField, type ProjectConfig } from '../../src/shared/daemon';
 import { tempDir } from './helpers';
 
@@ -132,18 +132,25 @@ describe('the back end and the daemon\'s real script', () => {
   let host: string;
   let config: string;
 
-  // a fresh machine, the daemon cloned and a project connected with the real setup.sh per case: on
-  // a loaded box this passes vitest's default 10 s hook limit (PR #493 code review round 2)
-  beforeEach(() => {
+  // GitHub#649: the machine, the daemon cloned and a project connected with the real setup.sh, built
+  // once for this block with its own time limit; every case gets a fresh copy of it
+  let snap: string;
+  beforeAll(() => {
     w = daemonWorld(tempDir());
     installByHand(w);
     path = pathFor(w);
     host = connect(w, 'widget', 'Darwin', path);
     config = join(host, 'cavil-loop.config');
-  }, 60_000);
+    snap = snapshotWorld(w);
+  }, 120_000);
+  beforeEach(() => {
+    restoreWorld(w, snap);
+  }, 30_000);
   afterEach(async () => {
     await Promise.all(open.splice(0).map((b) => b.close()));
-    // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+  });
+  // the machine and its copy go when the block is done (~2300 files, GitHub#469)
+  afterAll(() => {
     dropWorlds();
   }, 60_000);
   function backend(os: Os = 'Darwin', p = path) {
@@ -251,60 +258,53 @@ describe('the back end and the daemon\'s real script', () => {
     expect(line('MAX_CONCURRENT_WORKERS')).toEqual(['MAX_CONCURRENT_WORKERS=2']);
   });
 
-  // 17 values × (read + save) through the real script, one after another: 16 s on CI with the
-  // default 20 s budget (main run 43150760693), so any extra load on the runner tipped it over
-  // (PR #400 review round 5). The work is the point of the test; give it the time, keep every value.
-  it('one list of values, three checks — the form, the back end, the script — agree on which may be written', async () => {
+  // GitHub#649: one case per value (each is one read and one save through the real script, on a fresh
+  // copy of the machine), so no case holds tens of script runs under one time limit
+  const MODEL_VALUES = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];
+  const modelVerdicts: [string, boolean, string][] = [];
+  it.each(MODEL_VALUES.map((v) => [JSON.stringify(v), v]))('one value, three checks — the form, the back end, the script — agree whether it may be written: %s', async (_name, v) => {
     const b = backend();
-    const values = ['', 'opus-5.5', 'vendor/model:1@x', 'a,b+c', 'a b', 'a"b', "a'b", '$HOME', '`id`', 'a\\b', 'a;b', 'a\nb', 'a=b', 'a#b', '-x', '中', 'x'.repeat(81)];
-    const verdicts: [string, boolean, string][] = [];
-    for (const v of values) {
-      const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
-      const model = byName(c, 'WORKER_MODEL');
-      const form = fieldProblem(model, v) === null;
-      const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { WORKER_MODEL: v } });
-      verdicts.push([v, form, r.result]);
-      // written exactly when the form would have let it through (the same value twice is "unchanged")
-      expect(['saved', 'unchanged'].includes(r.result), `${JSON.stringify(v)} → ${r.result}`).toBe(form);
-      if (form) expect(line('WORKER_MODEL')).toEqual([`WORKER_MODEL="${v}"`]);
-    }
-    // both kinds really occurred, and a refusal never came back as anything but "nothing written"
-    expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
-    expect(new Set(verdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
-    // 17 values × (read + save through the real script): ~17 s on a loaded dev box, past the 20 s default on CI (PR #415)
-  }, 60_000);
+    const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
+    const model = byName(c, 'WORKER_MODEL');
+    const form = fieldProblem(model, v) === null;
+    const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { WORKER_MODEL: v } });
+    modelVerdicts.push([v, form, r.result]);
+    // written exactly when the form would have let it through (the value already there is "unchanged")
+    expect(['saved', 'unchanged'].includes(r.result), `${JSON.stringify(v)} → ${r.result}`).toBe(form);
+    if (form) expect(line('WORKER_MODEL')).toEqual([`WORKER_MODEL="${v}"`]);
+  });
+  it('…and across those values both kinds occurred; a refusal never came back as anything but "nothing written"', () => {
+    expect(modelVerdicts).toHaveLength(MODEL_VALUES.length);
+    expect(modelVerdicts.filter((x) => x[1]).map((x) => x[0])).toEqual(['', 'opus-5.5', 'vendor/model:1@x']);
+    expect(new Set(modelVerdicts.filter((x) => !x[1]).map((x) => x[2]))).toEqual(new Set(['refused', 'invalid']));
+  });
 
   // GitHub#555: whole numbers past 9 digits, up to the using code's own bound, go through the form, the back end and the
-  // script alike; one past the bound, or a leading zero, through none of them
-  it('integers: the form, the back end and the script agree up to the using code\'s own bound', async () => {
-    const b = backend();
-    const cases: [string, string][] = [
-      ['GREEDY_SCAN_LIMIT', '1000000000'], ['GREEDY_SCAN_LIMIT', '18446744073709551616'],
-      ['GREEDY_SCAN_LIMIT', '0'], ['GREEDY_SCAN_LIMIT', '0100'], ['GREEDY_SCAN_LIMIT', '100'],
-      ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215'], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216'],
-      ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60)], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0'],
-      // GitHub#556: the one integer that may be left blank, and one that may not
-      ['PREVIEW_PORT_MODULO', '1000'], ['PREVIEW_PORT_MODULO', ''], ['PREVIEW_PORT_MODULO', '0'], ['PREVIEW_PORT_MODULO', '1000000000'], ['PREVIEW_PORT_MODULO', '3074457345618258603'], ['PREVIEW_PORT_MODULO', '9223372036854775808'],
-      ['PREVIEW_BACKEND_OFFSET', ''],
-    ];
-    const verdicts: [string, boolean][] = [];
-    for (const [name, v] of cases) {
+  // script alike; one past the bound, or a leading zero, through none of them. GitHub#649: one case per value.
+  const INTEGER_CASES: [string, string, boolean][] = [
+    ['GREEDY_SCAN_LIMIT', '1000000000', true], ['GREEDY_SCAN_LIMIT', '18446744073709551616', true],
+    ['GREEDY_SCAN_LIMIT', '0', true], ['GREEDY_SCAN_LIMIT', '0100', false], ['GREEDY_SCAN_LIMIT', '100', true],
+    ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015215', true], ['AUTOPILOT_CHECKS_TIMEOUT_HOURS', '2562047788015216', false],
+    ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '1' + '0'.repeat(60), true], ['CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS', '0', false],
+    // GitHub#556: the one integer that may be left blank, and one that may not
+    ['PREVIEW_PORT_MODULO', '1000', true], ['PREVIEW_PORT_MODULO', '', true], ['PREVIEW_PORT_MODULO', '0', false], ['PREVIEW_PORT_MODULO', '1000000000', true],
+    ['PREVIEW_PORT_MODULO', '3074457345618258603', true], ['PREVIEW_PORT_MODULO', '9223372036854775808', false],
+    ['PREVIEW_BACKEND_OFFSET', '', false],
+  ];
+  it.each(INTEGER_CASES.map(([n, v, ok]) => [`${n}=${v.length > 24 ? `${v.slice(0, 4)}…(${v.length} digits)` : v}`, n, v, ok] as const))(
+    'integers: the form, the back end and the script agree up to the using code\'s own bound: %s',
+    async (_label, name, v, ok) => {
+      const b = backend();
       const c: ProjectConfig = (await b.call('daemonConfigGet', { key: 'widget' })).config;
       const f = byName(c, name);
       expect(f.editable, `${name} editable before ${v}`).toBe(true);
       const form = fieldProblem(f, v) === null;
+      expect(form, `${name}=${v}: the form`).toBe(ok);
       const r = await b.call('daemonConfigSet', { key: 'widget', rev: c.rev, values: { [name]: v } });
-      verdicts.push([`${name}=${v}`, form]);
-      expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(form);
-      if (form) expect(line(name).map((l) => l.replace(/"/g, ''))).toEqual([`${name}=${v}`]);
-    }
-    expect(verdicts.filter((x) => x[1]).map((x) => x[0])).toEqual([
-      'GREEDY_SCAN_LIMIT=1000000000', 'GREEDY_SCAN_LIMIT=18446744073709551616', 'GREEDY_SCAN_LIMIT=0', 'GREEDY_SCAN_LIMIT=100',
-      'AUTOPILOT_CHECKS_TIMEOUT_HOURS=2562047788015215',
-      `CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS=1${'0'.repeat(60)}`,
-      'PREVIEW_PORT_MODULO=1000', 'PREVIEW_PORT_MODULO=', 'PREVIEW_PORT_MODULO=1000000000', 'PREVIEW_PORT_MODULO=3074457345618258603',
-    ]);
-  }, 60_000);
+      expect(['saved', 'unchanged'].includes(r.result), `${name}=${v} → ${r.result}`).toBe(ok);
+      if (ok) expect(line(name).map((l) => l.replace(/"/g, ''))).toEqual([`${name}=${v}`]);
+    },
+  );
 
   it('a config that does not load: "unreadable" with no values; an unknown project: "not_found"', async () => {
     const b = backend();

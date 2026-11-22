@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, keepTmp, pathFor, type DaemonWorld } from '../support/daemon-world';
+import { connect, daemonEnv, daemonWorld, dropWorlds, installByHand, keepTmp, pathFor, type DaemonWorld, restoreWorld, snapshotWorld } from '../support/daemon-world';
 import { BOX, CLIENT_IP, addDevice, arrived, closeRemote, devices, installFakeTailscale, makeCert, pairCode, remoteWorld, setHosts, startFront, type RemoteWorld } from '../support/remote-world';
 import { FAKE_TOKEN, tempDir } from './helpers';
 
@@ -35,18 +35,16 @@ beforeAll(() => {
   installByHand(w);
   path = pathFor(w);
   connect(w, 'widget', 'Linux', path);
-  snapshot = `${w.dir}.tar`;
-  execFileSync('tar', ['-cf', snapshot, '-C', w.dir, '.']);
+  snapshot = snapshotWorld(w);
 }, 60_000);
 // the machine and its copy go when the file is done (GitHub#469)
 afterAll(() => {
   dropWorlds();
-  if (snapshot) rmSync(snapshot, { force: true });
 });
 
 /** A fresh copy of the machine, and the remote-access service on it. */
 async function world(serverEnv: Record<string, string> = {}) {
-  execFileSync('bash', ['-c', 'rm -rf "$1" && mkdir -p "$1" && tar -xf "$2" -C "$1"', '_', w.dir, snapshot]);
+  restoreWorld(w, snapshot);
   r = await remoteWorld(w, path, serverEnv);
 }
 

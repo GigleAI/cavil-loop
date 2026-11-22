@@ -3,27 +3,33 @@
 // the fake scheduler the daemon's own tests use. Every case reads the result
 // back from the machine (files, scheduler state), not from the back end's word.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { appendLine, connect, daemonEnv, daemonWorld, dropWorlds, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os } from '../support/daemon-world';
+import { appendLine, connect, daemonEnv, daemonWorld, dropWorlds, headOf, installByHand, installOld, pathFor, plainOldCopy, pushDaemonChange, wrapTool, type DaemonWorld, type Os, restoreWorld, snapshotWorld } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const open: HarnessBackend[] = [];
 let w: DaemonWorld;
 
-// a fresh daemon world per case: the fake tools, a copy of this checkout's daemon files, a git commit and a
-// bare clone — a handful of child processes that a loaded box pushed past vitest's default 10 s hook limit
-// (GitHub#413 code review round 1)
-beforeEach(() => {
+// GitHub#649: the machine (the fake tools, a copy of this checkout's daemon files, a git commit and a bare
+// clone) is built once for the file, with its own time limit; every case gets a fresh copy of it
+let snap: string;
+beforeAll(() => {
   w = daemonWorld(tempDir());
+  snap = snapshotWorld(w);
+}, 60_000);
+beforeEach(() => {
+  restoreWorld(w, snap);
 }, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
-  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+});
+// the machine and its copy go when the file is done (~2300 files, GitHub#469)
+afterAll(() => {
   dropWorlds();
 }, 60_000);
 

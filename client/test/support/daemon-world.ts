@@ -134,6 +134,22 @@ export function dropWorlds(): void {
 }
 
 /**
+ * GitHub#649: build a machine once per test file, copy it back for every case. A machine's files name
+ * their own absolute paths, so the copy goes back to the very same folder: `restoreWorld` empties
+ * `w.dir` and unpacks the snapshot `snapshotWorld` took into it. The snapshot is removed by `dropWorlds`.
+ */
+export function snapshotWorld(w: DaemonWorld): string {
+  const snap = `${w.dir}.tar`;
+  execFileSync('tar', ['-cf', snap, '-C', w.dir, '.']);
+  worlds.push(snap);
+  return snap;
+}
+
+export function restoreWorld(w: DaemonWorld, snap: string): void {
+  execFileSync('bash', ['-c', 'rm -rf "$1" && mkdir -p "$1" && tar -xf "$2" -C "$1"', '_', w.dir, snap]);
+}
+
+/**
  * TMPDIR as this process has it, for a child started with an environment of its own: without it
  * the child's temp files land in the system temp dir instead of this run's folder (GitHub#469).
  */

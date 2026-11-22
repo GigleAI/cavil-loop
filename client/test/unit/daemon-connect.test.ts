@@ -9,27 +9,33 @@
 // pair (codex without claude is complete; claude without codex is not), and the
 // whole way: install → connect → running → stop → disconnect.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
-import { daemonEnv, daemonWorld, dropWorlds, githubRepo, keepTmp, githubRewrite, installByHand, localCopy, originOf, pathFor, type DaemonWorld, type Os } from '../support/daemon-world';
+import { daemonEnv, daemonWorld, dropWorlds, githubRepo, keepTmp, githubRewrite, installByHand, localCopy, originOf, pathFor, type DaemonWorld, type Os, restoreWorld, snapshotWorld } from '../support/daemon-world';
 import { tempDir } from './helpers';
 
 const REPO = 'acme/widget'; // what the fake gh answers for `gh repo view` (tests/fixtures/install-fakes.sh)
 const open: HarnessBackend[] = [];
 let w: DaemonWorld;
 
-// a fresh machine per case (fake tools, a copy of this checkout's daemon files, a git commit and a
-// bare clone): on a loaded box this passes vitest's default 10 s hook limit, as in daemon.test.ts
-// (GitHub#413 code review round 1; seen again in PR #493 code review round 2)
-beforeEach(() => {
+// GitHub#649: the machine (fake tools, a copy of this checkout's daemon files, a git commit and a bare
+// clone) is built once for the file, with its own time limit; every case gets a fresh copy of it
+let snap: string;
+beforeAll(() => {
   w = daemonWorld(tempDir());
+  snap = snapshotWorld(w);
 }, 60_000);
+beforeEach(() => {
+  restoreWorld(w, snap);
+}, 30_000);
 afterEach(async () => {
   await Promise.all(open.splice(0).map((b) => b.close()));
-  // removing the machine (~2300 files, GitHub#469) is part of this hook now: same headroom as the setup
+});
+// the machine and its copy go when the file is done (~2300 files, GitHub#469)
+afterAll(() => {
   dropWorlds();
 }, 60_000);
 
