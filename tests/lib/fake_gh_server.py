@@ -20,7 +20,11 @@ argv, environment and cwd are read from /proc/<caller pid>/{cmdline,environ,cwd}
 the caller passed to `gh`; argv is the last <argc> entries of cmdline. FALLBACK is sent only from
 checks made *before* anything is run: /proc unreadable (not Linux), the caller's stdout or stderr is
 not a pipe / character device (a regular file reopened through /proc would get its own offset and
-could overwrite), or the fake script changed on disk since it was compiled.
+could overwrite), the caller's raw interpreter-startup variables differ from the server's, the fake
+script changed on disk since it was compiled, or the server decided at startup to take over nothing
+(see "raw environments" below). Every FALLBACK writes one line with its reason to server.log
+(`FALLBACK pid=<caller>: <reason>`); a server that takes over nothing says why once, at startup
+(`not serving any call: <reason>`).
 
 Safety: binds 127.0.0.1 on a random port; a request must carry the random token from a 0600 file in
 the state directory, otherwise the connection is dropped unanswered (without it any local user could
@@ -28,7 +32,8 @@ make this run the sandbox's hook scripts). Exits when the owning test process is
 directory has been removed.
 
 Test-only switch (tests/fake-gh-server.test.sh): `--fault-file F`. When F exists and holds
-`after-ack` or `after-exec`, the child serving a call dies at that point without replying further.
+`after-ack` or `after-exec`, the child serving a call dies at that point without replying further;
+`slow-log` makes every server.log write wait 0.5 s first (the FALLBACK answer must still come after it).
 Without the option nothing reads any such file.
 """
 import ast
@@ -74,6 +79,14 @@ OWNER = int(O["owner"])
 FAULT = O["fault_file"]
 
 
+def _fault_value():
+    try:
+        with open(FAULT) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def script_sig():
     st = os.stat(SCRIPT)
     return (st.st_mtime_ns, st.st_size, st.st_ino)
@@ -97,7 +110,7 @@ for node in ast.walk(ast.parse(SOURCE)):
             __import__(n)
         except Exception:
             pass
-import subprocess  # noqa: E402,F401  (the fakes all shell out to jq; keep it warm even if one does not)
+import subprocess  # noqa: E402  (the fakes all shell out to jq; keep it warm even if one does not)
 
 with open(os.path.join(STATE, "token"), "rb") as f:
     TOKEN = f.read().strip()
@@ -109,6 +122,26 @@ with open(os.path.join(STATE, "token"), "rb") as f:
 # environment it was started with. A call whose startup-relevant variables differ is answered with
 # FALLBACK and runs the old way (review round 1 of PR #221: PYTHONIOENCODING=ascii turned a failing
 # call into a passing one).
+#
+# Both sides of that comparison are *raw* environments — what was passed to the process, read from
+# /proc/<pid>/environ — never this server's os.environ (GitHub#648). Python rewrites its own
+# environment while it starts: with no locale variable set (`env -i`, no LANG) or LANG=C it adds
+# LC_CTYPE=C.UTF-8 (locale coercion, PEP 538). Comparing that rewritten os.environ with a caller's raw
+# environment made every call straight from bash differ, and all of them fell back.
+#
+# What Python itself rewrites at startup is measured, not guessed: once, here, the same interpreter
+# with the same -I-or-not is run on this server's raw environment with -S (no site, so no
+# sitecustomize / usercustomize / .pth file runs), and the difference between its os.environ and the
+# raw environment is the reference. This server's own difference must equal it exactly; otherwise
+# something that ran at this server's startup (a startup script) changed the environment, and the
+# server takes over no call at all. A call that is taken over runs with the caller's raw environment
+# plus that same reference difference — what `python3 [-I] <script>` started on that raw environment
+# would see.
+#
+# Known limit (accepted on GitHub#648, Q1 = A): a startup script that changes the environment
+# depending on the caller's own ordinary variables is not visible here — it only ran once, at this
+# server's startup, with the server's variables. Such a call is taken over with the reference
+# difference instead of what the script would have written.
 STDOUT_ENC = sys.__stdout__.encoding if sys.__stdout__ else "utf-8"
 STDOUT_ERRORS = sys.__stdout__.errors if sys.__stdout__ else "strict"
 STDERR_ENC = sys.__stderr__.encoding if sys.__stderr__ else "utf-8"
@@ -117,13 +150,98 @@ UNBUFFERED = bool(getattr(sys.__stdout__, "write_through", False))   # PYTHONUNB
 LOCALE_VARS = ("LC_ALL", "LC_CTYPE", "LANG")
 
 
+def log(msg):
+    """One line in server.log (opened by fake_gh_client.sh as this server's stdout / stderr).
+
+    Never raises and always writes exactly one line: the message can carry a caller's variable
+    names and values, which may hold bytes that are not UTF-8 (surrogate escapes after
+    os.fsdecode) or line breaks. Those are escaped (backslashreplace, \\n / \\r), and any failure
+    to write is swallowed — the log is only a clue, it must never change what the caller is told
+    (PR #657 review round 1: an encoding error here cut the FALLBACK answer off and the call
+    failed with exit 70 instead of running the old way)."""
+    try:
+        if FAULT and _fault_value() == "slow-log":
+            time.sleep(0.5)   # test-only: a slow disk; the caller must still find the line once answered
+        text = str(msg).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+        line = text.encode("utf-8", "backslashreplace")
+        with open(os.path.join(STATE, "server.log"), "ab") as f:
+            f.write(line + b"\n")
+    except Exception:
+        pass
+
+
+def parse_environ(raw):
+    """/proc/<pid>/environ bytes → {str: str}; the one parser for the server's and every caller's."""
+    env = {}
+    for kv in raw.split(b"\0")[:-1]:
+        k, sep, v = kv.partition(b"=")
+        if sep:
+            env[os.fsdecode(k)] = os.fsdecode(v)
+    return env
+
+
 def startup_env(env):
     """The part of an environment that changes how `python3 [-I]` sets itself up."""
     return {k: v for k, v in env.items()
             if k in LOCALE_VARS or (not O["isolated"] and k.startswith("PYTHON"))}
 
 
-START_ENV = startup_env(dict(os.environ))
+def env_diff(raw, now):
+    """{name: new value, or None when removed} — how `now` differs from `raw`."""
+    d = {k: v for k, v in now.items() if raw.get(k) != v}
+    d.update({k: None for k in raw if k not in now})
+    return d
+
+
+def env_apply(raw, diff):
+    env = dict(raw)
+    for k, v in diff.items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
+    return env
+
+
+REF_PROBE = ("import os, sys\n"
+             "sys.stdout.buffer.write(b''.join(k + b'=' + v + b'\\0' for k, v in os.environb.items()))\n")
+
+
+def reference_diff(raw):
+    """What `python3 [-I] -S` changes in its own environment when started on `raw`. Raises on failure."""
+    argv = [sys.executable] + (["-I"] if O["isolated"] else []) + ["-S", "-c", REF_PROBE]
+    benv = {os.fsencode(k): os.fsencode(v) for k, v in raw.items()}
+    r = subprocess.run(argv, env=benv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=20)
+    if r.returncode != 0:
+        raise OSError("reference run exited %d: %s" % (r.returncode, r.stderr[-300:].decode("utf-8", "replace")))
+    return env_diff(raw, parse_environ(r.stdout))
+
+
+# Why this server takes over no call at all, or None. Decided once, at startup, and logged.
+DISABLED = None
+REF_DIFF = {}
+try:
+    with open("/proc/self/environ", "rb") as f:
+        RAW_ENV = parse_environ(f.read())
+except OSError as e:
+    RAW_ENV = {}
+    DISABLED = "own raw environment unreadable (%s)" % e
+if DISABLED is None:
+    try:
+        REF_DIFF = reference_diff(RAW_ENV)
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        DISABLED = "reference run failed (%s)" % e
+if DISABLED is None:
+    OWN_DIFF = env_diff(RAW_ENV, dict(os.environ))
+    if OWN_DIFF != REF_DIFF:
+        DISABLED = ("startup environment differs from python's own startup changes: variables %s"
+                    % ",".join(sorted(set(OWN_DIFF) ^ set(REF_DIFF)
+                                      | {k for k in OWN_DIFF if k in REF_DIFF and OWN_DIFF[k] != REF_DIFF[k]})))
+if DISABLED is not None:
+    log("not serving any call: " + DISABLED)
+
+START_ENV = startup_env(RAW_ENV)
 
 
 def recv_line(conn, limit=4096):
@@ -144,14 +262,7 @@ def proc_read(pid, name):
 
 
 def fault(point):
-    if not FAULT:
-        return
-    try:
-        with open(FAULT) as f:
-            want = f.read().strip()
-    except OSError:
-        return
-    if want == point:
+    if FAULT and _fault_value() == point:
         os._exit(0)
 
 
@@ -172,13 +283,14 @@ def serve(conn):
             if argc < 0 or argc > len(cmdline) - 1:
                 raise OSError("argc out of range")
             args = cmdline[len(cmdline) - argc:] if argc else []
-            env = {}
-            for kv in proc_read(pid, "environ").split(b"\0")[:-1]:
-                k, sep, v = kv.partition(b"=")
-                if sep:
-                    env[os.fsdecode(k)] = os.fsdecode(v)
-            if startup_env(env) != START_ENV:
-                raise OSError("interpreter startup settings differ from the server's")
+            if DISABLED is not None:
+                raise OSError("server not serving: " + DISABLED)
+            env = parse_environ(proc_read(pid, "environ"))
+            got = startup_env(env)
+            if got != START_ENV:
+                raise OSError("interpreter startup settings differ from the server's: %s" % "; ".join(
+                    "%s caller=%r server=%r" % (k, got.get(k), START_ENV.get(k))
+                    for k in sorted(set(got) | set(START_ENV)) if got.get(k) != START_ENV.get(k)))
             cwd = os.readlink("/proc/%d/cwd" % pid)
             if not os.path.isdir(cwd):
                 raise OSError("cwd gone")
@@ -189,7 +301,11 @@ def serve(conn):
                 if not (stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode)):
                     raise OSError("fd %d is not a pipe / character device" % n)
                 fds.append(os.open(path, os.O_WRONLY | os.O_CLOEXEC))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            # Log first, then answer: a caller that has its FALLBACK has the reason on disk already
+            # (PR #657 review round 2 — answering first let a test read server.log before it was
+            # written). log() never raises, so a failed write cannot cut the answer off (round 1).
+            log("FALLBACK pid=%d: %s" % (pid, e))
             conn.sendall(b"FALLBACK\n")
             os._exit(0)
 
@@ -204,7 +320,7 @@ def serve(conn):
         for fd in fds + [devnull]:
             os.close(fd)
         os.environ.clear()
-        os.environ.update(env)
+        os.environ.update(env_apply(env, REF_DIFF))   # the caller's raw environment + python's own startup changes
         time.tzset()
         os.chdir(cwd)
         sys.argv = [SCRIPT] + [os.fsdecode(a) for a in args]
