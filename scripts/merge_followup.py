@@ -19,8 +19,9 @@
 #   notice    (stdin JSON)           the bot's result comment for one PR (table 2), from the same conclusion
 #
 # Reading rules (`parse`):
-#   * a marker counts only on a line of its own, outside code fences and quotes (`body_section … alone`,
-#     the same awk the autopilot summary uses — `_autopilot_summary.sh`)
+#   * a marker counts only on a line of its own, outside code fences, indented code blocks and quotes
+#     (`body_section … alone`, the same awk the autopilot summary uses — `_autopilot_summary.sh`, whose
+#     header has the indentation / list / fence rules)
 #   * list  = exactly one begin, exactly one end after it, no none; between them only list items
 #             (`- ` / `* ` / `1. `) and indented continuation lines, at least one item, every item has
 #             non-empty `谁做：` `做什么：` `怎么触发：`
