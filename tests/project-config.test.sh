@@ -16,6 +16,9 @@
 #   6. 备份是内容快照、只留最近 10 份
 #   7. 登记表：每项都在配置模板里；「不写时的值」和登记册、和真实加载 _lib.sh 后的值一致；禁止的类别不在里面
 #   8. 文档里写给人照做的命令，按字面在空环境跑通（中英两份一字不差）
+#   9. 关掉往返记录的文档步骤：同样照字面跑，正常、已关、读不了、保存前被改、没地方备份、写入后被改、换上后保存进程被杀、
+#      读回失败；关掉前后的「有没有条目在来回中」检查（IDLE / BUSY / UNKNOWN）和重新打开（关掉之后写入命令立刻拒收、
+#      重新打开后照常写入，由 tests/round-log.test.sh 第 4a 组测）
 #
 #   bash tests/project-config.test.sh
 set -uo pipefail
@@ -347,6 +350,8 @@ hook() {   # <时机>
         relink)  ln -sfn "\$HOOK_OTHER" "\$HOOK_LINK" ;;
         oldfd)   printf '# 保存前就开着的旧文件\nEXT_MARK="1"\n' >&9 ;;
         slow)    sleep 2 ;;
+        # 一直停在这里（锁还拿着），直到测试留下放行文件；最多等 60 秒，测试出错时也不会卡住
+        hold)    for _ in \$(seq 600); do [ -e "\$HOOK_LOG.release" ] && break; sleep 0.1; done ;;
     esac
 }
 HOOK
@@ -428,11 +433,14 @@ fresh_world; mkdir -p "$SANDBOX/p/alias"; ln -s "$CONF" "$SANDBOX/p/alias/cavil-
 printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$SANDBOX/p/alias" "$SANDBOX/p/alias/cavil-loop.config" > "$H/.config/cavil-loop/alias.conf"
 rev="$(rev_now)"; rev2="$(rev_now alias)"
 chk "两个项目名、同一个真实文件：指纹相同" "$rev" "$rev2"
-rm -f "$HLOG" "$HLOG.fired"
-( printf '{"MAX_CONCURRENT_WORKERS":"2"}' | env -i HOME="$H" PATH="$HK:$SYS_PATH" HOOK_MODE=after_snap:slow HOOK_LOG="$HLOG" HOOK_CONF="$CONF" bash "$PC" set widget --rev "$rev" > "$SANDBOX/a.out" 2>&1 ) &
+# 先到的那次停在拿着锁的地方，等这边放行；不靠固定睡几秒——机器忙时第二次保存可能在锁放开之后才到（PR #652 复审）
+rm -f "$HLOG" "$HLOG.fired" "$HLOG.release"
+( printf '{"MAX_CONCURRENT_WORKERS":"2"}' | env -i HOME="$H" PATH="$HK:$SYS_PATH" HOOK_MODE=after_snap:hold HOOK_LOG="$HLOG" HOOK_CONF="$CONF" bash "$PC" set widget --rev "$rev" > "$SANDBOX/a.out" 2>&1 ) &
 apid=$!
-for _ in $(seq 50); do [ -e "$HLOG.fired" ] && break; sleep 0.1; done
+for _ in $(seq 300); do [ -e "$HLOG.fired" ] && break; sleep 0.1; done
+chk "到达性：先到的那次确实停在拿着锁的地方" "$([ -e "$HLOG.fired" ] && echo held) $(kill -0 "$apid" 2>/dev/null && echo running)" "held running"
 save alias '{"REVIEW_MAX_ROUNDS":"9"}' "$rev2" --lock-wait 0
+: > "$HLOG.release"
 wait "$apid"
 chk "另一个项目名同时保存、不肯等：busy，没写；先到的照常 saved" "$RESULT $(tail -1 "$SANDBOX/a.out") $(grep -c "^REVIEW_MAX_ROUNDS='6'\$" "$CONF")" "RESULT=busy RESULT=saved 1"
 
@@ -817,6 +825,106 @@ chk_has "保存成功" "$out" "RESULT=saved"
 chk_has "改完读回是新值" "$out" "MAX_CONCURRENT_WORKERS=2"
 chk "照文档还原后，配置文件和保存前一字不差" "$(cmp -s "$CONF" "$SANDBOX/orig" && echo same)" "same"
 [ "$fail" = 0 ] || printf '%s\n' "$out" | sed 's/^/     | /'
+
+echo "── 9. 关掉往返记录的文档步骤：照字面在空环境跑，七种情况各有一个结局 ──"
+# 查值、关掉两段命令（docs/operations{,.zh}.md 的 round-log-check-ops / round-log-off-ops），中英两份一字不差；
+# 失败时机用包一层的 jq / mv 做出来（包装命令把路径写死：空环境里没有别的变量可传）
+for b in round-log-check-ops round-log-off-ops; do
+    chk "$b：中英两份文档里的命令一字不差" "$(doc_block operations.zh.md "$b")" "$(doc_block operations.md "$b")"
+done
+doc_block operations.md round-log-check-ops > "$SANDBOX/rl-check.sh"
+doc_block operations.md round-log-off-ops > "$SANDBOX/rl-off.sh"
+chk "两段命令都非空" "$(grep -c . "$SANDBOX/rl-check.sh" | awk '{print ($1>0)}') $(grep -c . "$SANDBOX/rl-off.sh" | awk '{print ($1>5)}')" "1 1"
+RL_W="$SANDBOX/rl-wrap"; REAL_JQ="$(command -v jq)"; REAL_MV2="$(command -v mv)"
+rl_world() {   # <ENABLE_ROUND_LOG 的值>：myproject 这个实例，配置里写着这一行
+    fresh_world; mv "$H/.config/cavil-loop/widget.conf" "$H/.config/cavil-loop/myproject.conf"
+    printf 'ENABLE_ROUND_LOG="%s"\n' "$1" >> "$CONF"
+    mkdir -p "$H/.agents/skills"; ln -s "$REPO_DIR" "$H/.agents/skills/cavil-loop"
+    rm -rf "$RL_W"; mkdir -p "$RL_W"
+}
+rl_wrap_jq() {   # <匹配的过滤器> <动作>：只在文档命令那一次 jq 调用上动手，脚本自己的 jq 调用照常
+    cat > "$RL_W/jq" <<W
+#!/usr/bin/env bash
+if [ "\$1" = -er ] && [ "\$2" = '$1' ]; then
+    case '$2' in
+        fail) cat >/dev/null; exit 5 ;;
+        edit) "$REAL_JQ" "\$@"; rc=\$?; printf '\n# 别处改的一行\nEXT_MARK="1"\n' >> "$CONF"; exit \$rc ;;
+    esac
+fi
+exec "$REAL_JQ" "\$@"
+W
+    chmod +x "$RL_W/jq"
+}
+rl_run() {   # <脚本>：只带 HOME / PATH / LANG
+    RL_RC=0; RL_OUT="$(env -i HOME="$H" PATH="$RL_W:$SYS_PATH" LANG=C.UTF-8 bash "$1" 2>&1)" || RL_RC=$?
+}
+rl_val() { sed -n 's/^ENABLE_ROUND_LOG="\(.*\)"$/\1/p' "$CONF"; }
+rl_last() { printf '%s\n' "$RL_OUT" | tail -1; }
+
+rl_world true; rl_run "$SANDBOX/rl-check.sh"
+chk "查值：开着时输出 ENABLE_ROUND_LOG=true" "$RL_OUT" "ENABLE_ROUND_LOG=true"
+rl_run "$SANDBOX/rl-off.sh"
+chk "正常关闭：最后一行 ROUND_LOG=off、退出 0" "$(rl_last) $RL_RC" "ROUND_LOG=off 0"
+chk_has "正常关闭：上一行是 RESULT=saved" "$RL_OUT" "RESULT=saved"
+chk "正常关闭：配置里变成 false" "$(rl_val)" "false"
+rl_run "$SANDBOX/rl-check.sh"
+chk "关掉之后查值输出 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
+rl_run "$SANDBOX/rl-off.sh"
+chk "已经关着再跑一次：ROUND_LOG=off、RESULT=unchanged" "$(rl_last) $(grep -c '^RESULT=unchanged$' <<<"$RL_OUT")" "ROUND_LOG=off 1"
+
+rl_world true; chmod 000 "$CONF"; rl_run "$SANDBOX/rl-off.sh"; chmod 640 "$CONF"
+chk "配置读不了：没写入、退出非 0" "$(rl_last) $([ "$RL_RC" != 0 ] && echo nz)" "NOT_WRITTEN: config unreadable nz"
+chk "配置读不了：文件不变" "$(rl_val)" "true"
+
+rl_world true; rl_wrap_jq .rev edit; rl_run "$SANDBOX/rl-off.sh"
+chk "取指纹后、保存前被别处改过：没写入（RESULT=changed）" "$(rl_last) $(grep -c '^RESULT=changed$' <<<"$RL_OUT")" "NOT_WRITTEN: changed 1"
+chk "取指纹后被改过：值仍是 true，别处那一行还在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "true 1"
+
+rl_world true; mkdir -p "$ST"; : > "$ST/config-backups"; rl_run "$SANDBOX/rl-off.sh"
+chk "没地方放备份：没写入（RESULT=backup_failed）" "$(rl_last) $(grep -c '^RESULT=backup_failed$' <<<"$RL_OUT")" "NOT_WRITTEN: backup_failed 1"
+chk "没地方放备份：文件不变" "$(rl_val)" "true"
+
+rl_world true
+cat > "$RL_W/mv" <<W
+#!/usr/bin/env bash
+"$REAL_MV2" "\$@"; rc=\$?
+[ "\${@: -1}" = "$CONF" ] && printf '\n# 换上之后别处又存了一版\nEXT_MARK="1"\n' >> "$CONF"
+exit \$rc
+W
+chmod +x "$RL_W/mv"; rl_run "$SANDBOX/rl-off.sh"
+chk "写入后马上被别处改：UNCONFIRMED（RESULT=saved_then_changed）、退出非 0" \
+    "$(rl_last) $(grep -c '^RESULT=saved_then_changed$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: RESULT=saved_then_changed 1 nz"
+chk "写入后被改：已是 false，别处那一行也在" "$(rl_val) $(grep -c '^EXT_MARK=' "$CONF")" "false 1"
+
+# 换上新文件之后保存进程被杀（没给出结果行）：不能报成没写入
+rl_world true
+cat > "$RL_W/mv" <<W
+#!/usr/bin/env bash
+"$REAL_MV2" "\$@"; rc=\$?
+[ "\${@: -1}" = "$CONF" ] && kill -9 "\$PPID"
+exit \$rc
+W
+chmod +x "$RL_W/mv"; rl_run "$SANDBOX/rl-off.sh"
+chk "换上新文件后保存进程被杀：UNCONFIRMED、退出非 0" "$(rl_last) $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: no result line nz"
+chk "保存进程被杀：文件里其实已是 false（所以不能说没写入）" "$(rl_val) $(grep -c '^RESULT=' <<<"$RL_OUT")" "false 0"
+rm -f "$RL_W/mv"; rl_run "$SANDBOX/rl-check.sh"
+chk "保存进程被杀之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
+
+rl_world true; rl_wrap_jq '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' fail; rl_run "$SANDBOX/rl-off.sh"
+chk "保存成功、读回失败：UNCONFIRMED、退出非 0" "$(rl_last) $(grep -c '^RESULT=saved$' <<<"$RL_OUT") $([ "$RL_RC" != 0 ] && echo nz)" "UNCONFIRMED: saved, read-back failed 1 nz"
+chk "读回失败：文件里已是 false" "$(rl_val)" "false"
+rm -f "$RL_W/jq"; rl_run "$SANDBOX/rl-check.sh"
+chk "读回失败之后照说明跑查值：显示 false" "$RL_OUT" "ENABLE_ROUND_LOG=false"
+
+# 想恢复时：重新打开，照字面跑，中英两份一字不差
+chk "round-log-on-ops：中英两份文档里的命令一字不差" "$(doc_block operations.zh.md round-log-on-ops)" "$(doc_block operations.md round-log-on-ops)"
+doc_block operations.md round-log-on-ops > "$SANDBOX/rl-on.sh"
+chk "文档里不再有查标签的检查命令" "$(doc_block operations.md round-log-busy-ops; doc_block operations.zh.md round-log-busy-ops)" ""
+rl_world false; rl_run "$SANDBOX/rl-on.sh"
+chk "重新打开：最后一行 ROUND_LOG=on、退出 0、配置里变成 true" "$(rl_last) $RL_RC $(rl_val)" "ROUND_LOG=on 0 true"
+rl_world false; chmod 000 "$CONF"; rl_run "$SANDBOX/rl-on.sh"; chmod 640 "$CONF"
+chk "重新打开时配置读不了：没写入、文件不变" "$(rl_last) $(rl_val)" "NOT_WRITTEN: config unreadable false"
+
 
 echo
 echo "通过 $pass，失败 $fail"

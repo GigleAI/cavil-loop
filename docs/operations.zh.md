@@ -566,7 +566,8 @@ actor 与 `gh api user` 的账号，不需要揣摩评论文字的意图。轮�
 <details><summary>全量轮、复核轮与判断顺序</summary>
 
 - **全量轮**——最近一次人工动作之后的第 1 轮，或任何算不出基线的轮次：需求、diff（方案就是全文）、测试、
-  文档一次过完，问题全部列出、编号（`#1`、`#2`…，之后各轮沿用）。
+  文档一次过完，问题全部列出、编号（「问题 1」「问题 2」…，之后各轮沿用；不写 `#1`，GitHub 会把它链到 1 号 issue；
+  之前用 `#N` 写的清单当作问题 N 照常核对）。
 - **复核轮**——第 2 轮起、基线可用时：清单逐条核对（改好 / 没改好 / worker 给的不改理由成立否），**修复本身**
   里的新问题照常编号、可以打回，照拦关卡仍对整个 PR 照查。
 - **每个问题一条判断顺序**，停在第一个给出结果的一步：① 照拦——检查有失败或被取消的行、与主干冲突、违反
@@ -1368,8 +1369,80 @@ agent 通过长期入口 `~/.agents/releases/cavil-loop/entrypoints/round-log.sh
 
 <details><summary>关掉</summary>
 
-写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被读取和统计；之后的交付恢复成普通评论。要让
-所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
+写 `ENABLE_ROUND_LOG=false`（或删掉这一行）。已有的记录原样留着、照常被统计。改完立刻生效：往返记录的写入命令每次运行都按当时的配置判断，
+受保护读取（`outsider-read.sh`，托管且开了外部内容保护的条目用它读）也不再附上拆好的往返视图。已经开着的 agent 会话仍按它开始时的提示词写，
+所以关掉时正处在 agent 之间来回的条目可能停在半路：worker 的交付被写入命令拒收后改成单独发，照常往下走；受保护条目上的复审可能找不到要回应的交付，
+不发结论、不翻标签就停下，条目一直挂着 `doing/agent`。
+
+关掉之前看一眼哪些条目挂着 `doing/agent` 或 `pending/review` 能减少撞上的机会，但不能排除：排队等派工的条目和正在派工、还没挂上 `doing/agent`
+的条目都看不出来。所以关掉之后留意一阵，发现停在半路的条目就重派一次：
+
+- **怎么认出来**：条目挂着 `doing/agent`，却好一阵没有新评论，它的 agent 会话已经停下（开了卡住检测的项目，daemon 也会自己提醒或交人）
+- **先交给人**：在条目页面右侧的 Labels 里先挂上 `pending/human`，刷新页面确认它已经在了，再摘掉 `doing/agent`。顺序不能反：两个都不挂的那一刻，开了自动捞取的项目可能把它当成新条目再派一次。`pending/human` 没挂上就别摘 `doing/agent`
+- **再照平常派工**：看这一轮停在哪一步。最新一份交付还没有复审结论——交付是 worker 的评论，或者是首轮只写在 PR 正文里、评论区还没有交付——就挂上 `pending/review`，让复审接着审；最新一条是复审结论（打回或别的），就挂上 `pending/agent`，让 worker 接着做。两种都是先挂新标签、再摘 `pending/human`。看不清停在哪一步，就留在 `pending/human`，由维护者处理
+- **怎样算救回来了**：条目先又挂上 `doing/agent`（daemon 已经重新派出），之后出现一条 loop 账号单独发的新评论——复审结论或 worker 交付，关掉之后它不再进往返记录——`doing/agent` 换成了下一步的标签。派工排队或 agent 撞到用量上限时会晚很久，以这两样实际出现为准，不按等了多久判断
+
+不开编辑器、用项目配置脚本改（`myproject` 换成项目的实例名）：先查现在的值，开着时输出 `ENABLE_ROUND_LOG=true`：
+
+<!-- round-log-check-ops:begin -->
+```bash
+bash "$HOME/.agents/skills/cavil-loop/scripts/project-config.sh" get myproject | jq -r '.fields[] | select(.name == "ENABLE_ROUND_LOG") | "\(.name)=\(.value)"'
+```
+<!-- round-log-check-ops:end -->
+
+关掉：整段运行下面这一段，看最后一行：
+
+- `ROUND_LOG=off`：已保存，读回是 `false`（上一行是 `RESULT=saved`；本来就是关的时是 `RESULT=unchanged`）。
+- `NOT_WRITTEN: …`：配置脚本明确说了什么都没写（配置读不了、读取之后保存之前被别处改过、备份写不进……），配置没动，直接重跑这一段即可。
+- `UNCONFIRMED: …`：配置可能已经写过，但没能确认现在的值（紧接着又被别处存了一版、保存中途停下没给出结果行，或读回失败）：
+  跑上面查值的命令，显示 `false` 就是已关上；不是 `false`（或查值命令本身失败）仍算没确认，再重跑这一段。
+
+<!-- round-log-off-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"false"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = false ]; then echo "ROUND_LOG=off"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-off-ops:end -->
+
+想重新打开时用下面这段，最后一行的说法和关掉那段相同，成功时是 `ROUND_LOG=on`。重新打开只对之后的写入和读取生效，已经停在半路的条目
+仍要照上面重派一次。
+
+<!-- round-log-on-ops:begin -->
+```bash
+(
+  SKILL="$HOME/.agents/skills/cavil-loop"; KEY=myproject
+  PC() { bash "$SKILL/scripts/project-config.sh" "$@"; }
+  REV="$(PC get "$KEY" | jq -er .rev 2>/dev/null)" || { echo "NOT_WRITTEN: config unreadable"; exit 1; }
+  OUT="$(printf '{"ENABLE_ROUND_LOG":"true"}' | PC set "$KEY" --rev "$REV")" || true
+  RES="$(printf '%s\n' "$OUT" | tail -1)"; printf '%s\n' "$RES"
+  case "$RES" in
+    RESULT=saved|RESULT=unchanged) ;;
+    RESULT=changed|RESULT=invalid|RESULT=not_editable|RESULT=busy|RESULT=unreadable|RESULT=verify_failed|RESULT=backup_failed|RESULT=write_failed)
+      echo "NOT_WRITTEN: ${RES#RESULT=}"; exit 1 ;;
+    *) echo "UNCONFIRMED: ${RES:-no result line}"; exit 1 ;;
+  esac
+  NOW="$(PC get "$KEY" | jq -er '.fields[] | select(.name == "ENABLE_ROUND_LOG") | .value' 2>/dev/null)" \
+    || { echo "UNCONFIRMED: saved, read-back failed"; exit 1; }
+  if [ "$NOW" = true ]; then echo "ROUND_LOG=on"; else echo "UNCONFIRMED: read back ${NOW}"; exit 1; fi
+)
+```
+<!-- round-log-on-ops:end -->
+
+要让所有项目默认打开：改 `scripts/_lib.sh` 里 `round_log_enabled` 那一个空值分支即可，配置里没有这一行的项目随之打开。
 
 </details>
 

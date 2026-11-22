@@ -11,6 +11,17 @@
 #        （远端引用不在 / 是目录）→ 都含「未能读取」；只在本地工作区有 → 不含。继承来的派工环境一律清掉
 #   【2】收敛段送达：每份复审 prompt 都有、worker prompt 都没有；托管复审时托管规则段排在它后面
 #   【3】修复范围脚本：真实 git 仓库里造跨轮历史，docs/operations.md 两张表每行一例
+#   【4】问题编号不带井号：六份成品里的编号规则、返工回应句、「只有真的 issue / PR 才写 #编号」，示例按自动链接规则对拍
+#
+# ── Problem numbers in review lists (GitHub#646); read before changing ──
+# Reviews number problems 「问题 1」「问题 2」, never `#1`: GitHub turns `#1` into a link to issue 1, and the lists
+# on #644 / PR #645 were full of links to old issues. The rule lives in `prompts/review-converge.md` (with the
+# transition: a list written with `#N` earlier is read as problem N); the one rework sentence
+# 「按复审结论里的问题编号逐条回应…」 is byte-identical in `issue-comment.template.md` and `pr-comment.template.md`
+# (the two entries that handle rework; a split sub-issue goes through the issue-comment one); 「只有真的 issue /
+# PR 才写 `#编号`」 is item 11 of the four hand-off sections plus the review-comment paragraph of
+# `review.template.md` (`tests/plain-language-prompts.test.sh` diffs those copies). 【4】 checks the six prompts
+# the real dispatch scripts write, and runs the sentence's own example through GitHub's autolink rule.
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -248,6 +259,56 @@ for s in '没输出、退出码不是 0、第一行不是上面两种' '全量�
          'fingerprint <评论 id> --issue <issue 编号> --expect'; do
     has "$TMP/out-present/review.md" "$s" && ok "收敛段有「$s」" || bad "收敛段缺「$s」"
 done
+
+# ════════ 【4】问题编号不带井号（GitHub#646）════════
+# 复审问题编号写「问题 N」；worker 两个返工入口同一句回应规则；全部入口的交人评论写法都有「只有真的 issue / PR
+# 才写 #编号」，各处逐字一致；示例按 GitHub 自动链接的规则只认出真的 issue 号，换回旧写法会多认出一个
+echo "── 【4】问题编号不带井号（真实派工脚本拼出的六份）──"
+O="$TMP/out-present"
+NUM_RULE='**只有真的 issue / PR 才写 `#编号`**'
+num_texts() { grep -o -- '\*\*只有真的 issue / PR 才写 `#编号`\*\*。.*' "$1"; }
+REWORK_HEAD='按复审结论里的问题编号逐条回应'
+rework_texts() { grep -o -- '按复审结论里的问题编号逐条回应：[^。]*。' "$1"; }
+probs=""; ref_num=""
+for f in review review-autopilot "${WORKERS[@]}"; do
+    t=$(num_texts "$O/$f.md" | sort -u); n=$(num_texts "$O/$f.md" | wc -l)
+    if [ -z "$t" ]; then probs+="$f 没有「只有真的 issue / PR 才写」; "; continue; fi
+    [ "$(wc -l <<<"$t")" -eq 1 ] || probs+="$f 这一句有不同写法; "
+    if [ -z "$ref_num" ]; then ref_num="$t"; elif [ "$t" != "$ref_num" ]; then probs+="$f 这一句和 review 不一致; "; fi
+    case "$f" in
+        # 这里的测试项目没有复审增量，复审只剩通用模板那一处；带本项目增量的那份由 plain-language-prompts 对拍
+        review*) grep -qF -- "review 评论同样遵守：$NUM_RULE" "$O/$f.md" || probs+="$f 通用模板 review 评论那一段没有这一句; " ;;
+        *) grep -qF -- "11. $NUM_RULE" "$O/$f.md" || probs+="$f 不在交人评论那段的第 11 条; " ;;
+    esac
+    for old in '编号 `#1`、`#2`' '（`#1`、`#2`…）' '安全规则 #2' '逻辑判断同 #1'; do
+        has "$O/$f.md" "$old" && probs+="$f 还有旧写法「$old」; "
+    done
+done
+[ -z "$probs" ] && ok "六份成品都有「只有真的 issue / PR 才写 #编号」且逐字一致，旧的井号编号要求一处不剩" || bad "井号编号规则" "$probs"
+probs=""
+for f in review review-autopilot; do
+    has "$O/$f.md" '编号写「问题 1」「问题 2」……，不带井号' || probs+="$f 没有「问题 N」编号规则; "
+    has "$O/$f.md" '跨轮引用写「第 2 轮问题 3」' || probs+="$f 没有跨轮写法; "
+    has "$O/$f.md" '上一轮清单用的是旧写法 `#N` 时，它就是问题 N：照同一个号核对' || probs+="$f 没有旧编号过渡; "
+done
+[ -z "$probs" ] && ok "两份复审：编号规则是「问题 N」、跨轮「第 N 轮问题 M」、旧写法 #N 当问题 N 核对" || bad "复审编号规则" "$probs"
+# 处理返工的是 issue 回复、PR 回复两个入口（拆出的子 issue 走 issue 回复的模板，同一句也在）
+a=$(rework_texts "$O/issue-comment.md"); b=$(rework_texts "$O/pr-comment.md"); c=$(rework_texts "$O/sub-issue.md")
+if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ "$(wc -l <<<"$a")" -eq 1 ] && grep -qF '第 N 轮问题 M' <<<"$a" && grep -qF '旧写法 `#N` 时，它就是问题 N' <<<"$a"; then
+    ok "issue 回复、PR 回复（含子 issue）返工入口是同一句回应规则（问题 N、第 N 轮问题 M、旧写法当问题 N）"
+else bad "返工入口的回应规则不同或缺了" "issue=[$a] pr=[$b] sub=[$c]"; fi
+for f in new-issue review review-autopilot; do has "$O/$f.md" "$REWORK_HEAD" && bad "$f 不处理返工，不该有返工回应规则"; done
+# 示例按 GitHub 的自动链接规则算：代码段以外、前面不是字母数字的「井号 + 数字」
+autolinks() { python3 -c '
+import re, sys
+t = re.sub(r"`[^`]*`", "", sys.stdin.read())
+print(" ".join(re.findall(r"(?<![0-9A-Za-z_/#&])#([0-9]+)(?![0-9A-Za-z_])", t)))'; }
+ex=$(grep -o -- '例：「[^」]*」' <<<"$ref_num" | sed 's/^例：「//; s/」$//')
+check "示例取得到" "$([ -n "$ex" ] && echo yes)" yes
+check "示例（新写法）只认出真的 issue 号" "$(autolinks <<<"$ex")" "610"
+check "同一句换回旧写法（问题 2 → #2）会多认出一个链接" "$(sed 's/问题 \([0-9]\)/#\1/' <<<"$ex" | autolinks)" "2 610"
+check "跨轮写法「第 1 轮问题 3」不会被认成链接" "$(printf '| 第 1 轮问题 3 | 已改 |\n' | autolinks)" ""
+check "旧跨轮写法「第 1 轮 #3」会被认成链接（测得出两种写法的差别）" "$(printf '| 第 1 轮 #3 | 已改 |\n' | autolinks)" "3"
 
 # ════════ 【3】修复范围脚本 ════════
 echo "── 【3】修复范围脚本 ──"
