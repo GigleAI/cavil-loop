@@ -336,6 +336,12 @@ if args and args[0] == "api":
                 sys.stderr.write("HTTP 404 Label does not exist\n")
                 sys.exit(1)
             labels_of().remove(name)
+            # 读事件时补出来的「加上」事件只在标签挂着时出现；真 GitHub 摘掉后那条还在：摘之前落进记录（同一个编号）
+            if it.get("is_pr") and it.get("merged") and not any(
+                    e.get("event") == "labeled" and e.get("label") == name for e in it.get("events", [])):
+                import zlib as _z
+                it.setdefault("events", []).append({"id": 100 + _z.crc32(name.encode()) % 800, "event": "labeled",
+                                                    "actor": "maintainer", "label": name})
             add_event(it, {"event": "unlabeled", "actor": st.get("me"), "label": name})
             save("state.json", st)
             emit([{"name": x} for x in labels_of()])
