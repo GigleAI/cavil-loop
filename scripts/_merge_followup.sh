@@ -7,6 +7,12 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_autopilot_summary.sh"
 MERGE_FOLLOWUP_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/merge_followup.py"
 
+# PR 身份的五项（合并提交、目标分支、来源分支、分支最新提交、来源仓库）：从 PR 的接口回答里怎么取、和记录怎么比，
+# 只有这一份；记录、清单判定、PR 标签的读取和逐步核对都用它
+MF_IDENT_JQ='def mf_ident: {sha: (.merge_commit_sha // ""), base: (.base.ref // ""), head_ref: (.head.ref // ""),
+                           head_sha: (.head.sha // ""), head_repo: (.head.repo.full_name // "")};
+             def mf_ident_ok($r; $i): all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k
+                                          | (($r[$k] // "") != "" and $r[$k] == $i[$k]));'
 merge_followup_marks() {   # stdin：PR 正文；stdout：每个算数的标记一行「B|E|N 行号」
     awk -v b="$MERGE_FOLLOWUP_BEGIN" -v e="$MERGE_FOLLOWUP_END" -v n="$MERGE_FOLLOWUP_NONE" "$BODY_MARK_AWK"'
         { if (fence_step($0)) next
@@ -239,10 +245,8 @@ mf_record_from_pr() {   # <PR> [托管说明] [说明已发 true|false]；现读
     printf '%s' "${2:-}" > "$f.d"
     branch=$(jq -r '.head.ref // ""' "$f.pj")
     target=$(pr_to_issue_num "$pr" "$branch" "$body")
-    mf_set '$j[0] as $j | .prs[$p] = ((.prs[$p] // {}) + {target: $t, work: $t, owner: "known", body: "ok", found: true, cleanup: "done", rereads: 0,
-                merged_at: ($j.merged_at // ""), sha: ($j.merge_commit_sha // ""), base: ($j.base.ref // ""),
-                head_ref: ($j.head.ref // ""), head_sha: ($j.head.sha // ""), head_repo: ($j.head.repo.full_name // ""),
-                title: ($j.title // ""), migrated: true} + $x[0])
+    mf_set "$MF_IDENT_JQ"' $j[0] as $j | .prs[$p] = ((.prs[$p] // {}) + {target: $t, work: $t, owner: "known", body: "ok", found: true, cleanup: "done", rereads: 0,
+                merged_at: ($j.merged_at // ""), title: ($j.title // ""), migrated: true} + ($j | mf_ident) + $x[0])
             | (if $d != "" then .prs[$p].ap = {pre: "found", desc: $d, desc_sent: ($s == "true"), title: ($j.title // ""), head: ($j.head.sha // "")} else . end)' \
         --arg p "$pr" --slurpfile j "$f.pj" --slurpfile x "$f.x" --arg t "$target" --rawfile d "$f.d" --arg s "${3:-false}" || rc=1
     rm -f "$f.pj" "$f.x" "$f.d"
@@ -306,13 +310,11 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
     : > "$d/ident"
     for pr in $(jq -r '.[].pr' "$d/recs"); do
         gh api "repos/$REPO/pulls/$pr" > "$d/pj" 2>/dev/null || return 1
-        jq -c --arg p "$pr" '{pr: $p, merged: (.merged // null), sha: (.merge_commit_sha // ""), base: (.base.ref // ""),
-            head_ref: (.head.ref // ""), head_sha: (.head.sha // ""), head_repo: (.head.repo.full_name // ""),
+        jq -c --arg p "$pr" "$MF_IDENT_JQ"' {pr: $p, merged: (.merged // null)} + mf_ident + {
             labels: (if (.labels | type) == "array" then ([.labels[].name] | sort) else error("labels") end)}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
         # 合并提交、目标分支、来源分支、分支最新提交、来源仓库：记录和现读两边都得有值、而且相等，缺一样就不写
-        jq -e --slurpfile i <(tail -n 1 "$d/ident") --arg p "$pr" '.[] | select(.pr == $p) as $r | $i[0] as $i
-            | $i.merged == true
-              and all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k | (($r[$k] // "") != "" and $r[$k] == $i[$k]))' \
+        jq -e --slurpfile i <(tail -n 1 "$d/ident") --arg p "$pr" "$MF_IDENT_JQ"' .[] | select(.pr == $p) as $r | $i[0] as $i
+            | $i.merged == true and mf_ident_ok($r; $i)' \
             "$d/recs" >/dev/null 2>&1 || {
             log "  合并后交接：PR #$pr 现读的身份和记录对不上（或缺字段），#$n 本轮不写"; return 1; }
     done
@@ -412,17 +414,16 @@ mf_pr_state() {   # <PR> → stdout 一行 JSON {merged, head_sha, labels, last:
     pj=$(gh api "repos/$REPO/pulls/$pr" 2>/dev/null) || return 1
     ev=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events" 2>/dev/null) || return 1
     flows=$(mf_flow_labels)
-    { printf '%s\n' "$pj"; printf '%s\n' "$ev"; } | jq -cs --argjson f "$flows" '
+    { printf '%s\n' "$pj"; printf '%s\n' "$ev"; } | jq -cs --argjson f "$flows" "$MF_IDENT_JQ"'
         .[0] as $p | .[1] as $pages
         | if ($p.labels | type) != "array" or ($p.merged | type) != "boolean"
-             or any(($p.merge_commit_sha, $p.base.ref, $p.head.ref, $p.head.sha, $p.head.repo.full_name); (. // "") == "")
+             or any($p | mf_ident | .[]; . == "")
           then error("pr") else . end
         | [$pages[] | if type == "array" then .[] else error("page") end] as $e
         | [$e[] | select((.event == "labeled" or .event == "unlabeled") and ((.label.name // "") as $l | $f | index($l)) != null)] as $le
         | if any($le[]; (.id | type) != "number" or ((.created_at // "") == "")) then error("event") else . end
         | ([$e | to_entries[] | select(.value.event == "merged") | .key] | last) as $mp
-        | {merged: $p.merged, ident: {sha: $p.merge_commit_sha, base: $p.base.ref, head_ref: $p.head.ref, head_sha: $p.head.sha,
-                                     head_repo: $p.head.repo.full_name},
+        | {merged: $p.merged, ident: ($p | mf_ident),
            labels: ([$p.labels[].name] | sort), merged_pos: $mp,
            last: (reduce ($e | to_entries[] | select(.value.event == "labeled" and ((.value.label.name // "") as $l | $f | index($l)) != null)) as $x
                   ({}; .[$x.value.label.name] = {id: $x.value.id, at: $x.value.created_at, pos: $x.key,
@@ -433,24 +434,24 @@ mf_flow_labels() {
         "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))'
 }
 mf_pr_labels() {   # <PR> <true|false>
-    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect touched='[]' out me
+    local pr="$1" rem="$2" at s0 flows verdict plan step kind lab cur expect touched='[]' out me rid ev
     at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
     [ -n "$at" ] || return 1
     s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
     # 身份口径和清单判定那边（_mf_conclude_in）同一套五项：合并提交、目标分支、来源分支、分支最新提交、来源仓库
-    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" '
-        . as $s | $s.merged == true and all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k | (($r[$k] // "") != "" and $r[$k] == $s.ident[$k]))' \
+    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p]' --arg p "$pr")" "$MF_IDENT_JQ"' .merged == true and mf_ident_ok($r; .ident)' \
         >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
-    # 写入账号读不出时，谁挂的提醒都不认作自己的（照常算新一轮），交接本身不因此停下
+    # 这次交接自己挂的提醒（上一轮写了一半：加了提醒、摘旧标签失败）不是新一轮。只认挂上之后当场读回、
+    # 记在这个 PR 记录里（reminder_ev）的那一条「加上」事件，而且挂的人是写入账号：同一个账号在别的流程里挂的
+    # pending/human（比如合并后另一轮交人）事件编号不同，照常算新一轮；没记下（挂完没读回来）也算新一轮，标签不动。
+    # 写入账号读不出时什么都不认
     me=$(write_identity_login 2>/dev/null | tr '[:upper:]' '[:lower:]') || true; [ -n "$me" ] || me=' (unknown)'
+    rid=$(mf_get '.prs[$p].reminder_ev // null' --arg p "$pr"); [ -n "$rid" ] || rid=null
     flows=$(mf_flow_labels)
-    # 交接自己写的那个提醒（写入账号挂上的 pending/human——上一轮写了一半：加了提醒、摘旧标签失败）不是新一轮：
-    # 它不挡这次收尾，提醒本身按 <reminder> 保留或摘掉。只认 pending/human：别的流程标签哪怕是写入账号挂的
-    # （比如新一轮派工时 daemon 翻的 doing/agent）也照常算新一轮
-    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" --arg me "$me" --arg H "$LABEL_PENDING_HUMAN" '
+    verdict=$(printf '%s' "$s0" | jq -r --argjson f "$flows" --arg at "$at" --arg me "$me" --arg H "$LABEL_PENDING_HUMAN" --argjson rid "$rid" '
         .merged_pos as $mp | . as $S
         | [.labels[] | select(. as $l | ($f | index($l)) != null)
-                     | select(. != $H or (($S.last[.] // {}).by // "") != $me)] as $on
+                     | select(. != $H or $rid == null or (($S.last[.] // {}) | .id != $rid or .by != $me))] as $on
         | [ $on[] as $l | (.last[$l] // null) as $x
             # 先后按事件在记录里的位置比（合并和挂标签常在同一秒）：排在「merged」事件之后 = 新一轮；没有 merged 事件时
             # 才按时间比，同一秒算判不了
@@ -479,6 +480,14 @@ mf_pr_labels() {   # <PR> <true|false>
         if [ "$kind" = add ]; then
             run_gh "合并后交接：PR #$pr 加 $lab" gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$lab" >/dev/null || return 1
             expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '.labels = (.labels + [$l] | unique | sort)')
+            if [ "$lab" = "$LABEL_PENDING_HUMAN" ]; then
+                # 当场读回这次挂上的那条事件并记下，下一轮才认得出是自己挂的；读不回来就停手（下一轮当新一轮，不摘任何标签）
+                cur=$(mf_pr_state "$pr") && [ -n "$cur" ] || { log "  合并后交接：PR #$pr 挂完提醒读不回事件，本轮停手"; return 1; }
+                ev=$(printf '%s' "$cur" | jq -c --arg H "$lab" --arg me "$me" --argjson old "$(printf '%s' "$s0" | jq -c --arg H "$lab" '.last[$H].id // null')" '
+                    .last[$H] // null | if . != null and .by == $me and .id != $old then .id else null end')
+                [ -n "$ev" ] && [ "$ev" != null ] || { log "  合并后交接：PR #$pr 挂完提醒找不到写入账号这次加上的事件，本轮停手"; return 1; }
+                mf_set '.prs[$p].reminder_ev = $e' --arg p "$pr" --argjson e "$ev" || return 1
+            fi
         else
             if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$(printf '%s' "$lab" | jq -sRr @uri)" 2>&1) \
                && ! printf '%s' "$out" | grep -q 'HTTP 404'; then

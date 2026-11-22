@@ -419,6 +419,7 @@ mkmerged 241 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z
 touch "$GD/F_delete_labels"
 tick
 chk "第 1 轮：Done、提醒加上了，旧标签摘不掉，没记已交接" "$(labels_of 241)/$(jq -r '.merge_followup.prs["241"].handed // "none"' "$STATE")" "Done,pending/human,pending/review/none"
+chk "  → 挂上提醒后当场记下了写入账号这次加上的那条事件" "$(jq -r '.merge_followup.prs["241"].reminder_ev | type' "$STATE")" "number"
 rm -f "$GD/F_delete_labels"
 tick
 chk "第 2 轮：摘掉旧标签、提醒留着、交接收敛（没把自己加的提醒当成新一轮）" "$(labels_of 241)/$(jq -r '.merge_followup.prs["241"].handed // "none"' "$STATE")/$(jq -r '.merge_followup.prs["241"].pr_superseded // false' "$STATE")" "Done,pending/human/1/false"
@@ -432,6 +433,15 @@ tick
 chk "这一轮：加了 Done 就停手，旧标签还在、没记已交接、日志写明" "$(labels_of 251)/$(jq -r '.merge_followup.prs["251"].handed // "none"' "$STATE")/$(grep -c 'PR #251 的标签在两次写之间被人改了' "$W/state/poll.log")" "Done,pending/review/none/1"
 tick
 chk "下一轮：身份和记录对不上，不再写" "$(labels_of 251)/$(jq -r '.merge_followup.prs["251"].handed // "none"' "$STATE")" "Done,pending/review/none"
+
+echo "㉖ 合并之后另一轮用同一个写入账号给 PR 挂了 pending/human（交接从没往这个 PR 写过提醒）→ 算新一轮，PR 标签一个不动"
+fresh
+mkissue 260 "" open
+mkmerged 261 feature/issue-260 "Refs #260"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review,pending/human"
+jset events.json '.["261"] = [{event:"labeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:00Z"}]'
+tick
+chk "PR 标签原样（提醒和旧标签都在、没打 Done）、记为新一轮、issue 照常交接" "$(labels_of 261)/$(jq -r '.merge_followup.prs["261"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["261"].reminder_ev // "none"' "$STATE")/$(comments_of 260)" "pending/human,pending/review/true/none/1"
+chk "  → 到达性：日志写明合并之后又挂上了流程标签" "$(grep -c 'PR #261 合并之后又挂上了流程标签' "$W/state/poll.log")" "1"
 
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
