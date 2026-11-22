@@ -439,7 +439,7 @@ mf_pr_labels() {   # <PR> <true|false>
     [ -n "$at" ] || return 1
     s0=$(mf_pr_state "$pr") && [ -n "$s0" ] || { log "  合并后交接：PR #$pr 的标签或标签事件读不全，本轮不动它的标签"; return 1; }
     # 身份口径和清单判定那边（_mf_conclude_in）同一套五项：合并提交、目标分支、来源分支、分支最新提交、来源仓库
-    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p]' --arg p "$pr")" "$MF_IDENT_JQ"' .merged == true and mf_ident_ok($r; .ident)' \
+    printf '%s' "$s0" | jq -e --argjson r "$(mf_get '.prs[$p] | {sha, base, head_ref, head_sha, head_repo}' --arg p "$pr")" "$MF_IDENT_JQ"' .merged == true and mf_ident_ok($r; .ident)' \
         >/dev/null 2>&1 || { log "  合并后交接：PR #$pr 现读的身份和记录对不上，本轮不动它的标签"; return 1; }
     # 这次交接自己挂的提醒（上一轮写了一半：加了提醒、摘旧标签失败）不是新一轮。只认挂上之后当场读回、
     # 记在这个 PR 记录里（reminder_ev）的那一条「加上」事件，而且挂的人是写入账号：同一个账号在别的流程里挂的
