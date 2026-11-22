@@ -10,7 +10,7 @@
 #   bash tests/setup-label-colors.test.sh              默认回归
 #   MUTATION=1 bash tests/setup-label-colors.test.sh   另跑负对照：两处改色各退回旧值，必须变红
 
-# ── Default label colors `setup.sh` creates: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── Default label colors `setup.sh` creates: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Default label colors `setup.sh` creates (GitHub#130; they copy this repo's labels page) →
 # `tests/setup-label-colors.test.sh` (~1 s; runs the real `setup.sh` with every optional label on and
 # checks all 15 names and colors). When a label's color changes on GigleAI/cavil-loop, change

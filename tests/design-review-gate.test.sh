@@ -17,7 +17,7 @@
 #        那句都是交复审——开关上线不打断这种项目
 #   【5】负对照：沙盘副本逐个改坏，对应检查必须变红
 
-# ── Design proposals through the review gate: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── Design proposals through the review gate: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Design proposals through the review gate (GitHub#102: `REVIEW_DESIGN_PROPOSALS`, the
 # `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` placeholders in the two design exits of
 # `new-issue.template.md` and `issue-comment.template.md` § B) → `tests/design-review-gate.test.sh`

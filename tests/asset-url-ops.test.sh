@@ -15,7 +15,7 @@
 #
 # 跑法：bash tests/asset-url-ops.test.sh   依赖：bash、GNU coreutils、grep、sed、awk、prlimit、flock（util-linux）
 
-# ── Which projects show images in comments: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── Which projects show images in comments: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Which projects show images in comments (GitHub#602: the per-project `WEEKLY_REPORT_ASSET_ROOT_URL=`
 # line in `~/.config/cavil-loop/<key>.conf`, the two bullets after "没配出图地址" in the three worker
 # templates — private-repository files are never embedded as images, public images hold only public

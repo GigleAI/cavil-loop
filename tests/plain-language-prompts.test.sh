@@ -21,7 +21,7 @@
 # 2R 打回依据。交人评论那段里给 agent 照抄的范例句（以及方案 / 修订版结尾句、拆分交人评论）
 # 不许再带「你」「我」——只改规则不改范例，agent 照范例写，规则形同虚设。
 
-# ── How workers / the reviewer write comments that ask a human to decide: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── How workers / the reviewer write comments that ask a human to decide: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # How workers / the reviewer write comments that ask a human to decide (the fixed skeleton, the
 # no-code-names rule) → `tests/plain-language-prompts.test.sh`. The skeleton is copied verbatim into
 # the three worker templates and the project's `review.extra.md`; the no-code-names sentence

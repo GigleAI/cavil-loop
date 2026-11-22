@@ -15,7 +15,7 @@
 # 不该在的不在、多份副本逐字一致、旧的互相冲突的说法（「第一个看得见的行是标题」「没有图就不
 # 生成」）一处都不剩；负对照按格子做——只删一个入口的那一份，其余入口原样，要求那一格变红。
 
-# ── Reply layout: mock-ups, quoting, review hand-off skeleton: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── Reply layout: mock-ups, quoting, review hand-off skeleton: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Reply layout: mock-ups, quoting, review hand-off skeleton (GitHub#238: "界面改动配设计稿、选择题配样例图" in the
 # three worker templates — since GitHub#335 a proposal that changes how the interface looks must carry
 # a design mock-up whether or not it asks a choice question, autopilot items included; review step 2L

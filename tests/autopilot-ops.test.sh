@@ -14,7 +14,7 @@
 # 规矩只有一条：读不到 ≠ 没有。设计阶段每一轮打回的都是这条的一个变体（登记目录读不了当成没装、
 # 单引号配置被文本匹配漏掉……），所以每个「读失败」场景都要求 UNKNOWN，负对照把这些历史写法换回去。
 
-# ── The hand-run autopilot host check in `docs/operations{,.zh}.md`: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── The hand-run autopilot host check in `docs/operations{,.zh}.md`: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # The hand-run autopilot host check in `docs/operations{,.zh}.md` (GitHub#124, behind `<!--
 # autopilot-ops:host-check -->`) → `tests/autopilot-ops.test.sh` (~30 s; `MUTATION=1` adds five broken
 # copies — the versions rejected during design among them). It extracts the script verbatim from both

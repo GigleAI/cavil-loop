@@ -15,7 +15,7 @@
 #      每台在线设备、只连选定 / 已配对的机器、不带 GitHub 凭据），且没有「配对前没有任何连接」的旧说法
 # 另把检查器喂一份坏文档（断链、错锚点、缺图），它必须报错——证明上面的「全过」不是什么都没查。
 
-# ── The desktop client's user guide: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# ── The desktop client's user guide: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # The desktop client's user guide (GitHub#475: `docs/client.md` / `docs/client.zh.md`, the client
 # section and the "two things" table of both READMEs, the screenshots in `docs/client-screens/`) →
 # `tests/client-docs.test.sh` (~1 s: relative links, images and anchors resolve, both languages use
