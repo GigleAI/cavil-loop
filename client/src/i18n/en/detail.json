@@ -137,6 +137,8 @@
     "other": "{n} images are not on GitHub addresses and the client does not load them"
   },
   "离线或有修改在途时不能编辑": "Cannot edit while offline or while a change is on its way",
+  "引用回复": "Quote reply",
+  "离线或有操作在途时不能回复": "Cannot reply while offline or while an action is on its way",
   "编辑": "Edit",
   "：关": ": off",
   "：开": ": on",

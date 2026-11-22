@@ -9,6 +9,7 @@ import { GitHubClient, GitHubError } from './github';
 import { ITEM_DETAIL_QUERY, REVIEW_COMMENTS_QUERY } from './queries';
 import { planTasks, renderedTaskBoxes } from './taskList';
 import { isRoundLog, roundLogOf, wallSecsOf } from '../shared/agentMetrics';
+import { hasWords, withoutHidden } from './quote';
 
 const MAX_PAGES = 50;
 
@@ -37,6 +38,8 @@ interface GqlReview {
   submittedAt: string | null;
   createdAt: string;
   bodyHTML: string;
+  /** GitHub#653: the markdown source, for quoting it */
+  body?: string;
   author: GqlAuthor | null;
   comments: Page<GqlLineComment>;
 }
@@ -192,6 +195,13 @@ function wallSecs(source: unknown): Pick<TimelineEntry, 'wallSecs' | 'roundLog'>
   return n === undefined ? {} : { wallSecs: n };
 }
 
+/** GitHub#653: what "引用回复" quotes — the markdown source without what a reader never sees; absent when nothing is left */
+export function quoteSource(source: unknown): { quoteSource: string } | Record<string, never> {
+  if (typeof source !== 'string') return {};
+  const q = withoutHidden(source);
+  return q !== null && hasWords(q) ? { quoteSource: q } : {};
+}
+
 /** Boxes in a review or a line comment stay read-only: ticking them is left to the web page. */
 const REVIEW_TASKS: TaskEntry = { clickable: false, why: zhKey('评审意见里的勾选框只能在网页上勾') };
 
@@ -207,7 +217,7 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
   const out: TimelineEntry[] = [];
   for (const c of raw.comments) {
     const tasks = taskEntry(c.bodyHTML, c.body, c.viewerCanUpdate);
-    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(c.body, c.viewerCanUpdate), ...wallSecs(c.body) });
+    out.push({ kind: 'comment', id: c.id, url: c.url, author: c.author?.login ?? null, at: c.createdAt, bodyHtml: c.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(c.body, c.viewerCanUpdate), ...quoteSource(c.body), ...wallSecs(c.body) });
   }
   for (const r of raw.reviews) {
     if (r.state === 'PENDING') continue;
@@ -231,12 +241,13 @@ export function buildTimeline(raw: Pick<RawDetail, 'item' | 'comments' | 'review
       bodyHtml: r.bodyHTML,
       ...(renderedTaskBoxes(r.bodyHTML).length ? { tasks: REVIEW_TASKS } : {}),
       reviewState: r.state,
+      ...quoteSource(r.body),
       lineComments,
     });
   }
   out.sort(desc);
   const tasks = taskEntry(it.bodyHTML, it.body, it.viewerCanUpdate);
-  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(it.body, it.viewerCanUpdate), ...wallSecs(it.body) });
+  out.push({ kind: 'body', id: it.id, url: it.url, author: it.author?.login ?? null, at: it.createdAt, bodyHtml: it.bodyHTML, ...(tasks ? { tasks } : {}), ...editSource(it.body, it.viewerCanUpdate), ...quoteSource(it.body), ...wallSecs(it.body) });
   return out;
 }
 

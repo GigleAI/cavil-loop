@@ -171,6 +171,11 @@ export interface TimelineEntry {
   /** GitHub#205: the markdown source, present only when GitHub says this account may change it (body / comment) */
   editSource?: string;
   /**
+   * GitHub#653: what "引用回复" quotes when no words are selected — the markdown source without its
+   * HTML comments (data/quote.ts); absent when the source was not read or nothing visible is left
+   */
+  quoteSource?: string;
+  /**
    * GitHub#503: this round's total time in seconds, from the usage record on the last line of
    * the markdown source (body / comment only); absent when there is no valid record.
    */
