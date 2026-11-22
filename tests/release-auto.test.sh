@@ -1042,14 +1042,11 @@ check "… the release report's switch still there" "$(has_var RELEASE_FAILURE_R
 check "the variable the steps set is the one the report job reads" \
     "$(grep -c "vars.NEGATIVE_CONTROLS_REPORT != 'off'" "$NC_WORKFLOW")" 1
 
-echo "-- docs: turning the client's nightly report off and on again — as written (GitHub#628)"
-for f in operations.md operations.zh.md; do
-    sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/docs/$f" > "$TMP/cn-ops-$f.md"
-    sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-$f.md" | grep -v '^```' > "$TMP/cn-ops-$f.sh"
-    grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-$f.md" | tr -d '`' > "$TMP/cn-ops-$f.check"
-done
-check "both docs carry the same steps" "$(cmp -s "$TMP/cn-ops-operations.md.sh" "$TMP/cn-ops-operations.zh.md.sh" && echo same)" same
-check "both docs name the same check" "$(cmp -s "$TMP/cn-ops-operations.md.check" "$TMP/cn-ops-operations.zh.md.check" && echo same)" same
+echo "-- AGENTS.md: turning the client's nightly report off and on again — as written (GitHub#628; written only in AGENTS.md since PR #673)"
+sed -n '/<!-- client-nightly-ops:begin -->/,/<!-- client-nightly-ops:end -->/p' "$REPO_DIR/AGENTS.md" > "$TMP/cn-ops-operations.md.md"
+sed -n '/^```bash$/,/^```$/p' "$TMP/cn-ops-operations.md.md" | grep -v '^```' > "$TMP/cn-ops-operations.md.sh"
+grep -o '`gh variable list[^`]*`' "$TMP/cn-ops-operations.md.md" | tr -d '`' > "$TMP/cn-ops-operations.md.check"
+check "the steps are no longer in the user docs" "$(grep -c 'client-nightly-ops:begin' "$REPO_DIR/docs/operations.md" "$REPO_DIR/docs/operations.zh.md" | awk -F: '{n+=$2} END {print n}')" 0
 check "two steps: off, then on" "$(wc -l < "$TMP/cn-ops-operations.md.sh")" 2
 check "one check command" "$(wc -l < "$TMP/cn-ops-operations.md.check")" 1
 printf 'NEGATIVE_CONTROLS_REPORT\toff\t2026-11-01T00:00:00Z\n' > "$VAR_STATE"   # another switch, set before
@@ -1366,6 +1363,8 @@ print("dev-release-if", cl["dev-release"]["if"])
 # GitHub#628: what runs on which trigger, and the queue publishing runs share
 print("dev-release-conc", (cl["dev-release"].get("concurrency") or {}).get("group"), (cl["dev-release"].get("concurrency") or {}).get("cancel-in-progress"))
 print("dev-release-needs", sorted(lst(cl["dev-release"]["needs"])))
+# GitHub#665: the publish slot waits for nothing and reads nothing beyond the release list
+print("dev-release-perms", sorted((cl["dev-release"].get("permissions") or {}).items()))
 for jn in ("package", "package-windows"):
     print(f"{jn}-if", cl[jn].get("if"))
 for jn in ("test-rust", "test-vitest"):
@@ -1401,6 +1400,7 @@ has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks o
 has "needs.mode.outputs.tag != ''" "$(grep '^matrix' "$TMP/c-static")" "both Macs on every release build"
 has "needs.mode.outputs.tag == ''" "$(grep '^dev-release-if' "$TMP/c-static")" "a release build never publishes a development build"
 has "dev-release-conc client-dev-release-publish False" "$S" "… one publish at a time, never cancelling a running one"
+has "dev-release-perms [('contents', 'write')]" "$S" "… with no permission beyond writing the release (GitHub#665: no wait on other runs, no Actions read)"
 has "dev-release-needs ['mode', 'package', 'package-windows', 'size', 'test']" "$S" "… only after the quick tests, both builds with their update checks, and the size gate"
 has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly build and the weekly full run"
 has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
@@ -1512,7 +1512,7 @@ git -C "$CREMOTE" tag -d client/v0.7.0 >/dev/null
 cmode GITHUB_REF=refs/tags/client/v0.6.1-dev.3 GITHUB_SHA="$C4" EVENT=push
 check "a development-shaped tag → fails" "$([ "$RC" != 0 ] && echo red)" "red"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=push
-check "push to main → development build, a throw-away key, nothing published (GitHub#628)" "$(mode_line)" "0:::$C4:false:false"
+check "push to main → development build to publish, the real key (GitHub#665: as before GitHub#628)" "$(mode_line)" "0:::$C4:true:true"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='40 16 * * 0'
 check "the weekly schedule → development build, a throw-away key, nothing published" "$(mode_line)" "0:::$C4:false:false"
 cmode GITHUB_REF=refs/heads/main GITHUB_SHA="$C4" EVENT=schedule SCHEDULE='30 20 * * *'
@@ -1564,7 +1564,7 @@ PYT
     # the release list, or (scripts/dev-plan.mjs's second read) the client/v* tag refs; GH_FAIL_TAGS fails only the latter
     printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$GH_ARGS"\n[ -z "${GH_FAIL_API:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }\ncase "$*" in *matching-refs*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q %q %q;; *git/ref/tags/*) [ -z "${GH_FAIL_TAGS:-}" ] || { echo "HTTP 502: injected" >&2; exit 1; }; exec python3 %q "$2" %q;; esac\nprintf "[%%s]" "$(cat %q)"\n' "$TMP/c-tagrefs.py" "$TMP/c-devtags.json" "$TMP/c-devlist.json" "$TMP/c-tagref.py" "$TMP/c-devlist.json" "$TMP/c-devlist.json" > "$TMP/c-devbin/gh"
     chmod +x "$TMP/c-devbin/gh"
-    CPATH="$TMP/c-devbin:" crun "$TMP/client-run/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
+    CPATH="$TMP/c-devbin:" crun "${CBUILD_ROOT:-$TMP/client-run}/client" "$TMP/c-build.sh" RUNNER_TEMP="$TMP/c-rt" SHA="$C4" GH_TOKEN=x "$@"
 }
 build_line() { echo "$RC:$(cout build):$(cout quick)"; }
 # a published development build carrying every file a build carries (scripts/dev-release.mjs --files)
@@ -1578,10 +1578,12 @@ devrel_without() {  # devrel_without <n> <sha> <file suffix> → the same build 
 }
 cbuild '[]' TAG=client/v0.6.0 PUBLISH=false EVENT=push
 check "a release build → build" "$(build_line)" "0:true:true"
-for ev in push pull_request; do
-    cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
-    check "$ev → quick tests only, nothing built" "$(build_line)" "0:false:true"
-done
+cbuild '[]' TAG= PUBLISH=false EVENT=pull_request
+check "pull_request → quick tests only, nothing built" "$(build_line)" "0:false:true"
+cbuild "$(devrel 9 "$C1")" TAG= PUBLISH=true EVENT=push
+check "push to main (publishing), client changed since the last build → build (GitHub#665)" "$(build_line)" "0:true:true"
+cbuild "$(devrel 9 "$C4")" TAG= PUBLISH=true EVENT=push
+check "push to main (publishing), this commit already out → skipped before building, the quick tests still run" "$(build_line)" "0:false:true"
 for ev in schedule workflow_dispatch; do
     cbuild '[]' TAG= PUBLISH=false EVENT="$ev"
     check "$ev (not publishing) → build and check" "$(build_line)" "0:true:true"
@@ -1648,12 +1650,28 @@ check "publishing run, the commit already published but its Windows installer on
 cbuild "$STARTER" TAG= PUBLISH=true EVENT=workflow_dispatch FORCE=true
 check "… forced → built and checked (the publish step then refuses to change it)" "$(build_line)" "0:true:true"
 
-echo "-- docs: checking whether a build is complete — the command as written, both languages (review round 2 #6)"
-for f in operations.md operations.zh.md; do
-    sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/docs/$f" \
-        | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-$f.sh"
-done
-check "both docs carry the same check command" "$(cmp -s "$TMP/cn-check-operations.md.sh" "$TMP/cn-check-operations.zh.md.sh" && echo same):$(wc -l < "$TMP/cn-check-operations.md.sh")" "same:1"
+echo "-- a push that undoes an unpublished client change: quick tests still run, nothing built (GitHub#665 review round 1, problem 1)"
+# real commits in a copy of the client repo: A is published, B changes the client (never published),
+# C reverts B — C changed the client in its own push, but not since A
+rm -rf "$TMP/client-revert"; cp -a "$TMP/client-run" "$TMP/client-revert"
+rgit() { git -C "$TMP/client-revert" -c user.name=t -c user.email=t@example.invalid "$@"; }
+REV_A="$(rgit rev-parse HEAD)"
+echo "unpublished change" >> "$TMP/client-revert/client/src-tauri/x"; rgit add client/src-tauri/x; rgit commit -qm "B: client change"
+REV_B="$(rgit rev-parse HEAD)"
+rgit revert --no-edit HEAD >/dev/null; REV_C="$(rgit rev-parse HEAD)"
+check "… the revert really leaves the client as A had it, B really changed it" "$(rgit diff --quiet "$REV_A" "$REV_C" -- client && echo same):$(rgit diff --quiet "$REV_A" "$REV_B" -- client || echo differs)" "same:differs"
+CBUILD_ROOT="$TMP/client-revert" cbuild "$(devrel 9 "$REV_A")" TAG= PUBLISH=true EVENT=push SHA="$REV_C"
+check "push to main of the revert C (A published) → nothing built, the quick tests still run" "$(build_line)" "0:false:true"
+has "以来客户端没有改动" "$(cat "$TMP/c-out")" "… the plan says why"
+CBUILD_ROOT="$TMP/client-revert" cbuild "$(devrel 9 "$REV_A")" TAG= PUBLISH=true EVENT=schedule SHA="$REV_C"
+check "… the night on C: skipped before building, no quick tests (unchanged rule)" "$(build_line)" "0:false:false"
+CBUILD_ROOT="$TMP/client-revert" cbuild "$(devrel 9 "$REV_A")" TAG= PUBLISH=true EVENT=push SHA="$REV_B"
+check "… the push of B itself → build and publish" "$(build_line)" "0:true:true"
+
+echo "-- AGENTS.md: checking whether a build is complete — the command as written (review round 2 #6; only in AGENTS.md since PR #673)"
+sed -n '/<!-- client-nightly-check:begin -->/,/<!-- client-nightly-check:end -->/p' "$REPO_DIR/AGENTS.md" \
+    | sed -n '/^```bash$/,/^```$/p' | grep -v '^```' > "$TMP/cn-check-operations.md.sh"
+check "one check command" "$(wc -l < "$TMP/cn-check-operations.md.sh")" 1
 DOCV="$(grep -o '0\.[0-9]*\.[0-9]*-dev\.[0-9]*' "$TMP/cn-check-operations.md.sh")"
 doclist() {  # doclist <python expression editing the asset list `a`> → a release list for $DOCV
     node "$REPO_DIR/client/scripts/dev-release.mjs" --files "$DOCV" | python3 -c '
@@ -1773,10 +1791,122 @@ csim "$DISPATCH_MAIN" '{"publish":true,"force":true}' "$SAME"
 check "manual publish + force on the commit already out → built and checked, publish runs (and writes nothing, dev-release.mjs)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
 csim "$DISPATCH_BRANCH" '{"publish":false,"force":false}' "$SAME"
 check "manual check run on a branch → quick + full tests, both builds, nothing published; the branch's own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/feature/issue-628 cancel=true"
+csim "$PUSH_MAIN" '{}' "$CHANGED"
+check "push to main, client changed → quick tests, both builds, size gate, publish; its own never-cancelling group (GitHub#665)" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish-push cancel=false"
 csim "$PUSH_MAIN" '{}' "$SAME"
-check "push to main → quick tests only" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-refs/heads/main cancel=true"
+check "push to main, this commit already out → skipped before building, the quick tests still run" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-dev-publish-push cancel=false"
+csim "$PUSH_MAIN" '{}' "$CHANGED" '{"results":{"dev-release":"failure"}}'
+check "push to main, the publish step failed → no report (only the nightly run reports)" "$(job_of report-failure)" "skipped"
+csim '{"event_name":"push","ref":"refs/tags/client/v0.6.0","event":{}}' '{}' "$SAME"
+check "a pushed client tag keeps its own cancelling group (not a publishing queue)" "${SIM##* group=}" "client-refs/tags/client/v0.6.0 cancel=true"
 csim "$PR" '{}' "$SAME"
 check "pull request → quick tests only, the PR's own group" "$SIM" "ran=mode,test,test-rust,test-vitest group=client-630 cancel=true"
+
+echo "-- several runs in order: merges, nights and a manual publish meeting at the publish step (GitHub#665 review round 1, problem 5)"
+# The queues are the workflow's own (groups and cancel flags evaluated above from its expressions); how
+# GitHub runs a group is modelled: one running, one waiting, a newcomer replaces the waiting one, a
+# running one is never cancelled (cancel-in-progress false). What each run then does at the publish step
+# is the real decision of scripts/dev-release.mjs (`decide`), and what the next night does is the real
+# plan of scripts/dev-plan.mjs (`plan` on `latestBuild`).
+csim "$PUSH_MAIN" '{}' "$CHANGED"; QPUSH="$(jq -r .group "$TMP/c-sim.out"):$(jq -r .cancel "$TMP/c-sim.out")"
+csim "$NIGHT" '{}' "$CHANGED"; QNIGHT="$(jq -r .group "$TMP/c-sim.out"):$(jq -r .cancel "$TMP/c-sim.out")"
+csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED"; QMAN="$(jq -r .group "$TMP/c-sim.out"):$(jq -r .cancel "$TMP/c-sim.out")"
+QSLOT="$(python3 -c 'import sys,yaml; c=yaml.safe_load(open(sys.argv[1]))["jobs"]["dev-release"]["concurrency"]; print(c["group"] + ":" + str(c["cancel-in-progress"]).lower())' "$CLIENT_WORKFLOW")"
+check "the queues the model runs on: pushes alone, nights and manual publishes together, one publish slot; none cancels a running one" \
+    "$QPUSH|$QNIGHT|$QMAN|$QSLOT" "client-dev-publish-push:false|client-dev-publish:false|client-dev-publish:false|client-dev-release-publish:false"
+cat > "$TMP/c-order.mjs" <<'NODE'
+import { decide, devFiles } from 'DEVREL';
+import { plan, latestBuild } from 'DEVPLAN';
+const [qpush, qnight, qman, qslot] = process.argv.slice(2).map((q) => q.split(':'));
+const groupOf = { push: qpush[0], night: qnight[0], manual: qman[0] };
+for (const q of [qpush, qnight, qman, qslot]) if (q[1] !== 'false') throw new Error(`a queue cancels a running run: ${q}`);
+const sha = (n) => String(n).padStart(40, '0');
+const release = (n) => ({ tag_name: `client/v0.6.1-dev.${n}`, draft: false, prerelease: true, published_at: 'x', target_commitish: sha(n),
+  assets: devFiles(`0.6.1-dev.${n}`).map((name) => ({ name, state: 'uploaded', size: 10 })) });
+// one world: release list, queues (one running + one waiting per group), the publish slot, a log
+function world(published) {
+  const w = { list: published.map(release), groups: {}, slot: { running: null, waiting: null }, log: [], slotReplaced: 0, maxAtSlot: 0, runs: {} };
+  const q = (g) => (w.groups[g] ??= { running: null, waiting: null });
+  const start = (r) => { r.state = 'building'; q(r.group).running = r; w.log.push(`${r.id} starts`); };
+  w.arrive = (id, kind, n) => {
+    const r = { id, kind, n, group: groupOf[kind], state: 'new' }; w.runs[id] = r;
+    const g = q(r.group);
+    if (!g.running) return start(r);
+    if (g.waiting) { g.waiting.state = 'replaced'; w.log.push(`${g.waiting.id} replaced in its run queue by ${id}`); }
+    g.waiting = r; r.state = 'waiting';
+  };
+  const atSlot = () => [w.slot.running, w.slot.waiting].filter(Boolean).length;
+  const slotTake = (r) => { w.slot.running = r; r.state = 'publishing'; };
+  // its packages are done: the run reaches the publish job
+  w.packed = (id) => {
+    const r = w.runs[id]; if (r.state !== 'building') throw new Error(`${id} is not building (${r.state})`);
+    if (!w.slot.running) slotTake(r);
+    else { if (w.slot.waiting) { w.slotReplaced++; w.slot.waiting.state = 'publish-cancelled'; } w.slot.waiting = r; r.state = 'publish-waiting'; }
+    w.maxAtSlot = Math.max(w.maxAtSlot, atSlot());
+  };
+  // the run holding the slot publishes (or writes nothing), leaves the slot, and its run ends
+  w.publish = (id, ok = true) => {
+    const r = w.runs[id]; if (w.slot.running !== r) throw new Error(`${id} does not hold the publish slot`);
+    const d = decide(w.list, `0.6.1-dev.${r.n}`, devFiles(`0.6.1-dev.${r.n}`));
+    r.decision = d.action;
+    if (d.action === 'create' && ok) { w.list.push(release(r.n)); w.log.push(`${id} publishes dev.${r.n}`); }
+    else w.log.push(`${id}: ${d.action}${ok ? '' : ' (write failed)'}`);
+    if (!ok) r.decision = 'failed';
+    w.slot.running = null; r.state = 'done';
+    if (w.slot.waiting) { const n = w.slot.waiting; w.slot.waiting = null; slotTake(n); }
+    const g = q(r.group); g.running = null;
+    if (g.waiting) { const n = g.waiting; g.waiting = null; start(n); }
+  };
+  w.top = () => Math.max(0, ...w.list.map((x) => Number(x.tag_name.split('.').pop())));
+  w.nextNight = (head, changed) => plan({ latest: latestBuild(w.list, w.list.map((x) => ({ name: x.tag_name, sha: x.target_commitish }))), head: sha(head), force: false, changed });
+  return w;
+}
+const out = {};
+// 1. the older build arrives late: night (dev.10) and merge B (dev.11) build together, B finishes first
+{ const w = world([9]); w.arrive('N', 'night', 10); w.arrive('B', 'push', 11); w.arrive('C', 'push', 12);
+  w.packed('B'); w.packed('N'); w.publish('B'); w.publish('N'); w.packed('C'); w.publish('C');
+  out.oldLate = { night: w.runs.N.decision, top: w.top(), maxAtSlot: w.maxAtSlot, replacedAtSlot: w.slotReplaced, c: w.runs.C.decision }; }
+// 2. the newer build arrives late: the night publishes dev.10 first, merge B dev.11 after it
+{ const w = world([9]); w.arrive('N', 'night', 10); w.arrive('B', 'push', 11);
+  w.packed('N'); w.packed('B'); w.publish('N'); w.publish('B');
+  out.newLate = { night: w.runs.N.decision, b: w.runs.B.decision, top: w.top(), maxAtSlot: w.maxAtSlot, replacedAtSlot: w.slotReplaced }; }
+// 3. a third run arrives while one is publishing and one waits: merges B, C, D and a manual publish
+{ const w = world([9]); w.arrive('N', 'night', 10); w.arrive('B', 'push', 11); w.arrive('C', 'push', 12); w.arrive('D', 'push', 13); w.arrive('M', 'manual', 13);
+  w.packed('B'); w.packed('N'); w.publish('B'); w.publish('N');   // N done → M starts; B done → D starts
+  w.packed('M'); w.packed('D'); w.publish('M'); w.publish('D');
+  out.third = { c: w.runs.C.state, top: w.top(), maxAtSlot: w.maxAtSlot, replacedAtSlot: w.slotReplaced, m: w.runs.M.decision, d: w.runs.D.decision }; }
+// 4. a merge's write fails: the next night still sees the client changed since the newest published build
+{ const w = world([9]); w.arrive('B', 'push', 11); w.packed('B'); w.publish('B', false);
+  out.failed = { top: w.top(), night: w.nextNight(11, true).build, nightSameAsPublished: w.nextNight(9, true).build }; }
+// 5. every order of finishing for one push and one night per round, three rounds (exhaustive over 2 choices × 3)
+{ let worst = 0, replaced = 0, regress = 0;
+  for (let mask = 0; mask < 8; mask++) {
+    const w = world([1]); let v = 1;
+    for (let round = 0; round < 3; round++) {
+      const night = `N${round}`, push = `P${round}`; const vn = ++v, vp = ++v;
+      w.arrive(night, 'night', vn); w.arrive(push, 'push', vp);
+      const first = mask >> round & 1 ? [night, push] : [push, night];
+      w.packed(first[0]); w.packed(first[1]); const before = w.top(); w.publish(first[0]); w.publish(first[1]);
+      if (w.top() < before) regress++;
+    }
+    worst = Math.max(worst, w.maxAtSlot); replaced += w.slotReplaced;
+  }
+  out.every = { worst, replaced, regress }; }
+console.log(JSON.stringify(out));
+NODE
+sed -i "s|'DEVREL'|'$REPO_DIR/client/scripts/dev-release.mjs'|; s|'DEVPLAN'|'$REPO_DIR/client/scripts/dev-plan.mjs'|" "$TMP/c-order.mjs"
+ORDER="$(node "$TMP/c-order.mjs" "$QPUSH" "$QNIGHT" "$QMAN" "$QSLOT")" || ORDER="model failed"
+oj() { jq -c "$1" <<<"$ORDER" 2>/dev/null || echo "unreadable: $ORDER"; }
+check "older build late (night dev.10 after merge dev.11): the night writes nothing, the newer one stays; never more than two at the publish step, nothing replaced there" \
+    "$(oj '.oldLate')" '{"night":"skip","top":12,"maxAtSlot":2,"replacedAtSlot":0,"c":"create"}'
+check "newer build late (merge dev.11 after night dev.10): both written in order" \
+    "$(oj '.newLate')" '{"night":"create","b":"create","top":11,"maxAtSlot":2,"replacedAtSlot":0}'
+check "a third run while one publishes and one waits: only a merge still waiting in its own run queue is replaced (C, by D, which carries it); the publish step never replaces anything" \
+    "$(oj '.third')" '{"c":"replaced","top":13,"maxAtSlot":2,"replacedAtSlot":0,"m":"create","d":"done"}'
+check "a merge's write fails: nothing new out, the next night builds it (and would not on the published commit)" \
+    "$(oj '.failed')" '{"top":9,"night":true,"nightSameAsPublished":false}'
+check "every finishing order of a push and a night, three rounds: at most two at the publish step, nothing replaced, the newest version never goes down" \
+    "$(oj '.every')" '{"worst":2,"replaced":0,"regress":0}'
 
 echo "-- the quick-test verdict: red when the mode job failed, skipped only when it said nothing to test (review round 1 #4)"
 csim "$NIGHT" '{}' "$CHANGED" '{"results":{"mode":"failure"},"outputs":{}}'
