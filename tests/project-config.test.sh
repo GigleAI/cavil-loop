@@ -332,6 +332,8 @@ hook() {   # <时机>
         relink)  ln -sfn "\$HOOK_OTHER" "\$HOOK_LINK" ;;
         oldfd)   printf '# 保存前就开着的旧文件\nEXT_MARK="1"\n' >&9 ;;
         slow)    sleep 2 ;;
+        # 一直停在这里（锁还拿着），直到测试留下放行文件；最多等 60 秒，测试出错时也不会卡住
+        hold)    for _ in \$(seq 600); do [ -e "\$HOOK_LOG.release" ] && break; sleep 0.1; done ;;
     esac
 }
 HOOK
@@ -413,11 +415,14 @@ fresh_world; mkdir -p "$SANDBOX/p/alias"; ln -s "$CONF" "$SANDBOX/p/alias/cavil-
 printf 'PROJECT_ROOT=%s\nCODING_AGENT_CONFIG=%s\n' "$SANDBOX/p/alias" "$SANDBOX/p/alias/cavil-loop.config" > "$H/.config/cavil-loop/alias.conf"
 rev="$(rev_now)"; rev2="$(rev_now alias)"
 chk "两个项目名、同一个真实文件：指纹相同" "$rev" "$rev2"
-rm -f "$HLOG" "$HLOG.fired"
-( printf '{"MAX_CONCURRENT_WORKERS":"2"}' | env -i HOME="$H" PATH="$HK:$SYS_PATH" HOOK_MODE=after_snap:slow HOOK_LOG="$HLOG" HOOK_CONF="$CONF" bash "$PC" set widget --rev "$rev" > "$SANDBOX/a.out" 2>&1 ) &
+# 先到的那次停在拿着锁的地方，等这边放行；不靠固定睡几秒——机器忙时第二次保存可能在锁放开之后才到（PR #652 复审）
+rm -f "$HLOG" "$HLOG.fired" "$HLOG.release"
+( printf '{"MAX_CONCURRENT_WORKERS":"2"}' | env -i HOME="$H" PATH="$HK:$SYS_PATH" HOOK_MODE=after_snap:hold HOOK_LOG="$HLOG" HOOK_CONF="$CONF" bash "$PC" set widget --rev "$rev" > "$SANDBOX/a.out" 2>&1 ) &
 apid=$!
-for _ in $(seq 50); do [ -e "$HLOG.fired" ] && break; sleep 0.1; done
+for _ in $(seq 300); do [ -e "$HLOG.fired" ] && break; sleep 0.1; done
+chk "到达性：先到的那次确实停在拿着锁的地方" "$([ -e "$HLOG.fired" ] && echo held) $(kill -0 "$apid" 2>/dev/null && echo running)" "held running"
 save alias '{"REVIEW_MAX_ROUNDS":"9"}' "$rev2" --lock-wait 0
+: > "$HLOG.release"
 wait "$apid"
 chk "另一个项目名同时保存、不肯等：busy，没写；先到的照常 saved" "$RESULT $(tail -1 "$SANDBOX/a.out") $(grep -c "^REVIEW_MAX_ROUNDS='6'\$" "$CONF")" "RESULT=busy RESULT=saved 1"
 
