@@ -295,6 +295,24 @@ RUN_PATH="$NOSTRUCT:$SYS_PATH" save widget '{"MAX_CONCURRENT_WORKERS":"2"}' "$re
 chk "结构读不出来：改已有的行 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
 RUN_PATH="$NOSTRUCT:$SYS_PATH" save widget '{"POLL_IDLE_PROBE":"false"}' "$rev"
 chk "结构读不出来：追加没写的项 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+# 数「名字出现几次」的 awk、找原文件赋值行的那次 grep：先打印完整的结果、再以失败退出，也算读不出——
+# 不能只看输出的行数（PR #664 复审第 1 轮）。包装真实的 awk / grep，其余调用照常
+for broken in awk grep; do
+    BROKE="$SANDBOX/broke-$broken"; rm -rf "$BROKE"; mkdir -p "$BROKE"
+    if [ "$broken" = awk ]; then
+        printf '#!%s\n%s "$@"\nexit 2\n' "$(type -P bash)" "$(type -P awk)" > "$BROKE/awk"
+    else
+        printf '#!%s\ncase "$*" in *"[A-Za-z0-9_]+="*) %s "$@"; exit 2 ;; esac\nexec %s "$@"\n' "$(type -P bash)" "$(type -P grep)" "$(type -P grep)" > "$BROKE/grep"
+    fi
+    chmod +x "$BROKE/$broken"
+    G="$(RUN_PATH="$BROKE:$SYS_PATH" run get widget)"; before="$(sum "$CONF")"
+    chk "$broken 打印完结果后失败：state 仍是 ok，可改的项一个都没有" "$(jq -r .state <<<"$G") $(jq '[.fields[] | select(.editable)] | length' <<<"$G")" 'ok 0'
+    chk_has "$broken 打印完结果后失败：写明原因" "$(why "$G" MAX_CONCURRENT_WORKERS)" "读不出配置文件的结构"
+    RUN_PATH="$BROKE:$SYS_PATH" save widget '{"MAX_CONCURRENT_WORKERS":"2"}' "$(jq -r .rev <<<"$G")"
+    chk "$broken 打印完结果后失败：改已有的行 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+    RUN_PATH="$BROKE:$SYS_PATH" save widget '{"POLL_IDLE_PROBE":"false"}' "$(jq -r .rev <<<"$G")"
+    chk "$broken 打印完结果后失败：追加没写的项 → not_editable，文件不变" "$RESULT $(sum "$CONF")" "RESULT=not_editable $before"
+done
 save widget '{"MAX_CONCURRENT_WORKERS":"2","POLL_IDLE_PROBE":"false"}' "$rev"
 chk "可达性：同一份文件、结构读得出来时这两项都写得进去" "$RESULT $(grep -c '^MAX_CONCURRENT_WORKERS=2$' "$CONF") $(tail -1 "$CONF")" 'RESULT=saved 1 POLL_IDLE_PROBE="false"'
 
