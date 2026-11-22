@@ -217,7 +217,7 @@ mf_reread_tick() {
             mf_set '.prs[$p] += ($x[0] + {body: "ok", owner: "known", target: $t, work: $t, rereads: (.prs[$p].rereads + 1)})
                     | (if $note != "" then .prs[$p].fb_note = $note else . end)
                     | (if .prs[$p].fb != null then .prs[$p].fb.superseded = true else . end)
-                    | .prs[$p].handed = null | .targets[$t].wake = true' \
+                    | .prs[$p].handed = null | del(.prs[$p].pr_labeled, .prs[$p].pr_superseded) | .targets[$t].wake = true' \
                 --arg p "$pr" --slurpfile x "$STATE_DIR/.mf-parsed" --arg t "$target" --arg note "$note" || continue
             log "  合并后交接：PR #$pr 的正文补读到了（目标 #${target}）"
             [ "${AUTO_CLEANUP_ON_MERGE:-true}" = false ] || sub_issue_rollup_enqueue "$target" "${STATE_FILE:-$STATE_DIR/state.json}"
@@ -628,7 +628,11 @@ mf_target_tick() {   # <目标> [兜底 PR]
     else
         # 目标就是 PR 本身：Done，有待办（或兜底）时另挂 pending/human；读回确认才算写成
         if ! mf_pr_labels "$n" "$(printf '%s' "$c1" | jq -r .reminder)"; then mf_try_fail "$n" "PR #$n 的标签没写成"; return 1; fi
-        mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
+        # 「标签已处理」只在收尾写成，或不是兜底时的让位（新一轮接手、交接到此为止）才记；兜底被新一轮挡住时不记，
+        # 下面留在兜底队列重试
+        if [ "$MF_PR_LABEL_RESULT" = done ] || [ -z "$fb" ]; then
+            mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
+        fi
         if [ -n "$fb" ]; then
             # 兜底送达：只认这次收尾按同一判定读回确认的提醒（MF_PR_LABEL_RESULT=done）。新一轮的流程标签在场时
             # 标签一个不动、不算送达，照常计一次失败留在兜底队列里：前 30 轮每轮再看，之后每 30 轮一次，

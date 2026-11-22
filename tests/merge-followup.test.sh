@@ -534,6 +534,22 @@ jset events.json '.["351"] += [{event:"unlabeled", label:{name:"pending/review"}
 tick
 chk "新一轮标签摘掉后：Done + 提醒、记送达、评论仍一条" "$(labels_of 351)/$(jq -r '.merge_followup.prs["351"].fb.sent // false' "$STATE")/$(comments_of 351)" "Done,pending/human/true/1"
 
+echo "㊱ 兜底被新一轮挡住 → 不记 PR 标签已处理；之后新一轮标签摘掉、正文补读到指向关联 issue → 正式交接真的给 PR 收尾"
+fresh
+mkissue 360 "" open
+mkmerged 361 chore/misc null 2026-03-01T10:00:00Z ""
+jset labels.json '.["361"] = ["pending/review"]'
+jset events.json '.["361"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}]'
+for _ in $(seq 1 31); do tick; done
+chk "兜底被挡：PR 标签原样、没记送达、没记 PR 标签已处理" "$(labels_of 361)/$(jq -r '.merge_followup.prs["361"].fb.sent // false' "$STATE")/$(jq -r '.merge_followup.prs["361"].pr_labeled // false' "$STATE")" "pending/review/false/false"
+# 正文 30 轮之后每 30 轮补读一次：跑到补读那一轮的前一轮，再同时摘掉新一轮标签、让正文恢复（兜底来不及先送达）
+for _ in $(seq 1 30); do [ $(( ($(jq -r '.merge_followup.round // 0' "$STATE") + 1) % 30 )) -eq 0 ] && break; tick; done
+jset labels.json '.["361"] = []'
+jset events.json '.["361"] += [{event:"unlabeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-03T00:00:00Z"}]'
+jset items.json '.["361"].body = ("Refs #360\n\n" + $l)' --arg l "$LIST"
+tick
+chk "正文补读到后：issue 一条清单、PR 真的打上 Done、交接完成" "$(comments_of 360)/$(labels_of 361)/$(jq -r '.merge_followup.prs["361"].handed // "none"' "$STATE")" "1/Done/1"
+
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"
 [ "$fail" -eq 0 ]
