@@ -160,7 +160,7 @@ function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick 
   return { html, note };
 }
 
-function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string): string {
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string, canQuote = false): string {
   // the login is GitHub's; "deleted account" is the client's own words
   const who = e.author ? `<b data-verbatim="github">${escapeHtml(e.author)}</b>` : `<b>${escapeHtml(t('（已删除的账号）'))}</b>`;
   const at = escapeHtml(when(e.at));
@@ -174,16 +174,30 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
         : `${who} · ${at}`;
   // GitHub#503: with a usage record, the preview leaves out the footer's own line
   // GitHub#472: the excerpt is GitHub's words, marked as such; only the client's own fallbacks are not
-  const quoted = plainExcerpt(e.wallSecs !== undefined ? withoutFooter(e.bodyHtml) : e.bodyHtml);
-  const excerpt = quoted
-    ? `<span data-verbatim="github">${escapeHtml(quoted)}</span>`
-    : escapeHtml(e.lineComments?.length ? t('{n} 条逐行评论', { n: e.lineComments.length }) : t('（没有文字）'));
+  // GitHub#651: a round log's preview is its last section's fold title (written by the loop)
+  const rl = e.roundLog;
+  const quoted = plainExcerpt(e.wallSecs !== undefined && !rl ? withoutFooter(e.bodyHtml) : e.bodyHtml);
+  const excerpt =
+    rl?.latest !== undefined
+      ? `<span class="latest">${escapeHtml(t('最新：'))}</span><span data-verbatim="github">${escapeHtml(rl.latest)}</span>`
+      : quoted
+        ? `<span data-verbatim="github">${escapeHtml(quoted)}</span>`
+        : escapeHtml(e.lineComments?.length ? t('{n} 条逐行评论', { n: e.lineComments.length }) : t('（没有文字）'));
   // GitHub#503: the head carries the round's total time where the web link used to be;
   // the link to this one entry on the web sits at the bottom of the unfolded entry
-  const dur =
-    e.wallSecs !== undefined
-      ? ` · <span class="dur" data-wall="${e.wallSecs}" title="${escapeHtml(t('这一轮 agent 的总耗时（取自评论末尾的用量记录）'))}">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`
-      : '';
+  let dur = '';
+  if (rl) {
+    // GitHub#651: the sum of the sections' times ("≥" when some section has no record — never as 0) and the counts
+    if (e.wallSecs !== undefined) {
+      const tip = rl.missing
+        ? t('{s} 节里有 {m} 节没有用量记录、未计入；已计入的 {k} 节相加', { s: rl.sections, m: rl.missing, k: rl.sections - rl.missing })
+        : t('{s} 节耗时相加（worker {w} 节、复审 {r} 节）；只算 agent 干活的时间，不含两节之间的等待', { s: rl.sections, w: rl.workers, r: rl.reviews });
+      dur += ` · <span class="dur" data-wall="${e.wallSecs}"${rl.missing ? ` data-missing="${rl.missing}"` : ''} title="${escapeHtml(tip)}">⏱️ ${rl.missing ? '≥ ' : ''}${escapeHtml(formatDuration(e.wallSecs))}</span>`;
+    }
+    dur += ` · <span class="rounds" data-workers="${rl.workers}" data-reviews="${rl.reviews}">${escapeHtml(t('交付 {w} 次 · 复审 {r} 次', { w: rl.workers, r: rl.reviews }))}</span>`;
+  } else if (e.wallSecs !== undefined) {
+    dur = ` · <span class="dur" data-wall="${e.wallSecs}" title="${escapeHtml(t('这一轮 agent 的总耗时（取自评论末尾的用量记录）'))}">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`;
+  }
   const webLink = e.url ? `<a class="web" href="${escapeHtml(e.url)}">${escapeHtml(t('在网页上看这一条'))}</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">${escapeHtml(webLink ? t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载；{link}', { n: blocked }) : t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载', { n: blocked })).replace('{link}', () => webLink)}</div>` : '';
@@ -193,8 +207,13 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
       ? `<button type="button" class="edit" data-edit${canTick ? '' : ` disabled title="${escapeHtml(t('离线或有修改在途时不能编辑'))}"`}>${escapeHtml(t('编辑'))}</button>`
       : '';
+  // GitHub#653: quote this entry (or the words selected in it) into the reply box — only while the box takes text
+  const quoteBtn =
+    e.quoteSource !== undefined
+      ? `<button type="button" class="edit quote" data-quote${canQuote ? '' : ` disabled title="${escapeHtml(t('离线或有操作在途时不能回复'))}"`}>${escapeHtml(t('引用回复'))}</button>`
+      : '';
   // below everything the entry holds (a review's line comments included)
-  const tools = webLink || editBtn ? `<div class="tools">${webLink}${editBtn}</div>` : '';
+  const tools = webLink || editBtn || quoteBtn ? `<div class="tools">${webLink}${editBtn}${quoteBtn}</div>` : '';
   const body = (e.bodyHtml.trim() ? `<div class="md" data-verbatim="github">${tasks.html}</div>` : '') + tasks.note + note;
   let lines = '';
   if (e.lineComments?.length) {
@@ -246,10 +265,12 @@ export interface TimelineOptions {
   web?: string;
   /** GitHub#395: no connection — "reload" of a failed image cannot be asked for */
   offline?: boolean;
+  /** GitHub#653: the reply box takes text now — "引用回复" is enabled */
+  canQuote?: boolean;
 }
 
 export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
-  const { render = '', canTick = false, view = null, pending = null, wrap = false, web, offline = false } = opts;
+  const { render = '', canTick = false, view = null, pending = null, wrap = false, web, offline = false, canQuote = false } = opts;
   const known = new Set(view?.known ?? []);
   const opened = new Set(view?.open ?? []);
   const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
@@ -291,7 +312,7 @@ ${codeCss(dark, '.md ')}
 .cb{position:relative;margin:1em 0}
 .cb>pre{margin:0}
 body[data-wrap] .md pre{white-space:pre-wrap;overflow-wrap:anywhere}
-.cbar{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0}
+.cbar{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;-webkit-user-select:none;user-select:none}
 .cb:hover>.cbar,.cb:focus-within>.cbar{opacity:1}
 .cbtn{font:12px/18px -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;color:${muted};background:${bg};border:1px solid ${border};border-radius:6px;padding:1px 8px;cursor:pointer}
 .cbtn:focus-visible{outline:2px solid ${accent};outline-offset:1px}
@@ -320,6 +341,7 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
+.tools .edit+.edit{margin-left:6px}
 .tools .web{font-size:12px;margin-right:10px}
 .tools .web:last-child{margin-right:0}
 .blocked .web{margin-left:2px}
@@ -332,7 +354,7 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 @keyframes imgspin{to{transform:rotate(360deg)}}
 [data-img-hidden]{display:none!important}
 </style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}"${wrap ? ' data-wrap=""' : ''}${offline ? ' data-offline=""' : ''}>
-${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap, web)).join('\n')}
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap, web, canQuote)).join('\n')}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }

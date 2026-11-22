@@ -58,6 +58,7 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 │   ├── _outsider.sh               ← Comments by outside accounts on autopilot items: one scan used by the read command, the pre-dispatch check and the merge permit (GitHub#391)
 │   ├── outsider_content.py        ← Its text side: strip links / code / hidden text, fingerprints, the per-version records, the screening cache, the agent's view
 │   ├── outsider-read.sh           ← The read command a worker / reviewer uses on an autopilot item instead of `gh … --comments` (GitHub#391)
+│   ├── round-log.sh / round_log.py ← The round log: agent-to-agent rounds in one comment, one folded section each titled ⏱️ time · role · first line (GitHub#610 / #651)
 │   ├── feedback-fingerprint.sh    ← The answer record for question-only rounds: snapshot what the answer saw, compare on hand-back (GitHub#614)
 │   ├── feedback_fingerprint.py    ← Its rules: which feedback counts, the one record format, the resume / new-feedback / need-continue verdict
 │   ├── _step.sh                   ← Result protocol + retries shared by the three step scripts below (GitHub#599)
@@ -586,6 +587,7 @@ the line itself.
 - **The footer's test time** — entry: `scripts/drivers/token-usage/test-time.sh`, `test_time.py` · read first: `scripts/drivers/token-usage/test_time.py` (header) · tests: `tests/footer-test-time.test.sh` (~20 s)
 - **AI and test time per merged PR** — entry: `scripts/pr-time-stats.py` · read first: `scripts/pr-time-stats.py` (header) · tests: `tests/pr-time-stats.test.sh` (~5 s)
 - **The comment usage footer** — entry: `comment-footer.sh`, `comment_footer.py`, `ai_time.py`, `${COMMENT_FOOTER_CMD}` · read first: `scripts/drivers/token-usage/comment_footer.py` (header) · tests: `tests/comment-footer.test.sh` (~10 s)
+- **The round log's per-section fold titles and the client's summary of it** — entry: `section_title`, `first_line`, `wall_secs_of`, `section_text`, `scripts/round_log.py`, `roundLogSections`, `roundLogOf`, `isRoundLog` (`client/src/shared/agentMetrics.ts`), `prompts/round-log.md` · read first: `scripts/round_log.py` (header) · tests: `tests/round-log.test.sh` (group 11, ~5 s of the ~1 min file), `cd client && npx vitest run test/unit/round-log-summary.test.ts`
 - **The remote CI segment of the footer** — entry: `scripts/drivers/token-usage/ci_wait.py`, `--ci-wait`, `claude_commands`, `codex_commands`, `test_time.py`, `request_spans` · read first: `scripts/drivers/token-usage/ci_wait.py` (header) · tests: `tests/footer-ci-wait.test.sh` (~5 s), `tests/footer-test-time.test.sh`, `tests/comment-footer.test.sh`
 - Price gap-fill (markers / `price_fetch.py` / the fetched trust bucket) → `tests/price-fetch.test.sh`
 - **GitHub token redaction** — entry: `scripts/redact_tokens.py`, `scripts/_redact.sh`, `log()`, `start_session_logging`, `session_log_pipe_ensure`, `redact_scan_tick` · read first: `scripts/redact_tokens.py` (header) · tests: `tests/token-redaction.test.sh` (~35 s), `tests/migrate-legacy.test.sh`

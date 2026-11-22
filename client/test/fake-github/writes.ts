@@ -85,6 +85,8 @@ export interface WritableState {
   rejectLabelCreate: Set<string>;
   /** GitHub#381: what the markdown renderer answers, whatever was sent (a recorded rendering of GitHub's); null = the text in a <p> */
   markdownHtml: string | null;
+  /** GitHub#653: answer a preview with the text really rendered (markdownRender) instead of the text as one escaped paragraph */
+  markdownRender: boolean;
   /** Project keys (`org/owner/n`) the account may not change: viewerCanUpdate false, mutations refused */
   readOnlyProjects: Set<string>;
   /** drop the connection of every write request (offline in the middle of a change) */
@@ -218,6 +220,7 @@ export function defaultWritable(): WritableState {
     noPermissionsField: new Set(),
     rejectLabelCreate: new Set(),
     markdownHtml: null,
+    markdownRender: false,
     readOnlyProjects: new Set(),
     dropWrites: false,
     detailPageSize: 100,
@@ -581,7 +584,7 @@ export function handleRest(store: Store, method: string, path: string, body: any
   const w = store.w;
   if (method === 'POST' && path === '/api/markdown') {
     const esc = String(body?.text ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
-    sendText(w.markdownHtml ?? `<p>${esc}</p>`);
+    sendText(w.markdownHtml ?? (w.markdownRender ? renderMarkdown(String(body?.text ?? '')) : `<p>${esc}</p>`));
     return true;
   }
   // GitHub#559: the repository itself — its `permissions` say whether the account may write (create labels)
