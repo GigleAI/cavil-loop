@@ -552,7 +552,13 @@ chk "check：-f 的参数不当地址（-fS 是配置文件名 S）" "$(ck -f S 
 chk "check：-S 在子命令之后不算全局选项" "$(ck capture-pane -p -S -)" "in"
 chk "check：看不懂的全局选项" "$(ck -Z ls)" "out"
 chk "check：地址在服务目录里、但所在目录已不存在（复审 #9）" "$(TMUX_TMPDIR="$OW/s/gone" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls > /dev/null && echo in || echo out)" "out"
-chk "check：放行时打印解析后的真实地址（包装用 -S 交给 tmux）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls)" "$(cd "$OW/s" && pwd -P)/tmux-$(id -u)/default"
+RS=$(cd "$OW/s" && pwd -P); U=$(id -u)
+ckout() { TMUX_TMPDIR="$OW/s" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" "$@"; }
+chk "check：放行时给出要原样执行的参数，只有一个 -S（核过的真实地址）" "$(TMUX_TMPDIR="$OW/alias" TMUX= python3 "$TEST_DIR/lib/tmux_sandbox_reap.py" check "$OW/s" ls)" "-S $RS/tmux-$U/default ls"
+chk "check：原来的全局 -S（别名）换成真实地址，子命令自己的 -S 不动（复审 #11）" "$(ckout -S "$OW/alias/tmux-$U/default" -2 capture-pane -p -S -)" "-S $RS/tmux-$U/default -2 capture-pane -p -S -"
+chk "check：两个全局 -S 只剩一个" "$(ckout -S "$OW/s/tmux-$U/a" -S "$OW/alias/tmux-$U/b" ls)" "-S $RS/tmux-$U/b ls"
+chk "check：-L 去掉，换成它对应的地址；别的全局选项和参数原样" "$(ckout -uL n -f /dev/null ls -F x)" "-S $RS/tmux-$U/n -u -f /dev/null ls -F x"
+chk "check：-- 保留" "$(ckout -- ls)" "-S $RS/tmux-$U/default -- ls"
 chk "连错服务：别处的地址上没起服务" "$([ -e "$T/rtbad.d/elsewhere" ] || [ -e "$T/rtbad.d/other.sock" ] && echo yes || echo no)" "no"
 
 REAL_TMUX=$(command -v tmux)
@@ -575,6 +581,31 @@ chk "沙盒外服务：收尾报出" "$(grep -c '发现沙盒外的 tmux 服务'
 chk "沙盒外服务：三个都报出（另一个目录、临时根里、符号链接）" "$(grep '发现沙盒外的 tmux 服务' "$T/rtstray.out" | grep -o '[0-9][0-9]*（' | wc -l)" "3"
 chk "沙盒外服务：已被结束" "$(alive_all "$T/rtstray.d/pid")" "0"
 chk "沙盒外服务：它的临时目录照样删掉" "$(d=$(cat "$T/rtstray.d/dir" 2>/dev/null); [ -n "$d" ] && [ ! -e "$d" ] && echo yes)" "yes"
+
+echo "【20】包装交给真 tmux 的参数：只有核过的那一个地址（复审 #11）"
+REC="$T/recbin"; mkdir -p "$REC"
+REAL_TMUX=$(command -v tmux)
+cat > "$REC/tmux" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/rec.log"
+exec "$REAL_TMUX" "\$@"
+SH
+chmod +x "$REC/tmux"; : > "$T/rec.log"
+run_case fwd "$REC" <<'EOF'
+tmux_sandbox_start
+ln -s "$TMUX_TMPDIR" "$OUT/alias"
+tmux -S "$OUT/alias/tmux-$(id -u)/default" has-session -t '=cavil-sandbox-keep' && echo FWD-ALIAS-OK
+tmux -S "$TMUX_TMPDIR/tmux-$(id -u)/default" -S "$OUT/alias/tmux-$(id -u)/default" has-session -t '=cavil-sandbox-keep' && echo FWD-TWO-OK
+echo "$TMUX_TMPDIR" > "$OUT/dir"
+EOF
+D2=$(cat "$T/fwd.d/dir")   # 启动时已解析成真实路径
+# 只看经包装的调用（包装总是先加 -f /dev/null；沙盒启动时自己直接调真 tmux 的那几次不算）
+grep -- '^-f /dev/null .*has-session' "$T/rec.log" > "$T/rec.wrapped"
+chk "转发：退出码 0" "$CASE_RC" "0"
+chk "转发：别名地址照常连上、两个 -S 照常连上" "$(grep -c -e FWD-ALIAS-OK -e FWD-TWO-OK "$T/fwd.out")" "2"
+chk "转发：真 tmux 收到的 has-session 调用，每次恰好一个 -S" "$(wc -l < "$T/rec.wrapped" | tr -d ' '):$(awk '{n=0; for(i=1;i<=NF;i++) if($i=="-S") n++; print n}' "$T/rec.wrapped" | sort -u | tr '\n' ' ')" "2:1 "
+chk "转发：那个 -S 就是核过的真实地址，别名没传下去" "$(grep -c -- "^-f /dev/null -S $D2/tmux-$(id -u)/default has-session" "$T/rec.wrapped")" "2"
+chk "转发：别名路径一次也没交给真 tmux" "$(grep -c '/alias/' "$T/rec.log")" "0"
 
 echo
 echo "通过 $pass / 失败 $fail"

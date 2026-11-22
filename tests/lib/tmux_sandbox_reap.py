@@ -20,6 +20,7 @@ SIGKILL，再一起等最多 2 秒。每一步的等待都不超过剩下的总�
 import getopt
 import os
 import select
+import shlex
 import signal
 import sys
 import time
@@ -153,11 +154,15 @@ def server_sockets(pid):
     return found
 
 
+def inside(base_real, real):
+    """已解析的真实路径 real 是否在已解析的服务目录 base_real 里（服务目录本身不算）。"""
+    return real.startswith(base_real + os.sep)
+
+
 def owns(sockdir, path):
     """服务地址 path 是否在本次运行的服务目录 sockdir 里：两边都解析成真实路径再比
-    （父目录分量、符号链接都按实际位置算）。包装和收尾共用这一条规则。"""
-    base = os.path.realpath(sockdir)
-    return os.path.realpath(path).startswith(base + os.sep)
+    （父目录分量、符号链接都按实际位置算）。包装（经 check）和收尾共用这一条规则。"""
+    return inside(os.path.realpath(sockdir), os.path.realpath(path))
 
 
 # tmux 自己的全局选项（tmux.c 的 getopt 串）：合并写法（`-2S 地址`、`-uL名字`）照 getopt 拆开
@@ -168,22 +173,36 @@ def tmux_socket(argv, env):
     """这次 tmux 调用实际会连的服务地址，照 tmux 自己的顺序：-S；否则 -L 名字在 TMUX_TMPDIR 下；
     否则 TMUX 里记的；否则 TMUX_TMPDIR 下的 default（TMUX_TMPDIR 没设或为空时用 /tmp）。
     看不懂的全局选项抛 getopt.GetoptError（调用方当「不在」拒绝）。"""
-    opts, _ = getopt.getopt(argv, TMUX_GLOBAL_OPTS)
+    return tmux_parse(argv, env)[0]
+
+
+def tmux_parse(argv, env):
+    """(地址, 去掉 -S / -L 后的全局选项, 子命令及其后的参数, 原参数里有没有 --)。"""
+    opts, rest = getopt.getopt(argv, TMUX_GLOBAL_OPTS)
+    dashdash = len(argv) > len(rest) and argv[len(argv) - len(rest) - 1] == "--"
+    kept = []
+    for o, v in opts:
+        if o in ("-S", "-L"):
+            continue
+        kept.append(o)
+        if o[1] in "cfT":   # 带参数的其余全局选项，参数原样带上
+            kept.append(v)
     sock = label = None
     for o, v in opts:
         if o == "-S":
             sock = v
         elif o == "-L":
             label = v
-    if sock:
-        return sock
-    tmpdir = env.get("TMUX_TMPDIR") or "/tmp"
-    base = "%s/tmux-%d" % (tmpdir, os.getuid())
-    if label:
-        return "%s/%s" % (base, label)
-    if env.get("TMUX"):
-        return env["TMUX"].split(",", 1)[0]
-    return base + "/default"
+    if not sock:
+        tmpdir = env.get("TMUX_TMPDIR") or "/tmp"
+        base = "%s/tmux-%d" % (tmpdir, os.getuid())
+        if label:
+            sock = "%s/%s" % (base, label)
+        elif env.get("TMUX"):
+            sock = env["TMUX"].split(",", 1)[0]
+        else:
+            sock = base + "/default"
+    return sock, kept, rest, dashdash
 
 
 def stray_tmux(pid, real, sandbox):
@@ -205,24 +224,26 @@ def stray_tmux(pid, real, sandbox):
 def main():
     args = sys.argv[1:]
     if args[:1] == ["check"]:
-        # 包装用：check <服务目录> <tmux 的参数…>。这次调用连的地址在服务目录里、且所在目录存在：
-        # 打印它解析后的真实地址、退出 0（包装用 -S 原样交给 tmux）；否则打印原因、退出 1
+        # 包装用：check <服务目录> <tmux 的参数…>。地址只解析一次，判断的和交出去的是同一个结果：
+        # 在服务目录里、所在目录存在 → 退出 0，打印要原样执行的完整参数（shell 引号）：
+        # 「-S <核过的真实地址>」+ 去掉 -S / -L 的其余全局选项 + 子命令及其后的参数（子命令自己的
+        # 选项不动）。tmux 只会看到这一个地址（PR #660 复审 #11：原来前置一个 -S，原参数里的 -S
+        # 排在后面、tmux 取最后一个）。否则打印原因、退出 1。
         try:
-            sock = tmux_socket(args[2:], os.environ)
+            sock, kept, rest, dashdash = tmux_parse(args[2:], os.environ)
         except getopt.GetoptError as e:
             print("看不懂的 tmux 全局选项（%s）" % e)
             return 1
-        if not owns(args[1], sock):
+        real = os.path.realpath(sock)
+        if not inside(os.path.realpath(args[1]), real):
             print("服务地址 %s" % sock)
             return 1
-        real = os.path.realpath(sock)
         if not os.path.isdir(os.path.dirname(real)):
-            # 目录不在：tmux 自己选址时会跳过它、退回别的临时目录（tmux.c 的 expand_paths）；
-            # 包装又总是用 -S 把这里核过的地址交给 tmux，这时连不上也起不了——干脆在调用前拒绝
+            # 目录不在：tmux 自己选址时会跳过它、退回别的临时目录（tmux.c 的 expand_paths）
             print("服务地址 %s 所在的目录不存在" % sock)
             return 1
-        # 打印核过的真实地址：包装用 -S 原样交给 tmux，tmux 就不会再自己挑地址
-        print(real)
+        final = ["-S", real] + kept + (["--"] if dashdash else []) + rest
+        print(" ".join(shlex.quote(a) for a in final))
         return 0
     if args[:1] == ["owns"]:
         # 包装用：owns <服务目录> <地址>，在里面退出 0，不在 1，判断不了 2
