@@ -146,9 +146,9 @@ export function drawDiagram(src: string, dark: boolean): Promise<DrawResult> {
   if (known) return known;
   const p = ask(src, dark).catch((): DrawResult => ({ ok: false, why: 'failed' }));
   done.set(key, p);
-  // "failed" (the helper, not the source) is not kept: asked again, it is drawn again
+  // what drawAgain asks again ("failed": the helper, not the source) is not kept: asked again, it is drawn again
   void p.then((r) => {
-    if (!r.ok && r.why === 'failed' && done.get(key) === p) done.delete(key);
+    if (drawAgain(r) && done.get(key) === p) done.delete(key);
   });
   return p;
 }

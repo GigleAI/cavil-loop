@@ -131,6 +131,15 @@ test('GitHub#680: a mermaid diagram is drawn on this machine and shown as a pict
   expect(dark).toMatch(/^data:image\/svg\+xml;base64,/);
   expect(dark).not.toBe(light);
 
+  // ---- 4b. drawn again from scratch (all folded, all unfolded: a new rendering asks every diagram again): a picture
+  // and a source mermaid cannot read are both kept by the window — nothing is drawn again ----
+  await detail.getByTestId('unfold-toggle').click();
+  await detail.getByTestId('unfold-toggle').click();
+  await expect(entry('C-bad').locator('.mmdbox[data-state="failed"]')).toContainText('写法有误', { timeout: 30_000 });
+  await expect(entry('C-old').locator('img.mmdimg')).toBeVisible({ timeout: 30_000 });
+  await page.waitForTimeout(500);
+  expect(await helper.evaluate(() => document.body.getAttribute('data-drawn'))).toBe('4');
+
   // ---- 5. the reply preview: the picture (already drawn for this theme: nothing drawn again) ----
   env.fake.state.w.markdownHtml = GH;
   await detail.getByTestId('reply-input').fill('看图');
