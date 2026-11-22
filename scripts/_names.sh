@@ -28,7 +28,12 @@ CAVIL_NAME="cavil-loop"
 # 配置项的新旧名字（GitHub#97）：<新名字的值> <旧名字的值> → 新名字有值用新的，否则用旧的。
 # _lib.sh（外部需求机器人的各项配置）和 setup.sh（建等待标签）都调它，规则只写这一份。
 cavil_pick_setting() {
-    if [ -n "$1" ]; then printf '%s' "$1"; else printf '%s' "$2"; fi
+    local __cps_v; cavil_pick_setting_to __cps_v "$1" "$2"; printf '%s' "$__cps_v"
+}
+# 同一条规则，结果写进调用方给的变量名，不经命令替换：project-config.sh 每次读要对 84 项各挑一次，
+# 每项起一个子 shell 是它在 CI 上卡时限的主要开销之一（GitHub#662）
+cavil_pick_setting_to() {   # <变量名> <新名字的值> <旧名字的值>
+    if [ -n "$2" ]; then printf -v "$1" '%s' "$2"; else printf -v "$1" '%s' "$3"; fi
 }
 # 有早期名字的配置项：一行一对「新名字 早期名字」。_lib.sh 按这张表逐项挑值，
 # project-config.sh（客户端的项目配置窗口）按同一张表算显示的值——只在这里写一份。
@@ -39,9 +44,14 @@ REQUESTER_BOT_ORIGIN_MARKER RELAY_ORIGIN_MARKER
 REQUESTER_BOT_REPORT_FIRST RELAY_REPORT_FIRST"
 # 这一项的早期名字（没有就输出空）
 cavil_setting_early_name() {   # <新名字>
-    local n o
-    while read -r n o; do
-        [ "$n" = "$1" ] && { printf '%s' "$o"; return 0; }
+    local __cse_v; cavil_setting_early_name_to __cse_v "$1"; printf '%s' "$__cse_v"
+}
+# 同上，结果写进调用方给的变量名（没有早期名字就是空），不经命令替换（GitHub#662）
+cavil_setting_early_name_to() {   # <变量名> <新名字>
+    local __cse_n __cse_o
+    printf -v "$1" '%s' ""
+    while read -r __cse_n __cse_o; do
+        [ "$__cse_n" = "$2" ] && { printf -v "$1" '%s' "$__cse_o"; return 0; }
     done <<EOF_EARLY
 $CAVIL_SETTING_EARLY_NAMES
 EOF_EARLY

@@ -72,6 +72,7 @@ price-fetch 8
 price-identifiability 2
 project-auto-add 85
 project-config 133
+project-config-compat 200
 project-config-poll 29
 project-priority 1
 prompt-compose 1

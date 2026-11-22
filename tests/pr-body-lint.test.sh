@@ -10,7 +10,7 @@
 #   【2】第一行就是摘要：合格样例用 daemon 列「同时在进行的工作」的同一份规则读出的正是第一行那句
 #   【3】真实派工的成品 prompt：issue 开干、拆出的子项、PR 返工三处都有「PR 正文版式」段且逐字相同，
 #        命令路径已填好、照抄就能跑出结果；开 PR 那一步用 --body-file；首次设计轮没有这段
-#   【4】复审不变：同一份审查标准、同一份模板下，复审 prompt 与合并基点的脚本拼出的逐字相同；审查标准随主干走（新条目在新标准里有、旧的没有）
+#   【4】复审不变：同一份审查标准、同一份提示词下，复审 prompt 与主干脚本拼出的逐字相同；审查标准随主干走（新条目在新标准里有、旧的没有）
 #   【5】命令目录：托管安装的入口齐全时用入口目录，少了版式检查的入口就整组退回本次发布的 scripts/
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -304,7 +304,11 @@ has() { grep -qF -- "$2" "$1"; }
 
 OLD="$TMP/old"; mkdir -p "$OLD"
 BASE=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || true)
-[ -n "$BASE" ] && git -C "$REPO_DIR" archive "$BASE" | tar -x -C "$OLD"
+# 合并基点的脚本配本版的 prompts/：【4】只比脚本带来的差异。整棵树都取合并基点的话，别的 PR 有意改的
+# 提示词（如复审问题编号的规则）也会算成「复审 prompt 变了」，和 PR 正文检查无关（PR #652 的 CI 红过）
+if [ -n "$BASE" ] && git -C "$REPO_DIR" archive "$BASE" | tar -x -C "$OLD"; then
+    rm -rf "$OLD/prompts" && cp -r "$REPO_DIR/prompts" "$OLD/prompts"
+fi
 cp "$REPO_DIR/REVIEW.md" "$TMP/review-new.md"
 NEW_LINE='GitHub 上 issue / PR 的正文和评论都有修改历史'
 # 一条旧标准里本来就有、新旧都不变的条目：用来证明旧标准确实进了复审 prompt
@@ -344,8 +348,6 @@ out=$(eval "$cmd \"\$S/good.md\""); check "照抄段里的命令检查合格样�
 
 echo "── 【4】复审不变；审查标准随主干走 ──"
 if [ -n "$BASE" ] && [ -f "$OLD/scripts/dispatch-issue-comment.sh" ]; then
-    # 合并基点的脚本拼当前的模板：这里比的是「脚本拼复审 prompt 的方式没变」，复审模板本身的改动（别的条目改的）不该让它红
-    rm -rf "$OLD/prompts" && cp -R "$REPO_DIR/prompts" "$OLD/prompts"
     P2=$(make_project old "$TMP/review-new.md")
     dispatch_all "$OLD" "$P2" "$TMP/out-oldscripts"
     norm() { sed -e "s|$REPO_DIR|<ROOT>|g" -e "s|$OLD|<ROOT>|g" -e "s|$TMP/proj-[a-z]*|<P>|g" \

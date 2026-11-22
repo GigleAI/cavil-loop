@@ -481,8 +481,14 @@ describe('publishing a development build (GitHub#215)', () => {
     w.build('0.5.1-dev.387');
     const r = w.run('0.5.1-dev.387');
     expect(r.code).toBe(1);
-    expect(r.out).toContain('发完再读');
-    expect(published(w.read(), 'client/v0.5.1-dev.387')).toBeUndefined();
+    // the release read-back itself stopped it — not the tag check after it, whose message shares the
+    // 「发完再读」 opening and which a draft (no tag yet) would fail too (GitHub#663)
+    expect(r.out).toContain('不是「已发布的预发布');
+    const s = w.read();
+    const edit = s.calls.findIndex((c) => c[0] === 'release' && c[1] === 'edit');
+    expect(edit).toBeGreaterThanOrEqual(0);
+    expect(s.calls.slice(edit + 1).filter((c) => c[0] === 'api' && /\/git\/ref\/tags\//.test(c[1] ?? ''))).toEqual([]);
+    expect(published(s, 'client/v0.5.1-dev.387')).toBeUndefined();
   });
 
   it('the release list cannot be read: nothing is written at all', () => {

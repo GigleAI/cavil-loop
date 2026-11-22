@@ -21,6 +21,28 @@
 # show：本条（issue 或 PR 的对话评论）按单元排好，打印最新单元和它对应的完整版本；--all 打印全部单元。
 #   退出码 0 = 读到了；4 = 最新一节的完整版本对不上（不给任何当前版本）；5 = 读不全；64 = 用法不对。
 #   托管条目开了外部内容保护时不用它：受保护读取命令的输出末尾就带着同样的视图。
+#
+# ── Turning the round log off (GitHub#646); read before changing the「关掉」fold in docs/operations{,.zh}.md ──
+# The setting is read at every call of post (off → RESULT=rejected before any other check) and of the guarded
+# read outsider-read.sh (off → no split view, no delivery named); show ignores it; a session already running
+# keeps the instructions it was dispatched with. So the docs promise no safe moment to turn it off: a label
+# check cannot see an item queued for dispatch, or one being dispatched before it carries doing/agent — five
+# review rounds on PR #652 found a new variant each time, and the maintainer chose (PR #652 Q1 = A) to state
+# what can happen and how to dispatch a stopped item again. Do not bring back a "check, turn off, check again"
+# procedure or a label-check command; do not add a prompt branch that posts separately when the view is
+# missing (review round 4 on PR #652: it skips this script's staleness checks).
+# For an item that stopped half-way the docs give no command that decides which label to put back: four
+# review rounds on PR #652 each found a new input such a command got wrong (a maintainer doing the two label
+# steps by hand, a later hand-over, protecting labels, a closed item, a nameless event, the loop account taken
+# from an old comment), and the maintainer chose (PR #652 second Q1 = A) to have a person take it: add
+# pending/human and only then remove doing/agent (with neither on, greedy pick-up may dispatch it again), then
+# see which step it stopped at — a delivery with no verdict yet, including a first round whose delivery is only
+# the PR description → pending/review; a review verdict → pending/agent; cannot tell → stay on pending/human —
+# adding the new label before removing pending/human. Do not bring back such a command.
+# The blocks behind <!-- round-log-check-ops / -off-ops / -on-ops:begin --> are run verbatim by
+# tests/project-config.test.sh §9 (they trust only the settings script's RESULT= word, never its exit code: a save
+# killed after the rename exits non-zero with the file written).
+# Keep the two doc copies identical.
 set -uo pipefail
 
 # 用法不对（含 PR 上缺本次依据）≠ 拒收：拒收（2）是「这条照现在单独发」，用法不对（64）是「改好参数重跑，改不好就什么都不发」
