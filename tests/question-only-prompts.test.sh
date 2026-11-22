@@ -11,6 +11,8 @@
 #   3. 两份 worker 说明里「交出 PR 前先查冲突」一节逐字一致，带纯提问例外；PR 回复第 3 步带例外
 #   4. 把「交回 = 确认」连在一起的两句旧提示已经没有了
 #   5. 两份托管规则（issue / 只在 PR 上托管）都写了纯提问例外；复审说明的 2L 有 ⑤
+#   6. 「疑问 + 建议」一节（GitHub#654）：两份逐字一致、排在纯提问一节之前、新 issue / 复审里没有；
+#      停下用等继续标记、清单的放法与取法、停下期间三种情况；托管两份写了例外；复审要点明推翻、2L 有 ⑥
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -122,7 +124,61 @@ for f in autopilot-worker autopilot-worker-pr; do
         && ok "$f：写了纯提问例外（交接与 daemon 打回两处）" || bad "$f：缺纯提问例外"
 done
 grep -qF '⑤ 人这一轮提了问题，worker 本轮第一条评论的标题下第一段却不是这些问题的答案' "$TMP/review.md" \
-    && grep -qF '逐条对照下面五项' "$TMP/review.md" && ok "复审 2L 有 ⑤（答案不在第一段就打回）" || bad "复审 2L 缺 ⑤"
+    && grep -qF '逐条对照下面六项' "$TMP/review.md" && ok "复审 2L 有 ⑤（答案不在第一段就打回）" || bad "复审 2L 缺 ⑤"
+
+echo "── 6. 「疑问 + 建议」一节（GitHub#654）──"
+S='## 先判断「疑问 + 建议」可不可行（GitHub#654）'
+section "$TMP/issue-comment.md" "$S" > "$TMP/s-issue"
+section "$TMP/pr-comment.md" "$S" > "$TMP/s-pr"
+if [ -s "$TMP/s-issue" ] && cmp -s "$TMP/s-issue" "$TMP/s-pr"; then ok "issue 回复和 PR 回复里的「疑问 + 建议」一节逐字一致（$(wc -l < "$TMP/s-issue") 行）"
+else bad "两份「疑问 + 建议」一节不一致或缺失"; diff "$TMP/s-issue" "$TMP/s-pr" | head -5 | sed 's/^/       /'; fi
+for k in issue-comment pr-comment; do
+    si=$(grep -nxF -- "$S" "$TMP/$k.md" | head -1 | cut -d: -f1); qi=$(grep -nxF -- "$Q" "$TMP/$k.md" | head -1 | cut -d: -f1)
+    [ -n "$si" ] && [ -n "$qi" ] && [ "$si" -lt "$qi" ] && ok "$k：排在纯提问一节之前" || bad "$k：「疑问 + 建议」一节的位置不对" "$si/$qi"
+done
+section "$TMP/issue-comment.md" "$Q" | grep -qF '只排在上一节「疑问 + 建议」之后：本轮有疑问 + 建议，或正在停下中，先照上一节办' \
+    && ok "纯提问一节写明先照「疑问 + 建议」一节办" || bad "纯提问一节没指回「疑问 + 建议」一节"
+for k in new-issue review; do
+    grep -qF '疑问 + 建议」可不可行（GitHub#654）' "$TMP/$k.md" && bad "$k 说明里不该有「疑问 + 建议」一节" || ok "$k 说明里没有「疑问 + 建议」一节"
+done
+has_s() { grep -qF -- "$1" "$TMP/s-issue"; }
+for p in \
+    '**1. 全部可行 → 当作修改要求**' \
+    '每条建议写「可行，本轮采纳：<打算怎么做>」，不写结果' \
+    '**2. 至少一条不可行 → 先回答、停下**（不管同轮还有没有别的要求）' \
+    '**3. 复审推翻了已采纳的建议 → 先告知人、停下**' \
+    'worker 不认同复审的推翻，照原有规则写「不改 + 理由」交复审，不停' \
+    '不改方案、不改代码、不提交、不推送、不交复审' \
+    '`verdict resume` 而且 `write ok <标签>` 才发' \
+    '单独一行放 `<!-- agent-answer-only need=continue -->`，**不放** snapshot 第一行' \
+    '固定小标题 `### 暂缓：留言「继续」后接着做`' \
+    '并原样重贴那张清单' \
+    '不发下一节 C 那句不带清单的通用提示' \
+    '不发带答复记录的纯提问答复' \
+    '被编辑的按新原文，来源被删或人撤回的去掉，都写明；每项只做一次' \
+    '不需要证明之前的复审还针对当前版本' \
+    '「人的建议与采纳情况」' \
+    '连续两次都不是 `resume` 时，改发一条' \
+    '**照样带上清单**（停下前已有清单时用最近那张，本轮新暂缓的项一并列上，' \
+    '不发 B ① 指向的那句不带清单的通用提示' \
+    '清单只是给人看的，漏列不影响「继续」时取待办' \
+    '这一轮的待办**不靠清单取**，而是 = 停下之前最近一条不是停下评论的 worker 交付' \
+    '停下之前同一轮的、夹在两条停下评论之间的、第二次核对时才出现的' \
+    '取到的待办应当包含最近一条停下评论清单里的每一项' \
+    '最后一次 `compare` 输出里列出的新增 / 被编辑的反馈也逐条列进去，标「未及处理」' \
+    '**每次代码交付**（首次开 PR 和之后每一轮）都把这一段的最新版同步进 PR 正文' \
+    '托管条目写进总结段「采用的方案」那一块（总结段仍是三块，daemon 合并时只从 PR 正文搬这一段）' \
+    '「人的建议与结果」：原话 → 采纳了什么 → 结果 → 复审有没有推翻'; do
+    has_s "$p" && ok "写了：$p" || bad "缺：$p"
+done
+for f in autopilot-worker autopilot-worker-pr; do
+    grep -qF '「疑问 + 建议」里有不可行的、或复审推翻了已采纳的建议时同样是例外' "$REPO_DIR/prompts/$f.md" \
+        && ok "$f：写了「疑问 + 建议」停下的例外" || bad "$f：缺「疑问 + 建议」例外"
+done
+grep -qF '在那一条里写明「推翻人的建议」并附人的原话链接' "$TMP/review.md" && ok "复审：推翻已采纳的建议要点明并附原话链接" || bad "复审缺「推翻人的建议」要求"
+grep -qF '这里接一小段「人的建议与结果」：原话 → 采纳了什么 → 结果 → 复审有没有推翻' "$TMP/review.md" && ok "复审交人骨架带「人的建议与结果」" || bad "复审交人骨架缺「人的建议与结果」"
+grep -qF '⑥ worker 交付里「人的建议与采纳情况」有已采纳的人的建议' "$TMP/review.md" \
+    && grep -qF '里的建议现状和最新一版交付说明对不上' "$TMP/review.md" && ok "复审 2L 有 ⑥（缺「人的建议与结果」就打回）" || bad "复审 2L 缺 ⑥"
 
 report_counts "$pass" "$fail"
 echo
