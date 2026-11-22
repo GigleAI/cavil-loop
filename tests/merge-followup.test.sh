@@ -303,7 +303,7 @@ mkissue 140 "pending/PR" open
 mkmerged 141 feature/issue-140 "Refs #140"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
 touch "$GD/F_post_label_Done"
 tick
-chk "第 1 轮：清单评论发了、PR 没 Done（旧流程标签已先摘掉）、PR 记录没记已交接" "$(comments_of 140)/$(labels_of 141)/$(jq -r '.merge_followup.prs["141"].handed // "none"' "$STATE")" "1//none"
+chk "第 1 轮：清单评论发了、PR 没 Done（先加 Done，失败就停，旧流程标签还在）、PR 记录没记已交接" "$(comments_of 140)/$(labels_of 141)/$(jq -r '.merge_followup.prs["141"].handed // "none"' "$STATE")" "1/pending/review/none"
 rm -f "$GD/F_post_label_Done"
 tick
 chk "第 2 轮：PR 补上 Done、记已交接，评论仍只有一条" "$(comments_of 140)/$(labels_of 141)/$(jq -r '.merge_followup.prs["141"].handed // "none"' "$STATE")" "1/Done/1"
@@ -332,6 +332,52 @@ chk "这一轮：清单评论没发、issue 标签没被 daemon 写" "$(comments
 chk "  → 到达性：hook 确实在两次判定之间跑了" "$([ -f "$GD/count_issues_160_comments" ] && echo ran || echo no)" "ran"
 tick
 chk "下一轮：按新状态发清单评论（写明新一轮在进行，标签不动）" "$(comments_of 160)/$(has "$(last_comment 160)" '已挂着新一轮的流程标签')/$(labels_of 160)" "1/yes/pending/PR,pending/review"
+
+echo "⑰ 关闭来源的回答不完整（缺 closer 字段、closer 没有类型名）→ 判不了；回答里明确是 null 才算亲手关"
+for shape in missing notype; do
+    fresh
+    mkissue 170 "" open
+    mkmerged 171 feature/issue-170 "Refs #170"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+    tick
+    jset items.json '.["170"].state = "closed" | .["170"].state_reason = "completed"'
+    jset events.json '.["170"] += [{event:"closed", actor:{login:"maint", type:"User"}, created_at:"2026-03-02T10:00:00Z", commit_id:null, closer_shape:$s}]' --arg s "$shape"
+    mkmerged 172 feature/issue-170 "Refs #170"$'\n\n'"$NONE" 2026-03-03T10:00:00Z ""
+    tick
+    chk "closer 回答 $shape → 没记结束、清单照列并注明无法确认" "$(jq -r '.merge_followup.prs["171"].ended // "no"' "$STATE")/$(has "$(last_comment 170)" '无法确认之后维护者是否亲手关闭过')" "no/yes"
+done
+
+echo "⑱ 分支最新提交和记录对不上（合并提交、分支名都一样）→ 不写"
+fresh
+mkissue 180 "" open
+mkmerged 181 feature/issue-180 "Refs #180"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+touch "$GD/F_issues_180"
+tick
+rm -f "$GD/F_issues_180"
+jset items.json '.["181"].head.sha = "9999999999999999999999999999999999999999"'
+tick; tick
+chk "现读 head.sha 和记录不同 → 零评论、日志写明对不上" "$(comments_of 180)/$(grep -c 'PR #181 现读的身份和记录对不上' "$W/state/poll.log")" "0/2"
+
+echo "⑲ 合并之后有人给 PR 挂了流程标签（新一轮）→ PR 的标签不动，issue 照常交接"
+fresh
+mkissue 190 "" open
+mkmerged 191 feature/issue-190 "Refs #190"$'\n\n'"$LIST" 2026-03-01T10:00:00Z ""
+jset labels.json '.["191"] = ["pending/review"]'
+jset events.json '.["191"] = [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-01T12:00:00Z"}]'
+tick
+chk "PR 标签原样、issue 有清单评论并翻 pending/human" "$(labels_of 191)/$(comments_of 190)/$(labels_of 190)" "pending/review/1/pending/human"
+chk "  → 交接照常收敛" "$(jq -r '.merge_followup.prs["191"].handed // "none"' "$STATE")" "1"
+
+echo "⑳ 给 PR 写标签的两步之间有人挂上 pending/review → 停手；下一轮认出是新一轮，不摘它"
+fresh
+mkissue 200 "" open
+mkmerged 201 feature/issue-200 "Refs #200"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/merge"
+printf 'cd %q && jq %q labels.json > l.tmp && mv l.tmp labels.json && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["201"] += ["pending/review"]' '.["201"] += [{event:"labeled", label:{name:"pending/review"}, actor:{login:"maint", type:"User"}, created_at:"2026-03-02T00:00:00Z"}]' \
+    > "$GD/hook_after_POST_issues_201_labels_1"
+tick
+chk "这一轮：加了 Done 之后停手，pending/review 和 pending/merge 都还在、没记已交接" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")" "Done,pending/merge,pending/review/none"
+tick
+chk "下一轮：认出合并后挂上的是新一轮，PR 标签一个不动，交接收敛" "$(labels_of 201)/$(jq -r '.merge_followup.prs["201"].handed // "none"' "$STATE")/$(comments_of 200)" "Done,pending/merge,pending/review/1/1"
 
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"

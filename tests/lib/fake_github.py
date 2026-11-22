@@ -160,9 +160,11 @@ def list_cmd():
                     # 合并提交、目标分支、分支最新提交
                     "body": it["body"] if "body" in it else "",
                     "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
-                    "mergeCommit": {"oid": it.get("merge_commit_sha", "")} if merged else None,
+                    "mergeCommit": {"oid": it.get("merge_commit_sha") or "m" * 40} if merged else None,
                     "baseRefName": it.get("base", {}).get("ref", "main"),
                     "headRefOid": it.get("head", {}).get("sha", ""),
+                    "headRepository": {"name": (it.get("head", {}).get("repo", {}).get("full_name") or REPO).split("/")[-1]},
+                    "headRepositoryOwner": {"login": (it.get("head", {}).get("repo", {}).get("full_name") or REPO).split("/")[0]},
                     "labels": [{"name": l} for l in ls],
                     "stateReason": (it.get("state_reason") or "").upper(),
                     "updatedAt": it.get("updated_at", "2026-01-01T00:00:00Z")})
@@ -307,6 +309,10 @@ def view(n):
     if kind == "pr":
         it.setdefault("state", "open")
         it.setdefault("merged", False)
+        # 已合并的 PR 和真接口一样总有合并提交与合并时间（夹具没写就补上；和列表里给的是同一个值）
+        if it["merged"]:
+            it.setdefault("merge_commit_sha", "m" * 40)
+            it.setdefault("merged_at", "2026-01-01T00:00:00Z")
         # GitHub#337：PR 详情自报的改动文件数。夹具没写就按 files.json 算；写成 "__missing__" = 这个字段缺失
         if it.get("changed_files") == "__missing__":
             del it["changed_files"]
@@ -388,6 +394,12 @@ if path == "graphql" and "ClosedEvent" in fields.get("query", ""):
                 found = _e
     if found is None:
         emit({"data": {"node": None}})
+    # "closer_shape": "missing" = 回答里缺 closer 字段；"notype" = closer 是对象却没有类型名（测「回答不完整」）
+    shape = found.get("closer_shape")
+    if shape == "missing":
+        emit({"data": {"node": {"__typename": "ClosedEvent"}}})
+    if shape == "notype":
+        emit({"data": {"node": {"__typename": "ClosedEvent", "closer": {}}}})
     emit({"data": {"node": {"__typename": "ClosedEvent", "closer": found.get("closer")}}})
 
 if path == "graphql":

@@ -930,7 +930,7 @@ mf_ap_confirm_tick
 # 列表整个读失败 → 本轮不发现、不清理（现状）；落盘失败 → 整段停下，下轮重来
 MF_LIST=$(mktemp); MF_DISCOVERED=0   # 机器人通知只认这一轮列表发现成功（上面托管确认用的同一个函数也会置 1）
 if gh pr list --repo "$REPO" --state merged --limit 30 \
-    --json number,headRefName,body,mergedAt,mergeCommit,baseRefName,headRefOid,title > "$MF_LIST" 2>/dev/null \
+    --json number,headRefName,body,mergedAt,mergeCommit,baseRefName,headRefOid,headRepository,headRepositoryOwner,title > "$MF_LIST" 2>/dev/null \
    && jq -e 'type == "array"' "$MF_LIST" >/dev/null 2>&1 && mf_discover "$MF_LIST"; then
     if [ "${AUTO_CLEANUP_ON_MERGE:-true}" != "false" ]; then
         while IFS=$'\t' read -r prnum branch; do

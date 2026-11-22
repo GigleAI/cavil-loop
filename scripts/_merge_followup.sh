@@ -86,7 +86,9 @@ mf_ap_confirm_tick() {
             # （刚合并的 PR 进列表可能慢一拍）。和列表发现走同一个 mf_discover，记录一模一样
             local f="$STATE_DIR/.mf-confirm"
             if printf '%s' "$pj" | jq -c '[{number, title, body, headRefName: .head.ref, mergedAt: .merged_at,
-                    mergeCommit: {oid: (.merge_commit_sha // "")}, baseRefName: .base.ref, headRefOid: .head.sha}]' > "$f" 2>/dev/null; then
+                    mergeCommit: {oid: (.merge_commit_sha // "")}, baseRefName: .base.ref, headRefOid: .head.sha,
+                    headRepository: {name: ((.head.repo.full_name // "") | split("/") | .[1] // "")},
+                    headRepositoryOwner: {login: ((.head.repo.full_name // "") | split("/") | .[0] // "")}}]' > "$f" 2>/dev/null; then
                 mf_discover "$f" || log "  合并后交接：托管合并的 PR #$pr 已确认合并，记录没写进去，下轮再来"
             fi
             rm -f "$f"
@@ -137,6 +139,8 @@ mf_discover() {   # <列表文件>
             --arg o "$owner" --arg b "$bstate" --arg c "$closes" '. as $r | {key: $p, value: ({closes: ($c == "1"), target: (if $t == "" then null else $t end), owner: $o, body: $b,
                 merged_at: ($r.mergedAt // ""), sha: ($r.mergeCommit.oid // ""), base: ($r.baseRefName // ""),
                 head_ref: ($r.headRefName // ""), head_sha: ($r.headRefOid // ""), title: ($r.title // ""),
+                head_repo: (if ($r.headRepositoryOwner.login // "") != "" and ($r.headRepository.name // "") != ""
+                            then "\($r.headRepositoryOwner.login)/\($r.headRepository.name)" else "" end),
                 found: true, cleanup: "retry", rereads: 0} + $x[0])}' >> "$d/new.jsonl" || { rm -rf "$d"; return 1; }
     done < <(jq -c '.[]' "$list" 2>/dev/null)
     if [ -s "$d/new.jsonl" ]; then
@@ -237,7 +241,8 @@ mf_record_from_pr() {   # <PR> [托管说明] [说明已发 true|false]；现读
     target=$(pr_to_issue_num "$pr" "$branch" "$body")
     mf_set '$j[0] as $j | .prs[$p] = ((.prs[$p] // {}) + {target: $t, work: $t, owner: "known", body: "ok", found: true, cleanup: "done", rereads: 0,
                 merged_at: ($j.merged_at // ""), sha: ($j.merge_commit_sha // ""), base: ($j.base.ref // ""),
-                head_ref: ($j.head.ref // ""), head_sha: ($j.head.sha // ""), title: ($j.title // ""), migrated: true} + $x[0])
+                head_ref: ($j.head.ref // ""), head_sha: ($j.head.sha // ""), head_repo: ($j.head.repo.full_name // ""),
+                title: ($j.title // ""), migrated: true} + $x[0])
             | (if $d != "" then .prs[$p].ap = {pre: "found", desc: $d, desc_sent: ($s == "true"), title: ($j.title // ""), head: ($j.head.sha // "")} else . end)' \
         --arg p "$pr" --slurpfile j "$f.pj" --slurpfile x "$f.x" --arg t "$target" --rawfile d "$f.d" --arg s "${3:-false}" || rc=1
     rm -f "$f.pj" "$f.x" "$f.d"
@@ -302,10 +307,13 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
     for pr in $(jq -r '.[].pr' "$d/recs"); do
         gh api "repos/$REPO/pulls/$pr" > "$d/pj" 2>/dev/null || return 1
         jq -c --arg p "$pr" '{pr: $p, merged: (.merged // null), sha: (.merge_commit_sha // ""), base: (.base.ref // ""),
-            head_ref: (.head.ref // ""), head_repo: (.head.repo.full_name // "")}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
+            head_ref: (.head.ref // ""), head_sha: (.head.sha // ""), head_repo: (.head.repo.full_name // ""),
+            labels: ([(.labels // [])[].name] | sort)}' "$d/pj" >> "$d/ident" 2>/dev/null || return 1
+        # 合并提交、目标分支、来源分支、分支最新提交、来源仓库：记录和现读两边都得有值、而且相等，缺一样就不写
         jq -e --slurpfile i <(tail -n 1 "$d/ident") --arg p "$pr" '.[] | select(.pr == $p) as $r | $i[0] as $i
-            | $i.merged == true and (($r.sha // "") == "" or $r.sha == $i.sha) and (($r.base // "") == "" or $r.base == $i.base)
-              and (($r.head_ref // "") == "" or $r.head_ref == $i.head_ref)' "$d/recs" >/dev/null 2>&1 || {
+            | $i.merged == true
+              and all(["sha", "base", "head_ref", "head_sha", "head_repo"][]; . as $k | (($r[$k] // "") != "" and $r[$k] == $i[$k]))' \
+            "$d/recs" >/dev/null 2>&1 || {
             log "  合并后交接：PR #$pr 现读的身份和记录对不上（或缺字段），#$n 本轮不写"; return 1; }
     done
     me=$(write_identity_login)
@@ -330,9 +338,16 @@ _mf_conclude_in() {   # <目标> <兜底 PR> <临时目录>
                 | .node_id // empty' "$d/evs" | sort -u > "$d/nids"
             while IFS= read -r nid; do
                 [ -n "$nid" ] || continue
-                if out=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on ClosedEvent{closer{__typename}}}}' -f id="$nid" 2>/dev/null) \
-                   && printf '%s' "$out" | jq -e '.data.node | type == "object"' >/dev/null 2>&1; then
-                    closers=$(printf '%s' "$closers" | jq -c --arg n "$nid" --argjson o "$out" '.[$n] = ($o.data.node.closer.__typename // "none")')
+                # 只认两种明确的回答：closer 字段在、值是 null（人亲手关，记 none）；closer 是带类型名的对象（PR / 提交带关）。
+                # 节点不是关闭事件、缺 closer 字段、closer 缺类型名 → 不记，按「判不了」处理
+                if out=$(gh api graphql -f query='query($id:ID!){node(id:$id){__typename ... on ClosedEvent{closer{__typename}}}}' -f id="$nid" 2>/dev/null); then
+                    out=$(printf '%s' "$out" | jq -c '.data.node as $n
+                        | if ($n | type) == "object" and $n.__typename == "ClosedEvent" and ($n | has("closer")) then
+                              (if $n.closer == null then "none"
+                               elif ($n.closer | type) == "object" and (($n.closer.__typename // null) | type) == "string" and $n.closer.__typename != "" then $n.closer.__typename
+                               else null end)
+                          else null end' 2>/dev/null) || out=null
+                    [ "$out" = null ] || closers=$(printf '%s' "$closers" | jq -c --arg n "$nid" --argjson o "$out" '.[$n] = $o')
                 fi
             done < "$d/nids"
             lastclose=$(jq -r '[.[] | select(.event == "closed" or .event == "reopened") | "\(.event):\(.id // "")"] | last // "none"' "$d/evs")
@@ -382,21 +397,50 @@ mf_comment_find() {   # <目标> <指纹>
     return 1
 }
 
-# 合并 PR 自己的标签：Done（<reminder>=true 时另挂 pending/human），摘掉流程标签；写完读回，实得就是这样才 return 0
+# 合并 PR 自己的标签：Done（<reminder>=true 时另挂 pending/human），摘掉流程标签。
+# 一次写一个，每写之前现读一次，必须正好是「开始时读到的 + 已经写成的这几步」，否则本轮停手（return 1），下轮从头判；
+# 写完再读回核对。合并之后才挂上的流程标签（按事件记录：最后一次加上它的时间不早于合并时间）是有人开了新一轮，
+# 这个 PR 的标签一个不动（return 0 并记 superseded）。事件记录读不到 = 判不了，本轮不写
 mf_pr_labels() {   # <PR> <true|false>
-    local pr="$1" rem="$2" labs
-    if [ "$rem" = true ]; then
-        run_gh "合并后交接：PR #$pr → Done + $LABEL_PENDING_HUMAN" gh_label_flip "$pr" --add "$LABEL_DONE" "$LABEL_PENDING_HUMAN" \
-            --remove "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
-    else
-        run_gh "合并后交接：PR #$pr → Done" gh_label_flip "$pr" --add "$LABEL_DONE" \
-            --remove "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" || true
+    local pr="$1" rem="$2" at labs evs flows plan step kind lab expect cur out
+    at=$(mf_get '.prs[$p].merged_at // ""' --arg p "$pr" | jq -r .)
+    labs=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$labs" ] || return 1
+    evs=$(gh api --paginate --slurp "repos/$REPO/issues/$pr/events" 2>/dev/null) || return 1
+    evs=$(printf '%s' "$evs" | jq -c '[.[] | if type == "array" then .[] else error("page") end]' 2>/dev/null) || return 1
+    flows=$(printf '%s\n' "$LABEL_PENDING_HUMAN" "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" \
+        "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(. != ""))')
+    if [ -z "$at" ] || printf '%s' "$labs" | jq -e --argjson f "$flows" --argjson e "$evs" --arg at "$at" '
+            any(.[]; . as $l | ($f | index($l)) != null
+                and ([$e[] | select(.event == "labeled" and (.label.name // "") == $l)] | last | (.created_at // "")[:19] >= ($at[:19])))' >/dev/null 2>&1; then
+        if [ -z "$at" ]; then return 1; fi
+        log "  合并后交接：PR #$pr 合并之后又挂上了流程标签（新一轮），它的标签不动"
+        mf_set '.prs[$p].pr_superseded = true' --arg p "$pr" || true
+        return 0
     fi
-    labs=$(gh api "repos/$REPO/issues/$pr" --jq '[.labels[].name]' 2>/dev/null) || return 1
-    printf '%s' "$labs" | jq -e --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" \
-        --argjson gone "$(printf '%s\n' "$LABEL_PENDING_AGENT_DEFAULT" "${LABEL_PENDING_AGENT_FABLE:-}" "${LABEL_PENDING_REVIEW:-}" "${LABEL_PENDING_MERGE:-}" "$LABEL_AGENT_DOING" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
-        . as $L | index($D) != null and (if $r == "true" then index($H) != null else index($H) == null end)
-        and all($gone[]; . as $g | ($L | index($g)) == null)' >/dev/null 2>&1
+    plan=$(printf '%s' "$labs" | jq -c --arg D "$LABEL_DONE" --arg H "$LABEL_PENDING_HUMAN" --arg r "$rem" --argjson f "$flows" '. as $L
+        | (if index($D) == null then ["add:" + $D] else [] end)
+        + (if $r == "true" and index($H) == null then ["add:" + $H] else [] end)
+        + [$L[] | select(. as $l | ($f | index($l)) != null and ($r != "true" or $l != $H)) | "del:" + .]')
+    expect="$labs"
+    for step in $(printf '%s' "$plan" | jq -r '.[] | @base64'); do
+        step=$(printf '%s' "$step" | base64 -d); kind="${step%%:*}"; lab="${step#*:}"
+        cur=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$cur" ] || return 1
+        if [ "$cur" != "$expect" ]; then
+            log "  合并后交接：PR #$pr 的标签在两次写之间被人改了，本轮停手，下轮从头判"; return 1
+        fi
+        if [ "$kind" = add ]; then
+            run_gh "合并后交接：PR #$pr 加 $lab" gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$lab" >/dev/null || return 1
+            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" '. + [$l] | unique | sort')
+        else
+            if ! out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$(printf '%s' "$lab" | jq -sRr @uri)" 2>&1) \
+               && ! printf '%s' "$out" | grep -q 'HTTP 404'; then
+                log "  合并后交接：PR #$pr 摘 $lab 失败，下轮再试"; return 1
+            fi
+            expect=$(printf '%s' "$expect" | jq -c --arg l "$lab" 'map(select(. != $l))')
+        fi
+    done
+    cur=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null | jq -c '[.labels[].name] | sort' 2>/dev/null) && [ -n "$cur" ] || return 1
+    [ "$cur" = "$expect" ]
 }
 
 mf_try_fail() {   # <目标> <原因>：一次真正尝试了读写却没成功的轮次（等清理的轮次不调它）
@@ -488,9 +532,13 @@ mf_target_tick() {   # <目标> [兜底 PR]
         if ! mf_pr_labels "$n" "$(printf '%s' "$c1" | jq -r .reminder)"; then mf_try_fail "$n" "PR #$n 的标签没写成"; return 1; fi
         mf_set '.prs[$p].pr_labeled = true' --arg p "$n" || return 1
         if [ -n "$fb" ]; then
-            # 兜底送达：上面已确认兜底评论，PR 上读回到 Done + pending/human（mf_pr_labels 的读回），才写「是」
-            mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || return 1
-            log "  合并后交接：PR #$fb 的兜底提醒已送达"
+            # 兜底送达：上面已确认兜底评论，PR 上现读到 pending/human 才写「是」（新一轮的流程标签挡着、没挂上时不算）
+            if gh api "repos/$REPO/issues/$n" --jq '[.labels[].name]' 2>/dev/null | jq -e --arg H "$LABEL_PENDING_HUMAN" 'index($H) != null' >/dev/null 2>&1; then
+                mf_set '.prs[$p].fb.sent = true' --arg p "$fb" || return 1
+                log "  合并后交接：PR #$fb 的兜底提醒已送达"
+            else
+                mf_try_fail "$n" "PR #$n 上没挂上 $LABEL_PENDING_HUMAN"; return 1
+            fi
         fi
     fi
     # 每个合并 PR 自己的 Done（不是目标的那些）：读回确认写成之后才往下走；没写成这一轮停在这里，
@@ -565,6 +613,11 @@ mf_notice_basis() {   # <PR> [来源 issue]
     local pr="$1" origin="${2:-}" rec t fb c conv guard d rc=0 oj='null'
     # 来源 issue（机器人的需求，可能不是交接目标）：状态和完整标签也进依据，发评论前、写等待标签前都现读比对
     if [ -n "$origin" ]; then
+        # 来源关联也现读重判（和发通知前那次是同一个判定函数）：PR 现在指向的来源不是这一个 → 不成立
+        local item orc=0
+        item=$(gh api "repos/$REPO/issues/$pr" 2>/dev/null) || return 1
+        requester_bot_item_origin "$pr" "$item" >/dev/null 2>&1 || orc=$?
+        [ "$orc" = 0 ] && [ "${REQUESTER_BOT_ORIGIN:-}" = "$origin" ] || return 1
         oj=$(gh api "repos/$REPO/issues/$origin" --jq '{n: .number, state: (.state // ""), labels: ([.labels[].name] | sort)}' 2>/dev/null) || return 1
         printf '%s' "$oj" | jq -e '.state != ""' >/dev/null 2>&1 || return 1
     fi

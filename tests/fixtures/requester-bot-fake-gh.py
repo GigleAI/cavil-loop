@@ -131,7 +131,8 @@ def issue_view(it):
 def pull_view(it):
     o = issue_view(it)
     o.pop("pull_request", None)
-    o["head"] = {"ref": it.get("head_ref", f"feature/issue-{it['number']}"), "sha": "abc"}
+    o["head"] = {"ref": it.get("head_ref", f"feature/issue-{it['number']}"), "sha": it.get("head_sha", "abc"),
+                 "repo": {"full_name": it.get("head_repo", R)}}
     o["base"] = {"ref": "main"}
     o["merged"] = bool(it.get("merged", False))
     o["merged_at"] = "2026-10-01T00:00:00Z" if it.get("merged") else None
@@ -181,7 +182,9 @@ if args[:2] == ["pr", "list"] and "--label" not in args:
                          "title": it.get("title", ""), "body": it.get("body", ""),
                          "mergedAt": it.get("merged_at") or ("2026-01-01T00:00:00Z" if merged else None),
                          "mergeCommit": {"oid": "0123456789abcdef0123"} if merged else None,
-                         "baseRefName": it.get("base_ref", "main"), "headRefOid": it.get("head_sha", "")})
+                         "baseRefName": it.get("base_ref", "main"), "headRefOid": it.get("head_sha", "abc"),
+                         "headRepository": {"name": it.get("head_repo", R).split("/")[-1]},
+                         "headRepositoryOwner": {"login": it.get("head_repo", R).split("/")[0]}})
     emit(rows)
 if args and args[0] in ("pr", "issue"):
     emit([])
