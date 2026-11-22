@@ -8,6 +8,35 @@ Quick context for agents (Claude Code et al.) and maintainers working in this re
 
 **Meta nature**: this project develops itself (dogfooding). The issues / PRs of this repo run through its own workflow. On managed Linux installations, merged `main` revisions are published as immutable releases and activated by an atomic symlink switch on a later poll; a local checkout edit is used only after explicitly entering development mode.
 
+## Design philosophy: keep it simple, add nothing without need
+
+This applies to everything in the repo — code, the client's UI, docs, config settings, labels,
+and the words the tool uses with people (prompts, comments, notices). Before adding anything, ask
+in this order:
+
+0. **What is redundant now?** Remove it first.
+1. **Can something that exists be used as is?** A function, script, step, test, setting, label,
+   section — look for one of the same kind before making a new one.
+2. **Is it a property of something else?** Then it goes there — a field of that record, a line in
+   that file, a paragraph in that section — not into a thing of its own.
+3. **Does this concept already have one source of truth?** Two derivations always drift. Reuse
+   that one; never copy it.
+4. **If a new thing is unavoidable, write the reason next to it**, in one line: why it cannot be
+   part of X. Every new thing is paid for again and again — migration, permissions, fixtures,
+   docs, troubleshooting paths all grow with it — and the line saves the next person from working
+   it out again. Keep that line out of the reader's way (a comment, a folded block, a link): extra
+   information must not become noise around the main point.
+
+The converse holds too: do not force two things with different meanings into one just to have
+one fewer (point 4 guards against exactly that). The test is "is it a property of the same
+thing", not "how many things there are".
+
+Applied to this file: the root AGENTS.md holds what the project is, the rules every change must
+keep (including the judgement calls no check can enforce), and an index by entry point — for each
+area, which files or functions it covers, where its detailed rules are, and which tests to run.
+Before changing anything an index line covers, read the rules it points at. For the external user
+documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs/AGENTS.md)).
+
 ## Directory layout
 
 ```
@@ -614,7 +643,13 @@ MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what ev
 - Checks that are *called* negative controls but actually **feed bad input to the real program and expect it to refuse** (`doc-diagrams`' broken images, section 4 of `weekly-report-by-model`, `price-fetch`'s rejections, …) are positive cases and stay in the default run
 - Old-version comparisons that were already opt-in stay as they are: `paginated-latest-id`, `claude-resume-model` (`REPO_DIR=<old checkout>`), `release-auto` (`RELEASE_SH=<old>`); the end of `poll-pace` is a manual list of breakages
 
-Changes in these areas must run the matching tests:
+Changes in these areas must run the matching tests. The list is an index by entry point, one line per
+area: `entry` names the files or functions the area covers, `read first` names where its detailed rules
+live — the header of the area's main code file, the comment above its function group in `_lib.sh`, or
+the header of its test file for rules about how it is tested — and `tests` names every test to run.
+**Before changing anything an entry names, read the rules `read first` points at**; they are written
+next to the code because that is where a change starts. A line with no `read first` has no rules beyond
+the line itself.
 
 - Accounting / weekly report → `tests/weekly-report-*.test.sh`. Any test that runs `collect.py` / `price_solve.py` must point `CLAUDE_PROJECTS_DIR`, `CODEX_SESSIONS_DIR` and `XDG_CACHE_HOME` at its temp dir: left unset they scan the machine's real `~/.claude/projects` (7.4G here — 18s per call, and growing), so the test gets slower every day and its numbers depend on the machine
 - Token-usage drivers → `tests/token-usage-claude.test.sh`, `tests/token-usage-codex.test.sh`
