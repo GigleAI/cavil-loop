@@ -9,7 +9,7 @@
 #   - set 的退出码、全部输出（只把备份路径换成固定占位：它带日期和进程号，每次都不同）、保存后的配置文件
 #   - 两次保存各自的备份：存在、权限 600、内容等于保存前的配置
 # 样本：tests/project-config.test.sh 3b 组的全部写法（条件 / 循环 / 函数 / 一行写完的结构 / declare / read …），
-# 早期名字、export、行尾注释、名字是别的词的一部分、CRLF、含 NUL 字节、没有末尾换行、加载失败、配置模板全文。
+# 值的末尾有换行 / 只有换行、早期名字、export、行尾注释、名字是别的词的一部分、CRLF、含 NUL 字节、没有末尾换行、加载失败、配置模板全文。
 # 两边脚本一样（改动已合入主干）时整组跳过（tests/lib/compat.sh）。
 #
 #   bash tests/project-config-compat.test.sh
@@ -26,9 +26,15 @@ export TZ=UTC
 SYS_PATH="$PATH"
 
 pass=0; fail=0
+# 不一致时打出两边的逐行差异（期望 = 改动前，实得 = 现在），不截前缀：PR #664 复审第 1 轮有一次不一致，
+# 只截了两边各前 3000 字节，看不出差在哪
 chk() {
     if [ "$2" = "$3" ]; then pass=$((pass+1))
-    else echo "  ❌ $1"; echo "     期望：[$3]" | head -c 3000; echo; echo "     实得：[$2]" | head -c 3000; echo; fail=$((fail+1)); fi
+    else
+        echo "  ❌ $1（--- 改动前 / +++ 现在）"
+        diff -u <(printf '%s\n' "$3") <(printf '%s\n' "$2") | tail -n +3 | head -80 | sed 's/^/     /'
+        fail=$((fail+1))
+    fi
 }
 
 copy_tree() {   # <目标目录> [<rev>]
@@ -159,6 +165,10 @@ variant "最外层但缩进" "  MAX_CONCURRENT_WORKERS=1"
 variant "行尾注释" "MAX_CONCURRENT_WORKERS=1   # 并发"
 variant "写成空值" 'MAX_CONCURRENT_WORKERS=""'
 variant "注释里提到" "MAX_CONCURRENT_WORKERS=1${NL}# MAX_CONCURRENT_WORKERS=9 见文档${NL}# POLL_IDLE_PROBE=false"
+# 值的末尾有换行、只有换行（以前经两次命令替换去掉末尾换行，只剩换行的回落到默认值；PR #664 复审第 1 轮）
+sample "值的末尾有换行" "$(base_config)${NL}WORKER_MODEL=\$'opus\\n'${NL}OUTPUT_LANGUAGE=\$'en\\n\\n'${NL}"
+sample "值只有换行" "$(base_config)${NL}RETROSPECTIVE_MODEL=\$'\\n'${NL}DISPATCH_MAX_RETRIES=\$'\\n'${NL}"
+sample "早期名字的值末尾有换行 / 只有换行" "$(base_config)${NL}RELAY_BOT_ACCOUNT=\$'old-bot\\n'${NL}LABEL_PENDING_RELAY=\$'\\n'${NL}"
 # 早期名字（daemon 照样认）：写在文件里、和新名字并存、只在没执行的分支里
 sample "早期名字写在文件里" "$(base_config)${NL}RELAY_BOT_ACCOUNT=\"old-bot\"${NL}LABEL_PENDING_RELAY=\"pending/relay\"${NL}"
 sample "早期名字和新名字并存" "$(base_config)${NL}REQUESTER_BOT_ACCOUNT=\"new-bot\"${NL}RELAY_BOT_ACCOUNT=\"old-bot\"${NL}"
@@ -196,7 +206,7 @@ for n in $(seq 1 "$NS"); do
     done
 done
 # 可达性：对拍不是「两边都什么都没做」——样本里既有写进去的保存，也有被拒的；备份确实核对过
-chk "样本数" "$NS" 51
+chk "样本数" "$NS" 54
 chk "有写进去的保存、有被拒的保存、备份核对过（各 > 10）" "$([ "$saved" -gt 10 ] && [ "$refused" -gt 10 ] && [ "$backups_ok" -gt 10 ] && echo yes)" yes
 echo "  样本 $NS 个；写进去 $saved 次、被拒 $refused 次，核对备份 $backups_ok 份"
 

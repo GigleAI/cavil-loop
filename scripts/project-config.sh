@@ -257,29 +257,39 @@ line_count() {   # <文本>
 }
 M_NAME=(); M_EARLY=(); TOP_NAMES=" "; HIT_NAME=(); HIT_LINE=(); HITS_OK=0
 index_structure() {   # <配置文件>：填 M_NAME / M_EARLY（和 F_NAME 同下标）、TOP_NAMES、HIT_NAME / HIT_LINE
-    local counts=() c l re all
-    # 1. 出现次数：一个 awk 把规范化代码切成词段，只数登记过的名字和早期名字，按传进去的顺序各输出一个数
-    while IFS= read -r c; do counts+=("$c"); done < <(printf '%s\n' "$NORM" | awk -v names="${F_NAME[*]} ${EARLY_LOAD[*]}" '
+    local counts=() c l re all txt rc
+    # 下面三步任何一步的证据不完整（命令失败、输出形状不对）都当成「结构读不出」：NORM_OK=0，所有项只显示、
+    # 不许改行也不许追加。不能只看输出行数——命令可以先打印完整的结果、再以失败退出（PR #664 复审第 1 轮）
+    M_NAME=(); M_EARLY=(); TOP_NAMES=" "; HIT_NAME=(); HIT_LINE=(); HITS_OK=0
+    # 1. 出现次数：一个 awk 把规范化代码切成词段，只数登记过的名字和早期名字，按传进去的顺序各输出一个数。
+    #    整个管道（set -o pipefail）以 0 结束、每行都是数字、行数正好是名字数，才算数出来了
+    if ! txt="$(printf '%s\n' "$NORM" | awk -v names="${F_NAME[*]} ${EARLY_LOAD[*]}" '
         BEGIN { n = split(names, N, " "); for (i = 1; i <= n; i++) want[N[i]] = 1 }
         { s = $0
           while (match(s, /[A-Za-z0-9_]+/)) { w = substr(s, RSTART, RLENGTH); if (w in want) c[w]++; s = substr(s, RSTART + RLENGTH) } }
-        END { for (i = 1; i <= n; i++) print ((N[i] in c) ? c[N[i]] : 0) }')
-    M_NAME=(); M_EARLY=()
-    if [ "${#counts[@]}" -ne $(( ${#F_NAME[@]} * 2 )) ]; then NORM_OK=0; return 0; fi   # 数不出来：当成结构读不出
+        END { for (i = 1; i <= n; i++) print ((N[i] in c) ? c[N[i]] : 0) }')"; then
+        NORM_OK=0; return 0
+    fi
+    while IFS= read -r c; do
+        [[ "$c" =~ ^(0|[1-9][0-9]*)$ ]] || { NORM_OK=0; return 0; }
+        counts+=("$c")
+    done <<<"$txt"
+    if [ "${#counts[@]}" -ne $(( ${#F_NAME[@]} * 2 )) ]; then NORM_OK=0; return 0; fi
     for c in "${!F_NAME[@]}"; do
         M_NAME+=("${counts[$c]}"); M_EARLY+=("${counts[$(( ${#F_NAME[@]} + c ))]}")
     done
-    # 2. 最外层赋值：规范格式里恰好缩进 4 格、以 [export ]名字= 开头的行
-    TOP_NAMES=" "
+    # 2. 最外层赋值：规范格式里恰好缩进 4 格、以 [export ]名字= 开头的行（只在 bash 里做，不起进程）
     re='^    (export )?([A-Za-z0-9_]+)='
     while IFS= read -r l; do
         [[ "$l" =~ $re ]] && TOP_NAMES+="${BASH_REMATCH[2]} "
     done <<<"$NORM"
     # 3. 原文件里的赋值行：一次 grep 取出所有「[空白][export 空白]名字=」开头的行，按名字分好。
     #    有一行不是「行号:内容」（例如老 grep 对含 NUL 的文件只说一句 Binary file matches）就不用这份结果，
-    #    退回逐项 grep，结果和以前逐字节相同
-    HIT_NAME=(); HIT_LINE=(); HITS_OK=1
-    all="$(grep -nE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]+=' "$1" || true)"
+    #    退回逐项 grep，结果和以前逐字节相同。grep 退出码 0 = 有匹配、1 = 没有（这时输出必须是空的），
+    #    其余 = 读错了，当成结构读不出
+    rc=0; all="$(grep -nE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]+=' "$1")" || rc=$?
+    if [ "$rc" -gt 1 ] || { [ "$rc" = 1 ] && [ -n "$all" ]; }; then NORM_OK=0; return 0; fi
+    HITS_OK=1
     re='^[0-9]+:[[:space:]]*(export[[:space:]]+)?([A-Za-z0-9_]+)='
     if [ -n "$all" ]; then
         while IFS= read -r l; do
@@ -294,9 +304,11 @@ top_level_assign() {
     return 1
 }
 file_hits_to() {   # <变量名> <配置文件> <KEY>：和 grep -nE "^[[:space:]]*(export[[:space:]]+)?KEY=" 的输出相同（去掉末尾换行）
-    local __fh="" __j
+    # grep 读错了（退出码 2 及以上）返回 1：调用方不能把它当成「没有这一行」
+    local __fh="" __j __rc=0
     if [ "$HITS_OK" != 1 ]; then
-        __fh="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$3=" "$2" || true)"
+        __fh="$(grep -nE "^[[:space:]]*(export[[:space:]]+)?$3=" "$2")" || __rc=$?
+        [ "$__rc" -le 1 ] || return 1
     else
         for __j in ${HIT_NAME[@]+"${!HIT_NAME[@]}"}; do
             [ "${HIT_NAME[$__j]}" = "$3" ] || continue
@@ -311,9 +323,12 @@ file_hits_to() {   # <变量名> <配置文件> <KEY>：和 grep -nE "^[[:space:
 # 少数项读的是 ${X-默认}，空值有自己的意思，登记成「默认;empty=值」——例如等前置、暂缓两个标签
 # （GitHub#551：不写 = 开，写成空值 = 关）。按项登记、不按类型：同是标签的「等合并」读的是 ${X:-默认}，空值仍是默认标签）。
 # 和「配置文件里这一行能不能改」是两件事，分开算。
+# 末尾的换行一律去掉、只剩换行就算空：和以前 picked="$(cavil_pick_setting …)"、value="$(effective …)" 两次命令替换
+# 的结果相同（值 "opus\n" 显示 "opus"，只有换行的值回落到默认值；PR #664 复审第 1 轮）
 effective_to() {   # <变量名> <下标>：结果写进变量，不经命令替换（每次读对每一项都要算，GitHub#662）
     local __ep
     cavil_pick_setting_to __ep "${V_VAL[$2]}" "${V_EARLY_VAL[$2]}"
+    __ep="${__ep%"${__ep##*[!$'\n']}"}"
     if [ -n "$__ep" ]; then printf -v "$1" '%s' "$__ep"
     elif [ "${V_SET[$2]}" = 1 ]; then printf -v "$1" '%s' "${F_EMPTY[$2]}"
     else printf -v "$1" '%s' "${F_DEF[$2]}"; fi
@@ -371,7 +386,9 @@ inspect_field() {   # <配置文件> <下标>
         else W_WHY="配置文件里找不到这一项的赋值，它的值是别处给的"; fi
         return 0
     fi
-    file_hits_to hits "$file" "$k"
+    if ! file_hits_to hits "$file" "$k"; then
+        W_WHY="读不出配置文件的结构，判断不了这一项能不能安全地改"; return 0
+    fi
     count="$(line_count "$hits")"
     if [ "$count" -gt 1 ]; then W_WHY="配置文件里有 $count 处给这一项赋值"; return 0; fi
     # 不是「单独一行、在最外层的赋值」：写在 if / 循环 / case / 函数 / { } 组里（一行写完的也算）、
