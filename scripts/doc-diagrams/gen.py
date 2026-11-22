@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+
+# ── The animated explainer diagrams in `docs/images/`: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The animated explainer diagrams in `docs/images/` → `tests/doc-diagrams.test.sh`. Never hand-edit
+# those SVGs: change the table in `scripts/doc-diagrams/gen.py`, rerun `python3
+# scripts/doc-diagrams/gen.py`, commit the output. The test regenerates and diffs, then cuts each
+# cycle at every keyframe and judges every piece from its two end values — no fixed-interval sampling,
+# which misses short glitches (at most one caption at any instant; a caption only while the red box is
+# parked on its step or sliding away from it; the box visits the steps in order; no script / id /
+# external reference). When the workflow a diagram shows changes, update its captions in the same PR
+#
 """Generate the animated + static explainer diagrams under docs/images/ (GitHub#76).
 
 Usage: python3 scripts/doc-diagrams/gen.py [out_dir]   (default: docs/images)

@@ -14,6 +14,25 @@
 # 只会让那一个环节照旧发出没图、没引用的评论。所以按「规矩 × 入口」矩阵逐格断言：该在的在、
 # 不该在的不在、多份副本逐字一致、旧的互相冲突的说法（「第一个看得见的行是标题」「没有图就不
 # 生成」）一处都不剩；负对照按格子做——只删一个入口的那一份，其余入口原样，要求那一格变红。
+
+# ── Reply layout: mock-ups, quoting, review hand-off skeleton: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# Reply layout: mock-ups, quoting, review hand-off skeleton (GitHub#238: "界面改动配设计稿、选择题配样例图" in the
+# three worker templates — since GitHub#335 a proposal that changes how the interface looks must carry
+# a design mock-up whether or not it asks a choice question, autopilot items included; review step 2L
+# item ④ rejects a proposal without one, a project with no image host describes the before / after
+# difference in words instead, and the image-safety rules are only referenced from the one "评论配图标准"
+# item, never copied — "回复人时先引用人这一轮说的话" in the issue / PR reply templates and the review template,
+# item 1 of the four hand-off sections plus review step 3 saying the `##` title comes after the quote
+# block, the issue-side "交人评论必须带上人工问题的最终回答" whose rule bullets match the PR-side copy byte for byte,
+# review step 2L and the full hand-off skeleton, and `prompts/requester-bot-merge-note.md` appended by
+# `requester_bot_handoff_section` only with report-first on) → `tests/reply-layout-prompts.test.sh`
+# (~12 s; `MUTATION=1` adds 24 broken copies, each removing one entry point's copy only). It asserts a
+# rule × entry-point matrix — present where it belongs, absent elsewhere, copies identical, no old
+# conflicting phrase left ("first visible line is the title", "no images, don't generate") — renders
+# the image-host placeholder `${REVIEW_ASSET_BASE_URL}` through the real dispatch scripts (set /
+# empty), and requires the hand-off section with report-first off to equal the merge-base byte for
+# byte. Edit every copy together
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

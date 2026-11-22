@@ -22,6 +22,28 @@
 #
 # 写用 gh_write（与 worker 自己发评论是同一个身份），读用 gh。所有输出走 stdout：
 # _lib.sh 顶部把 fd 2 永久指向了 /dev/null，worker 看不到 stderr。
+
+# ── External requester bot: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# External requester bot (GitHub#95 / #97: the waiting label, `scripts/notify-requester-bot.sh` (+ the
+# early-name forwarder `notify-relay.sh`), `prompts/requester-bot-handoff.md`, `flip_to_doing`, the
+# greedy skip list / self-heal skip, the webhook call (GitHub#100), the daemon's merge / close notice,
+# old `RELAY_*` config names) → `tests/requester-bot.test.sh` (~4 min by default, ~12 min with
+# `MUTATION=1`; a fake webhook on 127.0.0.1 records every request; one timeout case really waits the
+# default 10 s, the others shorten it with `REQUESTER_BOT_WEBHOOK_TIMEOUT` or answer after 2 s,
+# GitHub#211). With the feature off it diffs the poller's GitHub calls, dispatches, all four composed
+# prompts (merge-base scripts composing the current templates, so later template edits do not trip it)
+# and the post-merge pass (incl. `state.json`) against the merge-base copy byte for byte. Only the
+# README rows and `docs/requester-bot*.md` may name a concrete bot (the generated retrospective
+# records under `docs/retrospectives/` are history and are excluded). The handoff rules are appended
+# by `compose_prompt_template`, never written into the built-in templates — projects that replace a
+# whole template would miss them. Every dispatch path flips to `doing/agent` through `flip_to_doing`,
+# so the waiting label is removed in one place. "Is this a bot-filed request" and "call the webhook"
+# live once in `_lib.sh` (`requester_bot_item_origin` / `requester_bot_webhook_notify`), shared by the
+# wake-up script and the merge / close notice — don't copy them. The wake-up script calls the webhook
+# from its single success exit only; the URL / header / key reach curl via `--config -` on stdin,
+# never argv, and never appear in any output or log. The bot is no longer assigned or asked to review:
+# `REQUESTER_BOT_ACCOUNT` only identifies bot-filed issues
+#
 set -euo pipefail
 
 usage() { echo "用法: notify-requester-bot.sh --config <项目配置> <issue 或 PR 编号>"; exit 2; }

@@ -14,6 +14,18 @@
 #   4. 网络边界的说法：四份对外文档（两份 README、两份说明）都写到远程 daemon 的三段连接（打开添加窗口就探测
 #      每台在线设备、只连选定 / 已配对的机器、不带 GitHub 凭据），且没有「配对前没有任何连接」的旧说法
 # 另把检查器喂一份坏文档（断链、错锚点、缺图），它必须报错——证明上面的「全过」不是什么都没查。
+
+# ── The desktop client's user guide: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# The desktop client's user guide (GitHub#475: `docs/client.md` / `docs/client.zh.md`, the client
+# section and the "two things" table of both READMEs, the screenshots in `docs/client-screens/`) →
+# `tests/client-docs.test.sh` (~1 s: relative links, images and anchors resolve, both languages use
+# the same pictures, sections and in-progress issues, all four public pages state the remote-daemon
+# network boundary). Change the two languages together. The screenshots are never hand-made: `cd
+# client && CAVIL_DOC_SHOTS=1 npm run test:e2e -- doc-screenshots` (add `CAVIL_E2E_ENGINE=chromium`
+# where WebKit cannot start) renders them from the fake GitHub and the recorded public data, so they
+# show no private repository; rerun it after a change people can see, and update the guide's text with
+# it. Keep them out of `docs/images/` for the same reason as the logo
+#
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

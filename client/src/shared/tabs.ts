@@ -3,6 +3,41 @@
 // machine) and the window (which draws it): what a tab carries, which status its icon shows, when
 // an item that no complete source read carries is checked by itself, and how the list changes.
 
+// ── The client's detail tabs: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+// The client's detail tabs (GitHub#397: `client/src/shared/tabs.ts` — the one place that decides a
+// tab's status icon, when an item no complete read carries is checked by itself, and how the list
+// changes — the `tab*` block in `client/src/app/controller.ts`, `App.tsx` / `TabBar.tsx`, the macOS
+// menu's ⌘W in `client/src-tauri/src/main.rs` + `desktop::close_key`; GitHub#442: the floating panel
+// as the default way to open an item — `openItem` in `App.tsx`, the `float` mode of `DetailPanel.tsx`,
+// `outsideClick.ts`, `panelWidth.ts`, the right-click menu `OpenMenu.tsx`, ⌘1…⌘9 = `tabAt` in
+// `tabs.ts`, the layouts on ⌘⇧1/2/3 in `shortcuts.ts`) → `cd client && npx vitest run
+// test/unit/tabs.test.ts test/unit/tabs-controller.test.ts test/unit/shortcuts.test.ts
+// test/unit/outsideClick.test.ts && npm run test:e2e -- tabs` (the controller file ~45 s: real back
+// end, fake GitHub, a clock moved by hand). The board is the fixed home tab and stays mounted behind a
+// detail tab; only the tab in front has its detail mounted, and what it holds unsent is kept per tab
+// in `App.tsx` — never put a draft back into the detail's own state alone. A plain click opens the
+// floating panel over the board (it belongs to the home tab: drawn only while home is in front, its
+// unsent text kept in `App.tsx` too); ⌘ / Ctrl + click a tab in front, the middle button a tab behind;
+// an item that already has a tab goes to that tab — one item never has two reply boxes. The tab bar is
+// drawn only while a tab is open. A digit shortcut is matched by the physical key (`code`), never by
+// what Shift / ⌥ / the layout turn it into; macOS keeps ⌘⇧3 for its screenshot, hence the macOS-only
+// ⌥⌘1/2/3. The discussion frame forwards the key position (`code`) exactly as it got it — a digit's,
+// another key's, or none (`''`) — and `frameKey` judges it with the window's own `matches`; never drop
+// a position that is not a digit and fall back to the character (code review round 2: a non-digit key
+// typing "1" then picked a tab from the discussion only). The frame sends `key` raw, named keys
+// included (Ctrl + number pad 1 reports `End` on `Numpad1` — round 3), and its pre-filter is only a
+// candidate check with the same digit rule; the one decision is the window's. `tabs.spec.ts` sends one
+// matrix of event shapes and real presses to both places and compares the tab that ends up in front.
+// ⌘R in a detail tab is that detail's refresh button (`refreshHere`), on the home tab still "sync
+// now". An item a source read completely in this run carries follows the sync rounds with no request
+// of its own; any other is read by itself for as long as its tab is open — open: every round, ended:
+// every 10 minutes — and **never "it ended, so stop reading"** (plan review round 1: a closed item is
+// reopened and commented on). A check that fails leaves the tab as it was and is due again with the
+// next round: "could not read" is neither "closed" nor "unchanged". The menu code is built on every
+// system so that Linux compiles it, but only a Mac runs it: after changing it, press ⌘W on a Mac by
+// hand (a detail tab in front closes; on the home tab the window hides)
+//
+
 import type { IssueStateReason, Item, ItemKind, ItemState, SourceStatus } from './types';
 import type { OpRecord } from './ops';
 import { zhKey } from './i18n';
@@ -233,6 +268,32 @@ export function afterClose(keys: string[], closing: string, active: string): str
 export type AutoCloseVerdict = 'close' | 'hold' | 'wait' | 'drop';
 
 /** The one rule, for tabs and the floating panel alike. `place`: is the place still there, does it hold unsent text. */
+// ── The tab / floating panel put away after an action started from it: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+// The tab / floating panel put away after an action started from it (GitHub#447: a close, once GitHub
+// took it — `autoCloseVerdict`; GitHub#633: 交给 agent / 托管, as soon as the client accepted it, no
+// waiting for GitHub, the maintainer's choice in #633 — `handOffCloseVerdict`; both in
+// `client/src/shared/tabs.ts`, one registration path in `App.tsx`: `closeStarted` / `settleCloses`,
+// keyed by the opening it came from) → `cd client && npx vitest run test/unit/tabs.test.ts &&
+// CAVIL_E2E_ENGINE=chromium npm run test:e2e -- tabs --grep 'GitHub#447|GitHub#633'`. Only the opening
+// an action came from is put away (a tab: the same life, in front or behind; the panel: the same
+// opening); while it holds text not sent it stays with one line saying why (`HeldLine`, worded per
+// action). A hand-over's reply text moves into the operation: which reply is "the one that went with
+// it" is decided by the reply box's draft number (`nextReplyDraft`, one sequence for the window, kept
+// in `TabDraft.replyVer`), never by comparing words — the box emptied and the same words typed again
+// is a new draft (`replyLeftAfterHandOff`). The detail reports an accepted hand-over even when it is
+// no longer mounted (another tab came forward before the client answered) and reports nothing else:
+// the window drops exactly that draft from the place's kept draft (`dropSentReply`); inside a detail —
+// the opening that sent it, or one mounted again from the kept draft and told through `droppedReplies`
+// — the draft leaves through one function, `dropSentReplyHere`, which also takes everything hanging
+// off the box (the preview and a preview request still on its way, the pasted-image line, the Esc
+// note, the kept-comment link) — never clear the words in one place and the derived state in another
+// (round 3: a remounted detail emptied the box and left the sent words' preview with no button to put
+// it away); then judges "text not sent" on that kept draft as it is now with the same `place` as a
+// close — never on the detail's own view, which may be an unmounted one: a draft revived in a tab sent
+// the same comment twice (PR #638 code review round 1), and new words typed after coming back to the
+// tab were closed away with it (round 2). A refusal before anything was sent leaves the detail and its
+// text as they were
+//
 export function autoCloseVerdict(r: Pick<OpRecord, 'kind' | 'steps' | 'running' | 'unlocked'> | null | undefined, place: { present: boolean; dirty: boolean }): AutoCloseVerdict {
   if (!r || (r.kind !== 'closeIssue' && r.kind !== 'closePr') || !place.present) return 'drop';
   const s = r.steps[0];

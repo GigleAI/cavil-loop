@@ -1,4 +1,57 @@
 #!/usr/bin/env python3
+
+# ── External user documents in general: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
+# External user documents in general (GitHub#615: the rules in `docs/AGENTS.md`, the shared parser and
+# the list of external documents in `tests/lib/doc_links.py`) → `tests/doc-links.test.sh` (~2 s; every
+# relative link and anchor in the external documents, the links in `prompts/`, `.agents/` and every
+# AGENTS.md that point at them, each document's other-language copy). Anchors keep the text of inline
+# code in a heading (GitHub does; only the backticks go) — the earlier client-guide parser dropped
+# inline code first and reported working links as broken. Markdown links, images and reference
+# definitions are read by markdown-it-py, a CommonMark parser vendored under `tests/lib/vendor/` (MIT,
+# with its `mdurl` dependency; copied unchanged from the Debian packages, `cli/` left out — see the
+# README there; never edit those files, copy a newer release over them); raw HTML it passes through is
+# read by Python's HTML parser for the `src` / `href` / `srcset` of `<img>` / `<a>` / `<source>`. Code
+# and HTML comments therefore never yield a link, exactly as GitHub renders. Every reference
+# definition is checked, used or not. The test keeps a table of link forms (existing and missing), one
+# of non-links and one of block contexts (lists, quotes, indented code), and asserts the vendored copy
+# is the one imported. Why a vendored parser: a hand-written scanner was found reading a new form
+# wrongly in each of review rounds 1–4 on PR #620 (cut `draft(v(2)).md` short, ignored
+# `src=missing.png`, read text, a title and a comment as links, skipped a definition after a fenced
+# block), and the maintainer chose the parser (PR #620 Q1 = A); the tests need nothing installed, so
+# CI is unchanged. `tests/client-docs.test.sh` uses the same module; never copy the parser again. No
+# issue / PR numbers in the external documents (GitHub#617) → `tests/doc-numbers.test.sh` (~1 s):
+# `--numbers` in the same module scans exactly `external_docs` — command blocks included, since a
+# shell comment in a documented command is read by users — for `GitHub#N`, `PR #N`, `owner/repo#N` and
+# a parenthesised `(#N)`; every AGENTS.md, `prompts/`, `.agents/`, `docs/retrospectives/` and
+# `docs/design/` keep their numbers and are never scanned. A bare `#42` and a link whose text is a
+# number are let through on purpose (the README's worked example, a search example, a link to a
+# feature still in progress) — telling those from a history reference needs a reader, so the reviewer
+# checks them. A number inside a command block a test runs verbatim is changed in both languages
+# together (the tests compare the two copies). The orchestration guide (`docs/orchestration{,.zh}.md`,
+# the third diagram in `scripts/doc-diagrams/gen.py`) → `tests/orchestration-docs.test.sh` (~3 s:
+# every upper-case name is judged per occurrence where it stands by `tests/lib/doc_placeholders.py`
+# (GitHub#617) — a `${NAME}` counts as a template placeholder only in the compose-prompt section and
+# only when the placeholder table lists it; in a hook's section a name read there must be one that
+# hook's caller passes, never a config setting, and an assignment on the same line never covers a
+# read; no shell semantics are inferred (when an assignment takes effect cannot be read off the text —
+# indentation, subshells, command-prefix assignments and commented-out lines each broke a guess in
+# review rounds 3–4 of PR #642), so the guide's example scripts write their own variables in lower
+# case (rule in `docs/AGENTS.md`, for the orchestration guide only — other documents' command blocks
+# are not bound by it) and every upper-case name is checked; elsewhere a setting in the config example
+# or an environment variable the calling script really reads or passes — both languages name the same
+# ones, folds and headings, the two example hooks and the forced latest-site rebuild run verbatim with
+# only HOME / PATH — the rebuild against the real `refresh-latest-site.sh` with the tool at
+# `~/.agents/skills/cavil-loop` and the project elsewhere, checking what was built from a clean main
+# checkout, one with uncommitted edits — they go into the build while HEAD is recorded — and one on
+# another branch) plus `tests/doc-diagrams.test.sh`. Whether each placeholder in the table is really
+# rendered is checked by running the three real dispatch scripts in a clean environment →
+# `tests/orchestration-placeholders.test.sh` (~10 s): every table name has an expected value per entry
+# (exact value, pattern, empty, or left as `${NAME}`), a name without an expectation or an expectation
+# without a name fails, and a missing output line is a failure, never "replaced" — a new placeholder
+# in the table needs its row there; its two latest-site-refresh boundaries (cleanup on merge off → no
+# refresh; cleanup script fails → refresh still starts, and again next poll) are run against the real
+# poller in `tests/project-config-poll.test.sh` 【4b】
+#
 """Relative links and anchors in markdown documents — the one parser every doc check uses.
 
 Used by tests/client-docs.test.sh (the client guide and its entry points) and
