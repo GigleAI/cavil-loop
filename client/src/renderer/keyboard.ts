@@ -86,6 +86,21 @@ export function frameKey(key: unknown, mod: unknown = false, shift: unknown = fa
   return press(frameEvent(key, mod, shift, code, meta, ctrl, alt), 'none', frameAllowed) !== null;
 }
 
+/**
+ * GitHub#653: the words selected in the discussion that came with a key the frame forwarded. Set right
+ * before that key is judged and cleared right after (frameKey runs the shortcut at once); the "reply" key
+ * takes them — whichever detail panel's handler runs — and quotes them instead of only going to the box.
+ */
+let frameQuote: string | null = null;
+export function setFrameQuote(q: unknown): void {
+  frameQuote = typeof q === 'string' && q.length <= 1_000_000 ? q : null;
+}
+export function takeFrameQuote(): string | null {
+  const q = frameQuote;
+  frameQuote = null;
+  return q;
+}
+
 /** GitHub#502: a plain Esc the discussion frame handed over because find is open: it only ever closes find */
 export function frameFindEscape(): void {
   if (signedInNow) findEscapeFromFrame(topLayer() !== 'none');

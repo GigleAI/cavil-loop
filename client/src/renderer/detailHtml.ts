@@ -160,7 +160,7 @@ function bodyWithTasks(e: TimelineEntry, canTick: boolean, pending: PendingTick 
   return { html, note };
 }
 
-function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string): string {
+function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: PendingTick | null = null, wrap = false, web?: string, canQuote = false): string {
   // the login is GitHub's; "deleted account" is the client's own words
   const who = e.author ? `<b data-verbatim="github">${escapeHtml(e.author)}</b>` : `<b>${escapeHtml(t('（已删除的账号）'))}</b>`;
   const at = escapeHtml(when(e.at));
@@ -193,8 +193,13 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
     e.editSource !== undefined && (e.kind === 'body' || e.kind === 'comment')
       ? `<button type="button" class="edit" data-edit${canTick ? '' : ` disabled title="${escapeHtml(t('离线或有修改在途时不能编辑'))}"`}>${escapeHtml(t('编辑'))}</button>`
       : '';
+  // GitHub#653: quote this entry (or the words selected in it) into the reply box — only while the box takes text
+  const quoteBtn =
+    e.quoteSource !== undefined
+      ? `<button type="button" class="edit quote" data-quote${canQuote ? '' : ` disabled title="${escapeHtml(t('离线或有操作在途时不能回复'))}"`}>${escapeHtml(t('引用回复'))}</button>`
+      : '';
   // below everything the entry holds (a review's line comments included)
-  const tools = webLink || editBtn ? `<div class="tools">${webLink}${editBtn}</div>` : '';
+  const tools = webLink || editBtn || quoteBtn ? `<div class="tools">${webLink}${editBtn}${quoteBtn}</div>` : '';
   const body = (e.bodyHtml.trim() ? `<div class="md" data-verbatim="github">${tasks.html}</div>` : '') + tasks.note + note;
   let lines = '';
   if (e.lineComments?.length) {
@@ -246,10 +251,12 @@ export interface TimelineOptions {
   web?: string;
   /** GitHub#395: no connection — "reload" of a failed image cannot be asked for */
   offline?: boolean;
+  /** GitHub#653: the reply box takes text now — "引用回复" is enabled */
+  canQuote?: boolean;
 }
 
 export function timelineDocument(detail: ItemDetail, dark: boolean, unfold: Unfold = 'latest', opts: TimelineOptions = {}): string {
-  const { render = '', canTick = false, view = null, pending = null, wrap = false, web, offline = false } = opts;
+  const { render = '', canTick = false, view = null, pending = null, wrap = false, web, offline = false, canQuote = false } = opts;
   const known = new Set(view?.known ?? []);
   const opened = new Set(view?.open ?? []);
   const isOpen = (e: TimelineEntry, i: number) => (known.has(e.id) ? opened.has(e.id) : isUnfolded(i, unfold));
@@ -291,7 +298,7 @@ ${codeCss(dark, '.md ')}
 .cb{position:relative;margin:1em 0}
 .cb>pre{margin:0}
 body[data-wrap] .md pre{white-space:pre-wrap;overflow-wrap:anywhere}
-.cbar{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0}
+.cbar{position:absolute;top:6px;right:6px;display:flex;gap:4px;opacity:0;-webkit-user-select:none;user-select:none}
 .cb:hover>.cbar,.cb:focus-within>.cbar{opacity:1}
 .cbtn{font:12px/18px -apple-system,BlinkMacSystemFont,'PingFang SC','Noto Sans CJK SC','Segoe UI',sans-serif;color:${muted};background:${bg};border:1px solid ${border};border-radius:6px;padding:1px 8px;cursor:pointer}
 .cbtn:focus-visible{outline:2px solid ${accent};outline-offset:1px}
@@ -320,6 +327,7 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 .tools{margin:0 12px 8px;text-align:right}
 .tools .edit{font:12px inherit;color:${accent};background:none;border:1px solid ${line};border-radius:6px;padding:1px 10px;cursor:pointer}
 .tools .edit[disabled]{color:${muted};cursor:default}
+.tools .edit+.edit{margin-left:6px}
 .tools .web{font-size:12px;margin-right:10px}
 .tools .web:last-child{margin-right:0}
 .blocked .web{margin-left:2px}
@@ -332,7 +340,7 @@ body[data-wrap] .cbtn[data-code-wrap]{color:${accent};border-color:${accent}}
 @keyframes imgspin{to{transform:rotate(360deg)}}
 [data-img-hidden]{display:none!important}
 </style></head><body data-render="${escapeHtml(render)}" data-scroll="${scroll}"${wrap ? ' data-wrap=""' : ''}${offline ? ' data-offline=""' : ''}>
-${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap, web)).join('\n')}
+${detail.timeline.map((e, i) => entryHtml(e, isOpen(e, i), canTick, pending && pending.entryId === e.id && (e.kind === 'body' || e.kind === 'comment') ? pending : null, wrap, web, canQuote)).join('\n')}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }
