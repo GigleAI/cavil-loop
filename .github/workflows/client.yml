@@ -82,11 +82,13 @@ concurrency:
   # "publish" — share one group that queues and never cancels a running one (a third trigger only
   # replaces one still waiting). GitHub#665: a push to main publishes too, in a group of its own (also
   # never cancelling a running one; a newer push replaces one still waiting), so a push never pushes out
-  # a waiting night. Runs of the two groups may build at the same time; they meet only at the publish
-  # job, which has one slot of its own (`client-dev-release-publish`) and re-reads the release list
-  # before writing. That slot keeps one waiting job, and the one replacing it may be the older build
-  # (it finished packaging later): that newer build is then not published this time, until the next
-  # merge or the next night — the gap the maintainer accepted on #665 (Q1 = C).
+  # a waiting night. Each group runs one run at a time, so at most two runs (one per group) can build
+  # at the same time; they meet only at the publish job, which has one slot of its own
+  # (`client-dev-release-publish`) and re-reads the release list before writing: one writes, the other
+  # waits and then writes, or writes nothing when a higher version is out already. With two runs at
+  # most, nothing there is ever replaced (tests/release-auto.test.sh, "several runs in order"). What is
+  # replaced is a push still waiting for its group, by a newer push that carries its changes; if that
+  # newer one fails, the night (or the next merge) builds it.
   group: client-${{ inputs.tag && format('release-{0}', inputs.tag) || ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'dev-publish' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'dev-publish-push' || github.event.pull_request.number || github.ref }}${{ !inputs.tag && github.event_name == 'schedule' && github.event.schedule != '30 20 * * *' && '-weekly' || '' }}
   cancel-in-progress: ${{ !(!inputs.tag && ((github.event_name == 'schedule' && github.event.schedule == '30 20 * * *') || (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name == 'push' && github.ref == 'refs/heads/main'))) }}
 
@@ -107,7 +109,8 @@ jobs:
   #   build    whether the Macs and Windows are built at all: every release build, the weekly run, a
   #            manual run; on a publishing run (a push to main included) only when there is something
   #            new (scripts/dev-plan.mjs); never on a pull request (quick tests only)
-  #   quick    whether the quick tests run: everywhere except a publishing run with nothing to build
+  #   quick    whether the quick tests run: everywhere except a nightly or manual publishing run with
+  #            nothing to build (a push to main always runs them)
   #   sign     true when the update packages are signed with the maintainer's key (a release, or a
   #            publishing run); every other run uses a throw-away key
   #   dev_version  on a development build (and on every publishing run), its version, counted once
@@ -204,7 +207,10 @@ jobs:
             GITHUB_OUTPUT="$RUNNER_TEMP/dev-plan.out" node scripts/dev-plan.mjs "${args[@]}"
             build="$(sed -n 's/^build=//p' "$RUNNER_TEMP/dev-plan.out")"
             [ "$build" = true ] || [ "$build" = false ] || { echo "::error::scripts/dev-plan.mjs gave no decision"; exit 1; }
-            [ "$build" = true ] || quick=false
+            # nothing new: a night ends here; a push to main still runs its quick tests (GitHub#665: a
+            # merge always tested them — e.g. a revert back to the published build changed the client
+            # in this push but not since that build, so there is nothing to build or publish)
+            [ "$build" = true ] || [ "$EVENT" = push ] || quick=false
           elif [ "$EVENT" != push ] && [ "$EVENT" != pull_request ]; then
             build=true
           fi
@@ -731,7 +737,8 @@ jobs:
   # or not at all, never on top of a newer one, writes nothing when that version is already out
   # complete, and keeps the latest 10. Runs that publish queue in two groups (the workflow's
   # `concurrency`: the night and manual runs, and pushes to main); this job has one group of its own
-  # for all of them, so two publishes never overlap. It waits for no other run inside that slot.
+  # for all of them, so two publishes never overlap. It waits for no other run inside that slot, and
+  # with one run per group at most two ever reach it together.
   dev-release:
     name: publish development build
     if: needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true' && needs.mode.outputs.tag == ''
