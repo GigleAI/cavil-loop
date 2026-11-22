@@ -252,6 +252,7 @@ RE_FOOTER_START = re.compile(r"^<details><summary>⏱️ 耗时：")
 RE_HTML_COMMENT_LINE = re.compile(r"^<!--.*-->$")
 RE_HR = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
 TITLE_MAX = 80
+MAX_WALL_SECS = 2 ** 53 - 1   # = Number.MAX_SAFE_INTEGER，客户端 wallSecsOf 的上限
 ROLE_WORD = {"worker": "worker", "review": "复审"}
 
 
@@ -267,9 +268,15 @@ def wall_secs_of(body):
     if not m:
         return None
     vals = [t[len("wall_secs="):] for t in m.group(1).split() if t.startswith("wall_secs=")]
+    # 有效范围与客户端相同：非负整数、不超过 2^53−1（JavaScript 能精确表示的最大整数）；越界、超长都算没有记录。
+    # 先限位数再转整数：超长数字串直接 int() 会抛 ValueError（Python 的整数转换位数上限），交付就写不出标题
     if len(vals) != 1 or not re.fullmatch(r"[0-9]+", vals[0]):
         return None
-    return int(vals[0])
+    digits = vals[0].lstrip("0") or "0"   # 前导零不算位数（客户端 Number("007") 也是 7）
+    if len(digits) > 16:
+        return None
+    n = int(digits)
+    return n if n <= MAX_WALL_SECS else None
 
 
 def fmt_dur(secs):

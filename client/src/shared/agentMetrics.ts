@@ -104,7 +104,7 @@ export interface RoundLog {
   reviews: number;
   /** sections without a usage record (their time is not in `total`) */
   missing: number;
-  /** sum of the known times; absent when no section has one */
+  /** sum of the known times; absent when no section has one, or the sum is past Number.MAX_SAFE_INTEGER */
   total?: number;
   /** the last section's title without its time part ("✅ …"), when that section has a title */
   latest?: string;
@@ -188,13 +188,15 @@ export function roundLogOf(source: unknown): RoundLog | undefined {
   const sections = roundLogSections(source);
   if (!sections) return undefined;
   const known = sections.filter((s) => s.wallSecs !== undefined);
+  const sum = known.reduce((n, s) => n + s.wallSecs!, 0);
   const last = sections[sections.length - 1];
   return {
     sections,
     workers: sections.filter((s) => s.role === 'worker').length,
     reviews: sections.filter((s) => s.role === 'review').length,
     missing: sections.length - known.length,
-    ...(known.length ? { total: known.reduce((n, s) => n + s.wallSecs!, 0) } : {}),
+    // a sum past the exactly representable range is not a number to show (each part already is in range)
+    ...(known.length && Number.isSafeInteger(sum) ? { total: sum } : {}),
     ...(last?.title !== undefined ? { latest: titleSentence(last.title) } : {}),
   };
 }

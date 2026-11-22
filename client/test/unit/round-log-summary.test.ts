@@ -8,18 +8,30 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { formatDuration, roundLogOf, roundLogSections, titleSentence } from '../../src/shared/agentMetrics';
+import { formatDuration, roundLogOf, roundLogSections, titleSentence, wallSecsOf } from '../../src/shared/agentMetrics';
+import { parse } from 'parse5';
 import { buildTimeline } from '../../src/data/detail';
 import { timelineDocument } from '../../src/renderer/detailHtml';
 import type { ItemDetail, TimelineEntry } from '../../src/shared/actions';
 
 const SCRIPTS = fileURLToPath(new URL('../../../scripts', import.meta.url));
+// the CommonMark parser vendored for the shell tests (markdown-it-py, raw HTML on) stands in for GitHub's renderer
+const VENDOR = fileURLToPath(new URL('../../../tests/lib/vendor', import.meta.url));
+/** wall_secs values both sides must judge alike: in range, the edge, past it, very long, leading zeros, not numbers */
+const WALL_VALUES = ['0', '1', '9007199254740991', '9007199254740992', '99999999999999999999', '9'.repeat(5000), '00000000000000000007', '0'.repeat(5000) + '5', '-1', '1.5', '', '1e3'];
 
 interface PySection {
   sec: string;
   role: 'worker' | 'review';
   wall: number | null;
   title: string | null;
+}
+interface Run {
+  cases: Case[];
+  /** round_log.wall_secs_of and the fold title for each of WALL_VALUES */
+  walls: { wall: number | null; title: string }[];
+  /** the full record rendered to HTML */
+  html: string;
 }
 interface Case {
   name: string;
@@ -29,12 +41,14 @@ interface Case {
 }
 
 /** Every record below, written and read back by the real python code in one run. */
-function cases(): Case[] {
+function run(): Run {
   const py = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(SCRIPTS)})
 sys.path.insert(0, ${JSON.stringify(SCRIPTS + '/drivers/token-usage')})
+sys.path.insert(0, ${JSON.stringify(VENDOR)})
 import round_log as r, comment_footer as c
+from markdown_it import MarkdownIt
 START = 1794540000
 KV = "in=1 out=2 cost_usd=1 cost_state=full models=m model_unknown=no ai_secs=5 ai_requests=1"
 def foot(text, wall):
@@ -71,11 +85,16 @@ for name, body in [("full", full), ("partial", partial), ("none", none), ("dup",
     except r.FormatError:
         py = None
     out.append({"name": name, "record": body, "py": py})
-print(json.dumps(out))`;
+walls = []
+for v in ${JSON.stringify(WALL_VALUES)}:
+    b = "x\\n<!-- agent-metrics agent=claude wall_secs=%s in=1 -->" % v
+    walls.append({"wall": r.wall_secs_of(b), "title": r.section_title("worker", b)})
+print(json.dumps({"cases": out, "walls": walls, "html": MarkdownIt("commonmark", {"html": True}).render(full)}))`;
   return JSON.parse(execFileSync('python3', ['-I', '-c', py], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', TZ: 'Asia/Shanghai' } }));
 }
 
-const all = cases();
+const ran = run();
+const all = ran.cases;
 const byName = (n: string) => all.find((c) => c.name === n)!;
 
 describe('round log sections: the client cuts what round_log.py cuts (GitHub#651)', () => {
@@ -130,6 +149,26 @@ describe('round log sections: the client cuts what round_log.py cuts (GitHub#651
     expect(titleSentence('⏱️ 1m 20s · 复审 · ❌ 未通过 · 需补')).toBe('❌ 未通过 · 需补');
   });
 
+  it('one valid range for a usage record\'s seconds on both sides: the same values in, the same verdicts out (GitHub#651 review #7)', () => {
+    WALL_VALUES.forEach((v, i) => {
+      const ts = wallSecsOf(`x\n<!-- agent-metrics agent=claude wall_secs=${v} in=1 -->`);
+      expect(ts ?? null, v.slice(0, 24)).toBe(ran.walls[i].wall);
+      // the writer's title agrees: a time exactly when both sides read one
+      expect(ran.walls[i].title.startsWith(ts === undefined ? '⏱️ 耗时未记录 · ' : `⏱️ ${formatDuration(ts)} · `), v.slice(0, 24)).toBe(true);
+    });
+    // the reachable side: in-range values were read, the edge included
+    expect(ran.walls.filter((w) => w.wall !== null).map((w) => w.wall)).toEqual([0, 1, 9007199254740991, 7, 5]);
+  });
+
+  it('a sum past the exactly representable range is no time, never a rounded one', () => {
+    const big = (id: string, w: number) => `<details><summary>⏱️ x · worker · ✅ a</summary>\n\n<!-- cavil-round-log:sec id=${id} role=worker at=2026-01-01T00:00:00Z after=1 of=- -->\na\n<!-- agent-metrics agent=claude wall_secs=${w} in=1 -->\n<!-- cavil-round-log:sec-end -->\n\n</details>`;
+    const rec = ['<!-- cavil-round-log:v1 -->', big('aaaaaa000001', 9007199254740991), big('aaaaaa000002', 1)].join('\n\n');
+    const rl = roundLogOf(rec)!;
+    expect(rl.sections.map((s) => s.wallSecs)).toEqual([9007199254740991, 1]);
+    expect(rl.total).toBeUndefined();
+    expect(roundLogOf(['<!-- cavil-round-log:v1 -->', big('aaaaaa000001', 9007199254740990), big('aaaaaa000002', 1)].join('\n\n'))!.total).toBe(9007199254740991);
+  });
+
   it('not a round log: nothing', () => {
     expect(roundLogOf('正文\n<!-- agent-metrics agent=claude wall_secs=60 -->')).toBeUndefined();
     expect(roundLogOf(null)).toBeUndefined();
@@ -168,6 +207,41 @@ describe('the folded line of a round log (GitHub#651)', () => {
     expect(h).not.toContain('class="dur"');
     expect(h).toContain('交付 1 次 · 复审 0 次');
     expect(h).toContain('📝 修订版：这一轮没生成用量');
+  });
+
+  it('the record as rendered HTML, through the client\'s detail: each section its own closed fold, its own footer inside it (GitHub#651 review #8)', () => {
+    const tl = buildTimeline({ item, comments: [{ id: 'C1', url: 'https://github.com/o/r/issues/7#issuecomment-1', createdAt: '2026-01-01T01:00:00Z', body: byName('full').record, bodyHTML: ran.html, author: { login: 'loop-bot' }, viewerCanUpdate: false }], reviews: [] } as never);
+    // unfolded, so the record's own HTML is in the document
+    const html = timelineDocument({ key: 'o/r#7', repo: 'o/r', number: 7, kind: 'issue', title: 't', url: 'https://github.com/o/r/issues/7', state: 'open', pr: null, fetchedAt: 0, labels: [], timeline: tl } as ItemDetail, false, 'all');
+    type N = { nodeName: string; attrs?: { name: string; value: string }[]; childNodes?: N[]; value?: string };
+    const all: N[] = [];
+    const walk = (n: N) => { all.push(n); (n.childNodes ?? []).forEach(walk); };
+    walk(parse(html) as unknown as N);
+    const text = (n: N): string => (n.nodeName === '#text' ? n.value! : (n.childNodes ?? []).map(text).join(''));
+    const cls = (n: N) => n.attrs?.find((a) => a.name === 'class')?.value ?? '';
+    const entry = all.find((n) => n.nodeName === 'details' && n.attrs?.some((a) => a.name === 'data-entry' && a.value === 'C1'))!;
+    const md: N[] = [];
+    const walkMd = (n: N) => { if (n.nodeName === 'div' && cls(n) === 'md') md.push(n); (n.childNodes ?? []).forEach(walkMd); };
+    walkMd(entry);
+    expect(md).toHaveLength(1);
+    const kids = (n: N) => (n.childNodes ?? []).filter((c) => c.nodeName === 'details');
+    const summaryOf = (n: N) => text((n.childNodes ?? []).find((c) => c.nodeName === 'summary')!);
+    const secs = kids(md[0]).filter((d) => summaryOf(d).startsWith('⏱️ ') && !summaryOf(d).startsWith('⏱️ 耗时：'));
+    // four sibling folds directly in the comment, none open: opening one does not open a neighbour
+    expect(secs.map(summaryOf)).toEqual(roundLogSections(byName('full').record)!.map((s) => s.title));
+    expect(secs.filter((d) => d.attrs!.some((a) => a.name === 'open'))).toEqual([]);
+    for (const [i, d] of secs.entries()) {
+      // each holds exactly one nested fold — its own usage footer — and no other section
+      const inner = kids(d);
+      expect(inner.map(summaryOf).every((s) => s.startsWith('⏱️ 耗时：')), String(i)).toBe(true);
+      expect(inner, String(i)).toHaveLength(1);
+      const others = secs.filter((x) => x !== d).map((x) => summaryOf(x).split(' · ')[2]);
+      for (const o of others) expect(text(d), `${i}: ${o}`).not.toContain(o);
+    }
+    expect(text(secs[0])).toContain('验证结果');
+    // the title was escaped by the writer, so it reads literally; the body is real markdown, so its tag renders
+    expect(summaryOf(secs[1])).toBe('⏱️ 1m 20s · 复审 · ❌ 方案复审未通过，需补<b>齐</b> & 重跑');
+    expect(text(secs[1]).slice(summaryOf(secs[1]).length)).toContain('❌ 方案复审未通过，需补齐 & 重跑');
   });
 
   it('a record that cannot be read: exactly as before (no time, no counts, the intro as the preview)', () => {

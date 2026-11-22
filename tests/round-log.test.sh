@@ -827,23 +827,47 @@ has "worker 节标题：耗时 · 角色 · 首行状态句（后面的 ## 小�
 has "复审节标题：跳过轮次标记和引用，取结论标题；正文里的 < & 被转义" "$REC" "<details><summary>⏱️ 1m 20s · 复审 · ❌ 方案复审未通过，需补&lt;b&gt;齐&lt;/b&gt; &amp; 重跑</summary>"
 has "没有用量记录的一节写「耗时未记录」，首行没 emoji 补 📝，去掉 markdown 记号" "$REC" "<details><summary>⏱️ 耗时未记录 · worker · 📝 修订版：补齐 测试</summary>"
 lacks "不再有旧的「### 角色 · 时间」标题" "$REC" "### worker agent 交付 ·"
-# 结构：每个标题后面是空行 + 节开始标记，节收尾标记后是空行 + </details>，折叠块层层配对、一节一个
-o=$(printf '%s' "$REC" | python3 -c '
-import re, sys
-lines = sys.stdin.read().split("\n")
-depth, opened, bad = 0, [], []
-for i, ln in enumerate(lines):
-    if ln.startswith("<details><summary>⏱️ ") and not ln.startswith("<details><summary>⏱️ 耗时："):
-        if lines[i+1] != "" or not lines[i+2].startswith("<!-- cavil-round-log:sec "): bad.append(i)
-        opened.append(depth)
-    if ln.startswith("<details"): depth += 1
-    if ln == "</details>":
-        depth -= 1
-        if opened and depth == opened[-1]:
-            if lines[i-2] != "<!-- cavil-round-log:sec-end -->" or lines[i-1] != "": bad.append(i)
-            opened.pop()
-print(depth, len(bad), len(opened), sum(1 for l in lines if l.startswith("<!-- cavil-round-log:sec ")))')
-chk "折叠块配对、每节一个且只包住自己那一节（深度 未配对 未关 节数）" "$o" "0 0 0 3"
+# 渲染后的结构：用仓库自带的 CommonMark 解析器（tests/lib/vendor 的 markdown-it-py，允许 HTML）把整条记录渲染成
+# HTML，再用 Python 的 HTML 解析器建出 <details> 树：节的折叠块是并列的、都不带 open（展开一节不会带开别的节），
+# 每个只包住自己那一节的正文和它自己的用量 footer
+printf '%s' "$REC" > "$SANDBOX/rec.md"
+o=$(python3 - "$TEST_DIR/lib/vendor" "$SANDBOX/rec.md" <<'PY'
+import sys
+from html.parser import HTMLParser
+sys.path.insert(0, sys.argv[1])
+from markdown_it import MarkdownIt
+html = MarkdownIt("commonmark", {"html": True}).render(open(sys.argv[2], encoding="utf-8").read())
+class T(HTMLParser):
+    def __init__(self):
+        super().__init__(); self.root = {"kids": [], "text": "", "summary": "", "open": False}; self.stack = [self.root]; self.insum = False
+    def handle_starttag(self, tag, attrs):
+        if tag == "details":
+            n = {"kids": [], "text": "", "summary": "", "open": "open" in dict(attrs)}
+            self.stack[-1]["kids"].append(n); self.stack.append(n)
+        elif tag == "summary":
+            self.insum = True
+    def handle_endtag(self, tag):
+        if tag == "details": self.stack.pop()
+        elif tag == "summary": self.insum = False
+    def handle_data(self, d):
+        if self.insum: self.stack[-1]["summary"] += d
+        else:
+            for n in self.stack[1:]: n["text"] += d
+t = T(); t.feed(html)
+secs = [k for k in t.root["kids"] if k["summary"].startswith("⏱️ ") and not k["summary"].startswith("⏱️ 耗时：")]
+out = [str(len(t.stack) - 1), str(len(secs)), str(sum(k["open"] for k in secs))]
+for k in secs:
+    foot = [c for c in k["kids"] if c["summary"].startswith("⏱️ 耗时：")]
+    others = [c for c in k["kids"] if c not in foot]
+    out.append("%s|%d|%d" % (k["summary"].split(" · ")[-1][:6], len(foot), len(others)))
+# 一节的正文不出现在别的节里
+texts = [k["text"] for k in secs]
+out.append(str(sum(1 for i, a in enumerate(texts) for j, b in enumerate(texts) if i != j and "交付中有一处疑问" in a and "交付中有一处疑问" in b)))
+print(" ".join(out))
+PY
+)
+chk "渲染后：没有未关的折叠、3 个并列的节、都不展开；每节一个自己的 footer（第 3 节没有）、不含别的节" "$o" "0 3 0 ❓ 交付中有|1|0 ❌ 方案复审|1|0 📝 修订版：|0|0 0"
+has "渲染后：第一节里有它自己的正文" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from markdown_it import MarkdownIt; print(MarkdownIt("commonmark", {"html": True}).render(open(sys.argv[2], encoding="utf-8").read()))' "$TEST_DIR/lib/vendor" "$SANDBOX/rec.md")" "<h2>验证结果</h2>"
 # 切节和读取都不受标题影响：拆出的每节正文 = 交付时给的正文；标题也读得回来
 o=$(python3 - "$REPO_DIR/scripts" "$GD/comments.json" "$W1" "$R1" "$W2" <<'PY'
 import json, sys
