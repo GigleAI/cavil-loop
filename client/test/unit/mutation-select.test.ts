@@ -62,7 +62,7 @@ function repo(opts: { withList?: boolean } = {}) {
     writeFileSync(join(client, f), text);
   }
   mkdirSync(join(client, 'test', 'mutation'), { recursive: true });
-  for (const f of ['run.mjs', 'run.sh', 'select.mjs']) cpSync(join(root, 'test', 'mutation', f), join(client, 'test', 'mutation', f));
+  for (const f of ['run.mjs', 'run.sh', 'select.mjs', 'owned.mjs']) cpSync(join(root, 'test', 'mutation', f), join(client, 'test', 'mutation', f));
   mkdirSync(join(client, 'test', 'tauri'), { recursive: true });
   for (const f of ['mutations.mjs', 'mutations.sh']) cpSync(join(root, 'test', 'tauri', f), join(client, 'test', 'tauri', f));
   mkdirSync(join(top, 'tests', 'lib'), { recursive: true });

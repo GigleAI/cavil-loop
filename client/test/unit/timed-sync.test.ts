@@ -491,7 +491,8 @@ describe.each<Entry>(['window', 'shell'])('a stretch of syncing that ran over a 
     const { c, clock } = await waitingFor150(entry, { followUpSyncMs: 200 });
     clock.to(121);
     expect((await c.act({ kind: 'addLabel', key: K(139), label: 'bug' })).ok).toBe(true);
-    // the clock stays at 121 s: the round after the change runs on its own (0.2 s of real time), long before 150 s
+    // the round after the change is due 0.2 s later (GitHub#649: on the same timers as the timed rounds), long before 150 s
+    clock.to(121.2);
     await waitFor(() => rounds() === 2, 'the round after the change');
     await settle(c);
     expect(onBoard(c, 139)!.labels.map((l) => l.name)).toContain('bug');
