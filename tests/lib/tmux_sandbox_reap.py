@@ -61,14 +61,23 @@ def budget_from_env():
 
 
 def wait_all(fds, until):
-    """等这些进程句柄退出，最多到 until（单调时钟）；返回还没退出的。"""
+    """等这些进程句柄退出，最多到 until（单调时钟）；返回还没退出的。
+    用 poll 不用 select：select 只能等编号 1023 以下的描述符，调用方开着很多文件时
+    进程句柄的编号会超过它（PR #660 复审 #6）。"""
     left = set(fds)
+    if not left:
+        return left
+    poller = select.poll()
+    for fd in left:
+        poller.register(fd, select.POLLIN)
     while left:
         rest = until - time.monotonic()
         if rest <= 0:
             break
-        ready, _, _ = select.select(list(left), [], [], rest)
-        left -= set(ready)
+        for fd, _ in poller.poll(max(1, int(rest * 1000))):
+            if fd in left:
+                left.discard(fd)
+                poller.unregister(fd)
     return left
 
 

@@ -170,19 +170,22 @@ _tmux_sandbox_rm() {   # <目录>：删掉并核对真的没了；失败返回 1
 }
 
 _tmux_sandbox_exit() {
-    local rc=$? bad=0 hook r i keep=0
-    # 回调在本测试原来的选项下执行（-u 照样生效，复审 #3），每个放在单独的子 shell 里：
-    # 读到未赋值变量、exit，都只结束那个子 shell。`if` 里的命令不受 -e 影响，所以这里
-    # 不用先关 -e；本函数自己要的选项调整放在回调都跑完之后。
+    local rc=$? bad=0 hook r i keep=0 opts=$-
+    # 回调在本测试原来的选项下执行（PR #660 复审 #3）：-u、pipefail 不动；-e 先在本函数里
+    # 关掉（否则一个回调失败就把整个收尾中断），再在每个回调自己的子 shell 里按原样打开
+    # ——不能把子 shell 放在 `if` / `||` 里，那样 bash 会在里面忽略 -e，回调中途失败也
+    # 照样往下跑、最后报成功。读到未赋值变量、exit、-e 触发的退出都只结束那个子 shell。
+    set +e
     for ((i = 0; i < ${#_TMUX_SANDBOX_HOOKS[@]}; i++)); do
         hook="${_TMUX_SANDBOX_HOOKS[$i]}"
-        if ( eval "$hook" ); then r=0; else r=$?; fi
+        ( case "$opts" in *e*) set -e ;; esac; eval "$hook" )
+        r=$?
         if [ "$r" -ne 0 ]; then
             echo "tmux 沙盒：清理失败：$hook，退出码 $r" >&2
             bad=1
         fi
     done
-    set +e +u
+    set +u
     if [ -n "$_TMUX_SANDBOX_DIR" ]; then
         if ! : > "$_TMUX_SANDBOX_DIR/closed" 2>/dev/null || [ ! -e "$_TMUX_SANDBOX_DIR/closed" ]; then
             echo "tmux 沙盒：清理失败：写不了关门标记 $_TMUX_SANDBOX_DIR/closed，包装没能关上" >&2

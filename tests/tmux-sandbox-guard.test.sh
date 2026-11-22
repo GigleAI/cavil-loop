@@ -74,6 +74,21 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
 tmux_sandbox_start
 env -i PATH=/usr/bin:/bin TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
 EOF
+case_from "env -i 的 PATH 用了单引号（字面量，不展开）" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH='$PATH' /bin/bash -c 'tmux ls'
+EOF
+case_from "env -i 的 PATH 在原值前面拼了别的目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="/opt/bin:$PATH" bash -c 'tmux ls'
+EOF
+case_from "env -i 的 PATH 在原值后面拼了别的目录" report <<'EOF'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
+tmux_sandbox_start
+env -i TMUX_TMPDIR="$TMUX_TMPDIR" PATH="$PATH:/opt/bin" bash -c 'tmux ls'
+EOF
 case_from "续行写的 env -i 没带 TMUX_TMPDIR=" report <<'EOF'
 source "$(dirname "${BASH_SOURCE[0]}")/lib/tmux-sandbox.sh"
 tmux_sandbox_start
@@ -113,6 +128,7 @@ tmux new-session -d -s x 'sleep 3'
 env -i PATH="$PATH" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
 env -i HOME="$H" PATH="$PATH" \
     TMUX_TMPDIR="${TMUX_TMPDIR:-}" bash -c 'tmux ls'
+env -i PATH="${PATH}" TMUX_TMPDIR="$TMUX_TMPDIR" bash -c 'tmux ls'
 EOF
 case_from "带 -S / -L 的调用" ok <<'EOF'
 tmux -S "$SOCK" kill-server 2>/dev/null || true

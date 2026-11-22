@@ -12,7 +12,8 @@ tests/tmux-sandbox-guard.test.sh 调用。对每个 tests/*.test.sh：
 3. source 了 tests/lib/tmux-sandbox.sh 的文件：source 之前不许有 mktemp / mkdir / trap /
    tmux 调用（载入时会重新执行本文件，之前建的东西会建两遍）；source 之后不许自己设
    `EXIT` trap（改用 tmux_sandbox_on_exit）；每个 `env -i` 都要带 `TMUX_TMPDIR=` 和原样的
-   `PATH="$PATH"`（否则子进程绕过包装：不加空配置、关门后也拦不住）；清理回调里不许
+   `PATH="$PATH"`——只认这一种写法（或 `PATH="${PATH}"`），单引号、前后拼别的目录都报
+   （否则子进程可能绕过包装：不加空配置、关门后也拦不住）；清理回调里不许
    `rm`（删目录用 tmux_sandbox_own_dir）。续行（行尾反斜杠）接成一行再看。只认这几种写法，
    PATH 先被别处改掉再传、子进程自己再改 PATH 这类看不出来（写在 AGENTS.md）。
 4. 任何测试文件里用绝对路径直接调 tmux（`/usr/bin/tmux ls`）都报：它绕过沙盒的包装。
@@ -107,8 +108,10 @@ def check(path, text):
             if re.search(r"\benv\s+-i\b", line):
                 if "TMUX_TMPDIR=" not in line:
                     problems.append((no, "env -i 没带 TMUX_TMPDIR=，子进程会连到别的 tmux 服务"))
-                if not re.search(r"""\bPATH=["']?\$\{?PATH\b""", line):
-                    problems.append((no, "env -i 没把 PATH 原样带过去（PATH=\"$PATH\"），子进程会绕过沙盒的 tmux 包装"))
+                # 只认原样传过去的写法：PATH="$PATH" / PATH="${PATH}"（PR #660 复审 #4）。
+                # 单引号是字面量、前后拼了别的目录都可能让子进程绕过包装，一律报。
+                if not re.search(r'(?:^|\s)PATH="\$(?:PATH|\{PATH\})"(?=\s|$)', line):
+                    problems.append((no, "env -i 没把 PATH 原样带过去（只认 PATH=\"$PATH\"），子进程会绕过沙盒的 tmux 包装"))
             if re.search(r"\btmux_sandbox_on_exit\b", line) and re.search(r"\brm\b", line):
                 problems.append((no, "清理回调里删目录：变量可能是从环境继承的，改用 mktemp 之后的 tmux_sandbox_own_dir"))
         if start is None:

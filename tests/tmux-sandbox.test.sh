@@ -167,6 +167,22 @@ chk "两条清理失败都记下了" "$(grep -c '清理失败' "$T/fatal.out")" 
 chk "第三个回调照样执行" "$([ -e "$T/fatal.d/third-ran" ] && echo yes)" "yes"
 chk "服务进程已不存在" "$(alive_all "$T/fatal.d/servers")" "0"
 chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/fatal.out")" "1"
+echo "【7b】测试开着 set -e：回调中途失败就停在那里、记为失败，后面的清理和收尾照样执行"
+run_case errexit <<'EOF'
+set -e
+tmux_sandbox_on_exit 'false; : > "$OUT/continued"'
+tmux_sandbox_on_exit ': > "$OUT/next-ran"'
+tmux_sandbox_start
+EOF
+chk "回调在 false 处停下（后半句没执行）" "$([ -e "$T/errexit.d/continued" ] && echo continued || echo stopped)" "stopped"
+chk "记为清理失败、退出码 1" "$CASE_RC:$(grep -c '清理失败' "$T/errexit.out")" "1:1"
+chk "下一个回调照样执行" "$([ -e "$T/errexit.d/next-ran" ] && echo yes)" "yes"
+chk "沙盒收尾照样执行" "$(grep -c '全部已退出' "$T/errexit.out")" "1"
+run_case noerrexit <<'EOF'
+tmux_sandbox_on_exit 'false; : > "$OUT/continued"'
+tmux_sandbox_start
+EOF
+chk "测试没开 set -e：回调照 bash 原来的规矩往下跑、退出码 0" "$CASE_RC:$([ -e "$T/noerrexit.d/continued" ] && echo continued)" "0:continued"
 run_case fatal_rc <<'EOF'
 tmux_sandbox_on_exit 'exit 1'
 tmux_sandbox_start
@@ -336,6 +352,55 @@ t1=$(now)
 chk "退出码 0" "$CASE_RC" "0"
 chk "六个进程都已不存在" "$(alive_all "$T/six.d/pids")" "0"
 chk "收尾用时不到 8 秒（逐个等要 12 秒以上）" "$(awk -v e="$(elapsed "$(cat "$T/six.d/t0")" "$t1")" 'BEGIN { print (e < 8) ? "yes" : e }')" "yes"
+
+echo "【15b】描述符编号超过 1023（调用方开着很多文件）：照样收得掉"
+for n in 1 3; do
+    run_case "highfd$n" <<EOF
+ulimit -n 4096 2>/dev/null || { echo NO-ULIMIT; exit 0; }
+tmux_sandbox_start
+for i in \$(seq 3 1100); do [ "\$i" = 255 ] || eval "exec \$i</dev/null"; done
+for i in \$(seq 1 $n); do ( trap '' TERM; while :; do sleep 0.2; done ) & echo \$! >> "\$OUT/pids"; done
+sleep 0.3
+EOF
+    if grep -q NO-ULIMIT "$T/highfd$n.out"; then
+        echo "  ⏭  本机不能把打开文件数上限调到 4096，跳过（$n 个进程）"
+        continue
+    fi
+    chk "$n 个不理 SIGTERM 的进程、描述符过 1023：退出码 0" "$CASE_RC" "0"
+    chk "$n 个进程都已不存在" "$(alive_all "$T/highfd$n.d/pids")" "0"
+    chk "$n 个进程：没有 select 的描述符越界报错" "$(grep -c 'out of range' "$T/highfd$n.out")" "0"
+done
+
+echo "【15c】直接测收尾程序：进程句柄编号一定过 1023（3–1100 号描述符都占着），1 个和 3 个进程"
+for n in 1 3; do
+    r=$(python3 - "$TEST_DIR/lib/tmux_sandbox_reap.py" "$n" <<'PY2'
+import os, resource, signal, subprocess, sys, time
+reap, n = sys.argv[1], int(sys.argv[2])
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+if hard != resource.RLIM_INFINITY and hard < 1200:
+    print("SKIP"); sys.exit(0)
+resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1200), hard))
+fds = []
+while True:
+    fd = os.open("/dev/null", os.O_RDONLY)
+    fds.append(fd)
+    if fd >= 1100:
+        break
+kids = [subprocess.Popen(["bash", "-c", "trap '' TERM; while :; do sleep 0.2; done"], pass_fds=()) for _ in range(n)]
+time.sleep(0.3)
+out = subprocess.run([sys.executable, reap, str(os.getpid())], pass_fds=fds, capture_output=True, text=True)
+alive = sum(1 for k in kids if k.poll() is None)
+for k in kids:
+    try:
+        k.kill()
+    except ProcessLookupError:
+        pass
+print(out.returncode, alive, "range" if "out of range" in (out.stdout + out.stderr) else "ok")
+PY2
+)
+    if [ "$r" = SKIP ]; then echo "  ⏭  打开文件数上限不到 1200，跳过（$n 个进程）"; continue; fi
+    chk "$n 个进程：收尾程序退出码 0、进程都没了、没有描述符越界" "$r" "0 0 ok"
+done
 
 echo "【16】总时限到了还有进程：保留现场、以失败退出，不超时限太多"
 CAVIL_TMUX_REAP_BUDGET=1 run_case budget <<'EOF'
