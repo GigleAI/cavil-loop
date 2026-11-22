@@ -180,6 +180,11 @@ export interface TimelineEntry {
    * the markdown source (body / comment only); absent when there is no valid record.
    */
   wallSecs?: number;
+  /**
+   * GitHub#651: the comment is a loop round log (one section per delivery / review); then
+   * `wallSecs` is the sum of the sections' known times. Absent for anything else.
+   */
+  roundLog?: { sections: number; workers: number; reviews: number; missing: number; latest?: string };
   /** review only: its line comments, newest first */
   lineComments?: { id: string; url: string; author: string | null; at: string; path: string; line: number | null; bodyHtml: string }[];
 }

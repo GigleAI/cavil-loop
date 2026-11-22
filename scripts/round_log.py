@@ -25,6 +25,17 @@ import json
 import re
 import sys
 
+# 机器记录与记录标记只认这六个空白字符（与客户端 client/src/shared/agentMetrics.ts 的 WS 同一个集合）：
+# 首尾去空白、字段分隔都只用它。Python 的 strip() / split() / \s 和 JavaScript 的 trim() / \s 认的 Unicode
+# 空白不一样（U+0085 Python 认、JS 不认；U+FEFF 反过来），用各自的默认规则，同一条记录两边读出的结果会不同（PR #655 复审第 2 轮）
+WS = " \t\n\r\x0b\x0c"
+_WS_CLASS = "[ \\t\\n\\r\\x0b\\x0c]"
+
+
+def _trim(s):
+    return s.strip(WS)
+
+
 HEAD = "<!-- cavil-round-log:v1 -->"
 TOP_END = "<!-- cavil-round-log:top-end -->"
 SEC_END = "<!-- cavil-round-log:sec-end -->"
@@ -33,7 +44,7 @@ RE_SEC = re.compile(
     r"^<!-- cavil-round-log:sec id=([0-9a-f]{6,32}) role=(worker|review) "
     r"at=([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) after=([0-9]+) of=([0-9a-f]{6,32}|-) -->$")
 # 正文里出现任何一行像标记的东西都不许写进记录（会把记录切坏）
-RE_ANY_MARK = re.compile(r"^\s*<!-- cavil-round-log:")
+RE_ANY_MARK = re.compile("^" + _WS_CLASS + "*<!-- cavil-round-log:")
 # 复审轮次标记：第一个非空行整行就是它（不是前缀匹配，正文里举的例子、半截写法都不算）
 RE_ROUND = re.compile(r"^<!-- codex-review-round:([0-9]{1,4}) -->$")
 MAX_CHARS = 60000
@@ -57,19 +68,21 @@ class Superseded(FormatError):
 
 
 def is_record(body):
-    return (body or "").split("\n", 1)[0].strip() == HEAD
+    return _trim((body or "").split("\n", 1)[0]) == HEAD
 
 
 def parse_record(body):
     """→ (top, sections)。top = {sec, text} 或 None；sections = [{sec, role, at, after, of, body, idx}]。
     标记不成对、出现在不该出现的地方 → FormatError（调用方按「读不懂」处理，不猜）。"""
     lines = (body or "").replace("\r\n", "\n").split("\n")
-    if not lines or lines[0].strip() != HEAD:
+    if not lines or _trim(lines[0]) != HEAD:
         raise FormatError("不是往返记录")
     top, secs, cur, buf, mode = None, [], None, [], None
+    prev = []   # 节外最近两行：节标记前面是「折叠标题行、空行」时，记下这一节的标题（GitHub#651）
     for ln in lines[1:]:
-        s = ln.rstrip()
+        s = ln.rstrip(WS)
         if mode is None:
+            prev = (prev + [s])[-3:]
             m = RE_TOP.match(s)
             if m:
                 if top is not None:
@@ -80,7 +93,10 @@ def parse_record(body):
             if m:
                 mode, buf = "sec", []
                 cur = {"sec": m.group(1), "role": m.group(2), "at": m.group(3), "after": int(m.group(4)),
-                       "of": None if m.group(5) == "-" else m.group(5), "idx": len(secs)}
+                       "of": None if m.group(5) == "-" else m.group(5), "idx": len(secs), "title": None}
+                tm = RE_TITLE_LINE.match(prev[0]) if len(prev) == 3 and prev[1] == "" else None
+                if tm:
+                    cur["title"] = _unesc(tm.group(1))
                 continue
             if RE_ANY_MARK.match(s):
                 raise FormatError("位置不对的标记：%s" % s[:60])
@@ -119,7 +135,7 @@ def units(comments, trusted):
             for s in secs:
                 u = {"kind": "section", "id": cid, "author": c.get("author"), "url": c.get("url", ""),
                      "sec": s["sec"], "role": s["role"], "of": s["of"], "at": s["at"], "after": s["after"],
-                     "body": s["body"], "top": top, "key": (s["after"], 1, s["at"], cid, s["idx"])}
+                     "body": s["body"], "title": s.get("title"), "top": top, "key": (s["after"], 1, s["at"], cid, s["idx"])}
                 prev = best.get(s["sec"])
                 if prev is None or prev["id"] < cid:   # 同一节多份：留所在评论编号更大的
                     best[s["sec"]] = u
@@ -237,10 +253,108 @@ INTRO = ("**agent 往返记录**：一段 agent 之间的来回（交方案 / �
          "交给人的评论另外单独发。本条只由 agent 写，请不要编辑；要回复或拍板请在交人评论里。")
 
 
+# ── 每一节的折叠标题（GitHub#651）──────────────────────────────────────────────
+# 每节包在一个 <details> 里，标题 = 「⏱️ <这一节的耗时> · <worker|复审> · <状态 emoji + 一句话>」。
+# 折叠块在节标记外面：切节只认标记，标题和 <details> 行不进节正文，周报、单 PR 统计、读取命令看到的
+# 每节内容与没有标题时完全一样。标题只在这里生成；客户端读这一行，不另写取句规则。
+
+RE_METRICS = re.compile("^<!--" + _WS_CLASS + "*agent-metrics" + _WS_CLASS + "+(.*?)-->$")
+RE_FOOTER_START = re.compile(r"^<details><summary>⏱️ 耗时：")
+RE_HTML_COMMENT_LINE = re.compile(r"^<!--.*-->$")
+RE_HR = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
+TITLE_MAX = 80
+MAX_WALL_SECS = 2 ** 53 - 1   # = Number.MAX_SAFE_INTEGER，客户端 wallSecsOf 的上限
+ROLE_WORD = {"worker": "worker", "review": "复审"}
+
+
+def wall_secs_of(body):
+    """节正文最后一个非空行的用量记录里的 wall_secs；没有记录、字段缺或给了两次、不是整数 → None。
+    和客户端（client/src/shared/agentMetrics.ts wallSecsOf）、周报的读法同一条规则，测试对拍。"""
+    last = ""
+    for ln in reversed((body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")):
+        if _trim(ln):
+            last = _trim(ln)
+            break
+    m = RE_METRICS.fullmatch(last)
+    if not m:
+        return None
+    vals = [t[len("wall_secs="):] for t in re.split(_WS_CLASS + "+", m.group(1)) if t.startswith("wall_secs=")]
+    # 有效范围与客户端相同：非负整数、不超过 2^53−1（JavaScript 能精确表示的最大整数）；越界、超长都算没有记录。
+    # 先限位数再转整数：超长数字串直接 int() 会抛 ValueError（Python 的整数转换位数上限），交付就写不出标题
+    if len(vals) != 1 or not re.fullmatch(r"[0-9]+", vals[0]):
+        return None
+    digits = vals[0].lstrip("0") or "0"   # 前导零不算位数（客户端 Number("007") 也是 7）
+    if len(digits) > 16:
+        return None
+    n = int(digits)
+    return n if n <= MAX_WALL_SECS else None
+
+
+def fmt_dur(secs):
+    """用量 footer 的写法（comment_footer.py fmt_dur）：1h 3m 15s / 42m 7s / 9s。"""
+    secs = max(0, int(secs))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%dh %dm %ds" % (h, m, s)
+    if m:
+        return "%dm %ds" % (m, s)
+    return "%ds" % s
+
+
+def _plain(s):
+    s = re.sub(r"^#{1,6}\s+", "", s)
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)
+    s = s.replace("**", "").replace("__", "").replace("~~", "").replace("`", "")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def first_line(body):
+    """一句话 = 节正文第一行文字：跳过空行、整行 HTML 注释（轮次标记等）、引用行、分隔线；用量 footer 不参与。
+    复审节第一行就是 `## ✅/❌ 结论标题`，worker 节第一行是 worker 写的状态句——两种角色同一条规则，
+    后面正文里的小标题不会顶替它。去掉 markdown 记号，截到 TITLE_MAX 字。取不到 → ""。"""
+    for ln in (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        s = ln.strip()
+        if RE_FOOTER_START.match(s):
+            break
+        if not s or RE_HTML_COMMENT_LINE.match(s) or s.startswith(">") or RE_HR.match(s):
+            continue
+        s = _plain(s)
+        if not s:
+            continue
+        return s if len(s) <= TITLE_MAX else s[:TITLE_MAX] + "…"
+    return ""
+
+
+def _starts_with_symbol(s):
+    import unicodedata
+    return bool(s) and unicodedata.category(s[0]) == "So"
+
+
+def section_title(role, body):
+    """折叠标题的文字（未转义）：⏱️ <耗时 | 耗时未记录> · <角色> · <状态 + 一句话>。"""
+    w = wall_secs_of(body)
+    line = first_line(body) or "（这一节没有文字）"
+    if not _starts_with_symbol(line):
+        line = "📝 " + line
+    return "⏱️ %s · %s · %s" % (fmt_dur(w) if w is not None else "耗时未记录", ROLE_WORD[role], line)
+
+
+def _esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _unesc(s):
+    return s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+RE_TITLE_LINE = re.compile(r"^<details><summary>(⏱️ .*)</summary>$")
+
+
 def section_text(sec, role, at, after, of, body):
-    head = "### %s · %s" % ("worker agent 交付" if role == "worker" else "复审", at)
-    return "\n".join([head, "<!-- cavil-round-log:sec id=%s role=%s at=%s after=%d of=%s -->" % (sec, role, at, after, of or "-"),
-                      body.strip("\n"), SEC_END])
+    head = "<details><summary>%s</summary>" % _esc(section_title(role, body))
+    return "\n".join([head, "", "<!-- cavil-round-log:sec id=%s role=%s at=%s after=%d of=%s -->" % (sec, role, at, after, of or "-"),
+                      body.strip("\n"), SEC_END, "", "</details>"])
 
 
 def top_text(sec, text):
@@ -341,8 +455,8 @@ def plan(inp):
 
 def _replace_top(text, new_top):
     lines = text.split("\n")
-    s = next(i for i, ln in enumerate(lines) if RE_TOP.match(ln.rstrip()))
-    e = next(i for i in range(s, len(lines)) if lines[i].rstrip() == TOP_END)
+    s = next(i for i, ln in enumerate(lines) if RE_TOP.match(ln.rstrip(WS)))
+    e = next(i for i in range(s, len(lines)) if lines[i].rstrip(WS) == TOP_END)
     # 连同包着它的 <details> 一起换掉（我们自己写的固定样子）
     if s >= 2 and lines[s - 2].startswith("<details><summary>当前完整版本") and lines[s - 1] == "":
         s -= 2

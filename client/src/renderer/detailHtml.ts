@@ -174,16 +174,30 @@ function entryHtml(e: TimelineEntry, open: boolean, canTick: boolean, pending: P
         : `${who} · ${at}`;
   // GitHub#503: with a usage record, the preview leaves out the footer's own line
   // GitHub#472: the excerpt is GitHub's words, marked as such; only the client's own fallbacks are not
-  const quoted = plainExcerpt(e.wallSecs !== undefined ? withoutFooter(e.bodyHtml) : e.bodyHtml);
-  const excerpt = quoted
-    ? `<span data-verbatim="github">${escapeHtml(quoted)}</span>`
-    : escapeHtml(e.lineComments?.length ? t('{n} 条逐行评论', { n: e.lineComments.length }) : t('（没有文字）'));
+  // GitHub#651: a round log's preview is its last section's fold title (written by the loop)
+  const rl = e.roundLog;
+  const quoted = plainExcerpt(e.wallSecs !== undefined && !rl ? withoutFooter(e.bodyHtml) : e.bodyHtml);
+  const excerpt =
+    rl?.latest !== undefined
+      ? `<span class="latest">${escapeHtml(t('最新：'))}</span><span data-verbatim="github">${escapeHtml(rl.latest)}</span>`
+      : quoted
+        ? `<span data-verbatim="github">${escapeHtml(quoted)}</span>`
+        : escapeHtml(e.lineComments?.length ? t('{n} 条逐行评论', { n: e.lineComments.length }) : t('（没有文字）'));
   // GitHub#503: the head carries the round's total time where the web link used to be;
   // the link to this one entry on the web sits at the bottom of the unfolded entry
-  const dur =
-    e.wallSecs !== undefined
-      ? ` · <span class="dur" data-wall="${e.wallSecs}" title="${escapeHtml(t('这一轮 agent 的总耗时（取自评论末尾的用量记录）'))}">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`
-      : '';
+  let dur = '';
+  if (rl) {
+    // GitHub#651: the sum of the sections' times ("≥" when some section has no record — never as 0) and the counts
+    if (e.wallSecs !== undefined) {
+      const tip = rl.missing
+        ? t('{s} 节里有 {m} 节没有用量记录、未计入；已计入的 {k} 节相加', { s: rl.sections, m: rl.missing, k: rl.sections - rl.missing })
+        : t('{s} 节耗时相加（worker {w} 节、复审 {r} 节）；只算 agent 干活的时间，不含两节之间的等待', { s: rl.sections, w: rl.workers, r: rl.reviews });
+      dur += ` · <span class="dur" data-wall="${e.wallSecs}"${rl.missing ? ` data-missing="${rl.missing}"` : ''} title="${escapeHtml(tip)}">⏱️ ${rl.missing ? '≥ ' : ''}${escapeHtml(formatDuration(e.wallSecs))}</span>`;
+    }
+    dur += ` · <span class="rounds" data-workers="${rl.workers}" data-reviews="${rl.reviews}">${escapeHtml(t('交付 {w} 次 · 复审 {r} 次', { w: rl.workers, r: rl.reviews }))}</span>`;
+  } else if (e.wallSecs !== undefined) {
+    dur = ` · <span class="dur" data-wall="${e.wallSecs}" title="${escapeHtml(t('这一轮 agent 的总耗时（取自评论末尾的用量记录）'))}">⏱️ ${escapeHtml(formatDuration(e.wallSecs))}</span>`;
+  }
   const webLink = e.url ? `<a class="web" href="${escapeHtml(e.url)}">${escapeHtml(t('在网页上看这一条'))}</a>` : '';
   const blocked = blockedImages(e.bodyHtml) + (e.lineComments ?? []).reduce((n, l) => n + blockedImages(l.bodyHtml), 0);
   const note = blocked ? `<div class="blocked" data-blocked="${blocked}">${escapeHtml(webLink ? t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载；{link}', { n: blocked }) : t('有 {n} 张图片不在 GitHub 的地址上，客户端不加载', { n: blocked })).replace('{link}', () => webLink)}</div>` : '';

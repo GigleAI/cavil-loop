@@ -8,7 +8,7 @@ import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { ITEM_DETAIL_QUERY, REVIEW_COMMENTS_QUERY } from './queries';
 import { planTasks, renderedTaskBoxes } from './taskList';
-import { wallSecsOf } from '../shared/agentMetrics';
+import { isRoundLog, roundLogOf, wallSecsOf } from '../shared/agentMetrics';
 import { hasWords, withoutHidden } from './quote';
 
 const MAX_PAGES = 50;
@@ -178,8 +178,19 @@ export function editSource(source: unknown, canUpdate: unknown): { editSource: s
   return typeof source === 'string' && canUpdate === true ? { editSource: source } : {};
 }
 
-/** GitHub#503: the round's total time, only when the source ends with a valid usage record. */
-function wallSecs(source: unknown): { wallSecs: number } | Record<string, never> {
+/**
+ * GitHub#503: the round's total time, only when the source ends with a valid usage record.
+ * GitHub#651: a readable round log with sections instead carries the sum of its sections' known
+ * times and its counts; one that cannot be read shows no time at all — a broken record whose last
+ * line happens to be one section's usage record must not pass that section off as the whole.
+ */
+function wallSecs(source: unknown): Pick<TimelineEntry, 'wallSecs' | 'roundLog'> {
+  const rl = roundLogOf(source);
+  if (rl && rl.sections.length) {
+    const roundLog: NonNullable<TimelineEntry['roundLog']> = { sections: rl.sections.length, workers: rl.workers, reviews: rl.reviews, missing: rl.missing, ...(rl.latest !== undefined ? { latest: rl.latest } : {}) };
+    return { ...(rl.total !== undefined ? { wallSecs: rl.total } : {}), roundLog };
+  }
+  if (isRoundLog(source)) return {};
   const n = wallSecsOf(source);
   return n === undefined ? {} : { wallSecs: n };
 }
