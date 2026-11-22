@@ -434,14 +434,58 @@ chk "这一轮：加了 Done 就停手，旧标签还在、没记已交接、日
 tick
 chk "下一轮：身份和记录对不上，不再写" "$(labels_of 251)/$(jq -r '.merge_followup.prs["251"].handed // "none"' "$STATE")" "Done,pending/review/none"
 
-echo "㉖ 合并之后另一轮用同一个写入账号给 PR 挂了 pending/human（交接从没往这个 PR 写过提醒）→ 算新一轮，PR 标签一个不动"
+echo "㉖ 合并之后另一轮用同一个写入账号给 PR 挂了 pending/human（交接从没往这个 PR 写过提醒）→ 认不出归属：标签一个不动、不记完成；到上限在 PR 上留说明一次"
 fresh
+echo 'SUB_ISSUE_ROLLUP_MAX_TRIES=3' >> "$CONF"
 mkissue 260 "" open
 mkmerged 261 feature/issue-260 "Refs #260"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review,pending/human"
 jset events.json '.["261"] = [{event:"labeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:00Z"}]'
 tick
-chk "PR 标签原样（提醒和旧标签都在、没打 Done）、记为新一轮、issue 照常交接" "$(labels_of 261)/$(jq -r '.merge_followup.prs["261"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["261"].reminder_ev // "none"' "$STATE")/$(comments_of 260)" "pending/human,pending/review/true/none/1"
-chk "  → 到达性：日志写明合并之后又挂上了流程标签" "$(grep -c 'PR #261 合并之后又挂上了流程标签' "$W/state/poll.log")" "1"
+chk "第 1 轮：PR 标签原样、没记让位也没记完成、issue 照常发清单" "$(labels_of 261)/$(jq -r '.merge_followup.prs["261"].pr_superseded // false' "$STATE")/$(jq -r '.merge_followup.prs["261"].handed // "none"' "$STATE")/$(comments_of 260)" "pending/human,pending/review/false/none/1"
+chk "  → 到达性：日志写明认不出归属" "$(grep -c 'PR #261 合并之后写入账号挂的 pending/human 认不出' "$W/state/poll.log")" "1"
+unote() { jq -r --arg n "$1" '[(.[$n] // [])[] | select(.body | contains("cavil-loop:merge-followup-unclaimed"))] | length' "$GD/comments.json"; }
+chk "  → 还没到上限，PR 上没有说明" "$(unote 261)" "0"
+tick; tick
+chk "第 3 轮（到上限）：PR 上留了一条说明，标签仍原样，交接没记完成" "$(unote 261)/$(labels_of 261)/$(jq -r '.merge_followup.prs["261"].handed // "none"' "$STATE")" "1/pending/human,pending/review/none"
+chk "  → 说明写明要维护者看的标签" "$(jq -r '[.["261"][] | select(.body | contains("merge-followup-unclaimed"))][0].body' "$GD/comments.json" | grep -c '摘掉它和其他合并前的流程标签')" "1"
+tick
+chk "之后再轮：说明不重复" "$(unote 261)" "1"
+
+echo "㉗ 交接给 PR 挂上提醒后读不回事件 → 本轮停手；下一轮提醒认不出归属：旧标签不摘、不记完成"
+fresh
+mkmerged 271 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'touch %q\n' "$GD/F_issues_271_events" > "$GD/hook_after_POST_issues_271_labels_2"
+tick
+chk "第 1 轮：Done 和提醒加上了、旧标签还在、没记下事件、没记完成" "$(labels_of 271)/$(jq -r '.merge_followup.prs["271"].reminder_ev // "none"' "$STATE")/$(jq -r '.merge_followup.prs["271"].handed // "none"' "$STATE")" "Done,pending/human,pending/review/none/none"
+chk "  → 到达性：日志写明挂完读不回" "$(grep -c 'PR #271 挂完提醒读不回事件' "$W/state/poll.log")" "1"
+rm -f "$GD/F_issues_271_events"
+tick
+chk "第 2 轮：认不出归属，旧标签不摘、不记完成、不记让位" "$(labels_of 271)/$(jq -r '.merge_followup.prs["271"].handed // "none"' "$STATE")/$(jq -r '.merge_followup.prs["271"].pr_superseded // false' "$STATE")" "Done,pending/human,pending/review/none/false"
+
+echo "㉘ 挂上提醒和读回之间，同一账号把它摘掉又挂回 → 不认领；下一轮认不出归属，标签不动"
+fresh
+mkmerged 281 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["281"] += [{event:"unlabeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:00Z"}, {event:"labeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:01Z"}]' \
+    > "$GD/hook_after_POST_issues_281_labels_2"
+tick
+chk "第 1 轮：没认领、旧标签还在、没记完成" "$(labels_of 281)/$(jq -r '.merge_followup.prs["281"].reminder_ev // "none"' "$STATE")/$(jq -r '.merge_followup.prs["281"].handed // "none"' "$STATE")" "Done,pending/human,pending/review/none/none"
+chk "  → 到达性：日志写明认不出这次加上的事件" "$(grep -c 'PR #281 挂完提醒认不出这次加上的那条事件' "$W/state/poll.log")" "1"
+tick
+chk "第 2 轮：认不出归属，标签不动、不记完成" "$(labels_of 281)/$(jq -r '.merge_followup.prs["281"].handed // "none"' "$STATE")" "Done,pending/human,pending/review/none"
+
+echo "㉙ 认领之后、摘旧标签之前，同一账号把提醒摘掉又挂回 → 写完读回对不上、不记完成；下一轮认不出归属，不再写"
+fresh
+mkmerged 291 chore/no-issue "改了点东西"$'\n\n'"$LIST" 2026-03-01T10:00:00Z "pending/review"
+printf 'cd %q && jq %q events.json > e.tmp && mv e.tmp events.json\n' "$GD" \
+    '.["291"] += [{event:"unlabeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:00Z"}, {event:"labeled", label:{name:"pending/human"}, actor:{login:"loop-bot", type:"Bot"}, created_at:"2026-03-02T00:00:01Z"}]' \
+    > "$GD/hook_DELETE_issues_291_labels_1"
+tick
+chk "第 1 轮：认领了本次的事件、写完读回对不上、没记完成" "$(jq -r '.merge_followup.prs["291"].reminder_ev | type' "$STATE")/$(jq -r '.merge_followup.prs["291"].handed // "none"' "$STATE")" "number/none"
+cp "$GD/labels.json" "$W/l1"; : > "$CALLS"
+tick
+chk "  → 到达性：这一轮读了 PR 的事件" "$(grep -c 'issues/291/events' "$CALLS" | awk '{print ($1>0)?"yes":"no"}')" "yes"
+chk "第 2 轮：认不出归属，没有任何标签写入、不记完成" "$(grep -c 'issues/291/labels' "$CALLS")/$(jq -r '.merge_followup.prs["291"].handed // "none"' "$STATE")/$(cmp -s "$GD/labels.json" "$W/l1" && echo same)" "0/none/same"
 
 report_counts "$pass" "$fail"
 echo "正式版：$pass 通过 / $fail 失败"

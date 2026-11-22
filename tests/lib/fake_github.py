@@ -364,6 +364,16 @@ def touch(n):
 
 def append_event(n, ev, name):
     evs = load("events.json", {})
+    # 已合并 PR 上读的时候补出来的「加上」事件（见 GET …/events）只在标签挂着时出现；真 GitHub 摘掉标签后那条事件还在。
+    # 摘之前先把它落进记录（同一个编号、同一个时间），摘完之后读到的事件和真接口一样
+    if ev == "unlabeled":
+        _it = load("items.json", {}).get(str(n), {})
+        _have = any(e.get("event") == "labeled" and e.get("label", {}).get("name") == name for e in evs.get(str(n), []))
+        if _it.get("kind") == "pr" and _it.get("merged") and not os.path.exists(p("nosynth_" + str(n))) and not _have:
+            import zlib as _z
+            evs.setdefault(str(n), []).append(
+                {"id": 100 + _z.crc32(name.encode()) % 4000, "event": "labeled", "label": {"name": name},
+                 "actor": {"login": "maint", "type": "User"}, "created_at": "2026-01-01T00:00:00Z"})
     # 不存 id：读的时候统一按位置补（见 GET …/events），这样夹具手写的记录和 daemon 写出来的记录
     # 编号先后与发生先后一致，和真 GitHub 一样（GitHub#382：交人的写前核对按编号认先后）
     evs.setdefault(str(n), []).append(
