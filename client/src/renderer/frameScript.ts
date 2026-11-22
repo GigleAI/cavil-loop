@@ -60,6 +60,11 @@ export function frameWords(): Record<string, string> {
     fetching: t('正在用登录信息取图…'),
     notLoaded: t('图片没加载出来'),
     notGot: t('没取到'),
+    diagram: t('流程图'),
+    drawSyntax: t('这张流程图没画出来（写法有误），下面是原文'),
+    drawTooBig: t('这张流程图太长，没有画，下面是原文'),
+    drawFailed: t('这张流程图没画出来，下面是原文'),
+    onGitHub: t('在 GitHub 打开'),
   };
 }
 
@@ -287,9 +292,43 @@ export const FRAME_SCRIPT = `(function () {
     box(img, 'loading', w('fetching'));
     send({ cavil: 'image', id: img.getAttribute('data-img'), src: img.getAttribute('data-rel') });
   }
+  // GitHub#680: a mermaid diagram (the client's block, .mmd) is asked of the window once its entry is
+  // unfolded; the answer is the picture as a data: SVG address, or why it was not drawn
+  var mmds = {}, nmmd = 0;
+  function askDiagram(el) {
+    var id = String(++nmmd), pre = el.querySelector('pre');
+    el.setAttribute('data-mmd-id', id);
+    mmds[id] = el;
+    send({ cavil: 'diagram', id: id, src: pre ? pre.textContent : '' });
+  }
+  function drawn(m) {
+    var el = mmds[m.id], box = el && el.querySelector('.mmdbox');
+    if (!box) return;
+    if (m.ok === true && typeof m.data === 'string' && /^data:image\\/svg\\+xml;base64,[A-Za-z0-9+\\/=]+$/.test(m.data)) {
+      var img = document.createElement('img');
+      img.className = 'mmdimg';
+      img.alt = w('diagram');
+      img.src = m.data;
+      box.parentNode.replaceChild(img, box);
+      return;
+    }
+    box.setAttribute('data-state', 'failed');
+    box.textContent = w(m.why === 'syntax' ? 'drawSyntax' : m.why === 'tooBig' ? 'drawTooBig' : 'drawFailed');
+    var web = el.getAttribute('data-web');
+    if (web && /^https?:\\/\\//i.test(web)) {
+      box.appendChild(document.createTextNode(' · '));
+      var a = add(box, 'a', 'mmdweb', w('onGitHub'));
+      a.href = web;
+      a.target = '_blank';
+    }
+    var src = el.querySelector('details.mmdsrc');
+    if (src) src.open = true;
+  }
   function want() {
     var l = document.querySelectorAll('details.entry[open] img[data-rel]:not([data-img])');
     for (var i = 0; i < l.length; i++) ask(l[i]);
+    var d = document.querySelectorAll('details.entry[open] .mmd:not([data-mmd-id])');
+    for (var j = 0; j < d.length; j++) askDiagram(d[j]);
   }
   document.addEventListener('error', function (e) {
     var t = e.target;
@@ -356,6 +395,7 @@ export const FRAME_SCRIPT = `(function () {
       if (ok) fwd = list.map(function (x) { return { key: x.key.toLowerCase(), mod: x.mod, shift: x.shift, alt: x.alt }; });
       return;
     }
+    if (m.cavil === 'diagram') { drawn(m); return; }
     if (m.cavil !== 'image') return;
     var img = imgs[m.id];
     if (!img || !img.hasAttribute('data-rel')) return;
@@ -406,7 +446,7 @@ ${LINK_JS}
 })();`;
 
 /** CSP source for FRAME_SCRIPT: the same string sits in tauri.conf.json's script-src. */
-export const FRAME_SCRIPT_HASH = "'sha256-WTzSB5zlTgv4ksLx7AiAEpllviv097BtBUm9rECQ7e8='";
+export const FRAME_SCRIPT_HASH = "'sha256-d4jaolfe5Cxd/gwaRmWrWz6X0ox0n6p8JF2Yjgj6A3w='";
 
 /**
  * The one script the reply preview runs (GitHub#590): web links go to the window, nothing else. Its

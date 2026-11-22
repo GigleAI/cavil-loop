@@ -38,6 +38,7 @@
     "@tauri-apps/api": "2.12.4",
     "mdast-util-from-markdown": "2.1.0",
     "mdast-util-gfm-task-list-item": "2.0.0",
+    "mermaid": "12.3.0",
     "micromark": "4.0.3",
     "micromark-extension-gfm": "3.0.0",
     "micromark-extension-gfm-task-list-item": "2.1.0",

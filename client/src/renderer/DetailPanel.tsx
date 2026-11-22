@@ -6,6 +6,8 @@ import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
 import { pickMergeMethod } from '../shared/mergePrefs';
 import { PREVIEW_SANDBOX, TIMELINE_SANDBOX, timelineDocument, previewDocument, escapeHtml, type FrameView, type Unfold } from './detailHtml';
+import { drawAgain, drawDiagram, type DrawResult } from './diagramHost';
+import { diagramSources } from './diagramBlocks';
 import { imageFailureText, parseReleaseImage } from '../shared/images';
 import { renderedTaskBoxes } from '../data/taskList';
 import { hasWords, quoteText, selectionMarkdown, withQuote } from '../data/quote';
@@ -484,6 +486,8 @@ export function DetailPanel({
   const [note, setNote] = useState<ResultNote | null>(null);
   const [reply, setReply] = useState(draft?.reply ?? '');
   const [preview, setPreview] = useState<string | null>(null);
+  /** GitHub#680: the preview's diagrams drawn so far, by theme + source (the preview shows the picture once it is here) */
+  const [previewDrawn, setPreviewDrawn] = useState<ReadonlyMap<string, DrawResult>>(() => new Map());
   /** GitHub#205: the body / comment being edited (its source when the edit started), and the text so far */
   const [editing, setEditing] = useState<{ entryId: string; kind: 'body' | 'comment'; url: string; source: string; text: string } | null>(draft?.editing ?? null);
   const [editNote, setEditNote] = useState<ResultNote | null>(null);
@@ -839,6 +843,33 @@ export function DetailPanel({
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
   const [unfold, setUnfoldRule] = useState<Unfold>('latest');
   const isDark = useDarkMode();
+  // GitHub#680: the reply preview's diagrams, drawn for the theme on screen; each answer redraws the preview with it.
+  // Asked once per preview shown (or theme): an answer kept here is reused unless it is "failed" (the helper did
+  // not start or answer), which the next preview asks again — never in a loop, the answers are not a dependency
+  useEffect(() => {
+    if (preview === null) return;
+    let gone = false;
+    const asked: string[] = [];
+    for (const src of diagramSources(preview)) {
+      const key = `${isDark ? 'd' : 'l'}\n${src}`;
+      if (!drawAgain(previewDrawn.get(key))) continue;
+      asked.push(key);
+      void drawDiagram(src, isDark).then((r) => {
+        if (!gone) setPreviewDrawn((m) => (drawAgain(m.get(key)) ? new Map(m).set(key, r) : m));
+      });
+    }
+    // a "failed" kept from an earlier preview shows as "drawing" again while it is asked again
+    if (asked.some((k) => previewDrawn.has(k)))
+      setPreviewDrawn((m) => {
+        const n = new Map(m);
+        for (const k of asked) if (drawAgain(n.get(k))) n.delete(k);
+        return n;
+      });
+    return () => {
+      gone = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview, isDark]);
   // what the frame last reported (unfolded entries, scroll): a re-render puts it back (GitHub#193)
   const viewRef = useRef<FrameView | null>(null);
   const setUnfold = (u: Unfold) => {
@@ -953,6 +984,19 @@ export function DetailPanel({
       })
       .catch(() => undefined);
   };
+  /**
+   * GitHub#680: the frame asks for a mermaid diagram (`id` = its number in that rendering, `src` = its source).
+   * It is drawn in the helper frame for this theme (or answered from memory); the answer goes back to the frame
+   * that asked — a frame rendered again meanwhile (another theme too) asks by itself.
+   */
+  const diagram = (render: string, id: unknown, src: unknown) => {
+    if (typeof id !== 'string' || typeof src !== 'string') return;
+    void drawDiagram(src, isDark).then((r) => {
+      if (live.current.render !== render) return;
+      const answer = r.ok ? { cavil: 'diagram', render, id, ok: true, data: r.data } : { cavil: 'diagram', render, id, ok: false, why: r.why };
+      frameRef.current?.contentWindow?.postMessage(answer, '*');
+    });
+  };
   /** GitHub#395: "reload" on an image that did not load: read the discussion again (fresh addresses) and draw the frame again */
   const reread = () => {
     if (!canWrite) return;
@@ -998,8 +1042,8 @@ export function DetailPanel({
     box.setSelectionRange(box.value.length, box.value.length);
     box.scrollTop = box.scrollHeight;
   }, [reply]);
-  const live = useRef({ tick, edit, setWrap, image, reread, quoteEntry, render: frame.render, ids: [] as string[] });
-  live.current = { tick, edit, setWrap, image, reread, quoteEntry, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
+  const live = useRef({ tick, edit, setWrap, image, diagram, reread, quoteEntry, render: frame.render, ids: [] as string[] });
+  live.current = { tick, edit, setWrap, image, diagram, reread, quoteEntry, render: frame.render, ids: detail?.timeline.map((x) => x.id) ?? [] };
   // One listener for the panel's whole life, in place before the first frame loads (a layout effect
   // runs right after the frame is inserted, before its document can run): a frame that loads fast
   // must not report before anyone listens.
@@ -1019,6 +1063,7 @@ export function DetailPanel({
       else if (m.cavil === 'edit') now.edit(m.entry);
       else if (m.cavil === 'wrap' && typeof m.on === 'boolean') now.setWrap(m.on);
       else if (m.cavil === 'image') now.image(now.render, m.id, m.src);
+      else if (m.cavil === 'diagram') now.diagram(now.render, m.id, m.src);
       else if (m.cavil === 'reread') now.reread();
       // GitHub#322 / #433: the frame passes on a few keys (R, and the ⌘⇧ keys of the three buttons); the window's
       // own rules decide, and only those shortcuts may act (frameKey)
@@ -1910,7 +1955,7 @@ export function DetailPanel({
             data-testid="reply-preview"
             ref={previewRef}
             sandbox={PREVIEW_SANDBOX}
-            srcDoc={previewDocument(preview, isDark)}
+            srcDoc={previewDocument(preview, isDark, (src) => previewDrawn.get(`${isDark ? 'd' : 'l'}\n${src}`), item.url)}
           />
         )}
         {item.kind === 'pr' && pr && (
