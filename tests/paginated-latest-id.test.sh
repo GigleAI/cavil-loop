@@ -48,11 +48,12 @@ for p in $(ls "$FAKE_PAGES" | sort -n); do jq -r "$expr" "$FAKE_PAGES/$p"; done
 FAKE
 # 假 agent：把最后一个参数（prompt）原样写进 $FAKE_LOG。claude 的默认模型探测
 # （带 -p）吐一行 init 就退。
-for b in claude codex opencode agent; do
+for b in claude codex opencode agent pi; do
     cat > "$TMP/bin/$b" <<'FAKE'
 #!/usr/bin/env bash
 for a in "$@"; do [ "$a" = -p ] && [ "$(basename "$0")" = claude ] && {
     echo '{"type":"system","subtype":"init","model":"claude-opus-5-5"}'; exit 0; }; done
+[ "$(basename "$0")" = pi ] && { cat > "$FAKE_LOG"; exit 0; }
 last=""; for a in "$@"; do last="$a"; done
 printf '%s' "$last" > "$FAKE_LOG"
 FAKE
@@ -104,7 +105,7 @@ PROMPT="$TMP/prompt dir/coding-agent-issue-1-cmt-6248331981
 mkdir -p "$TMP/prompt dir"
 printf '第一行\n第二行 "引号" $HOME `x`\n' > "$PROMPT"
 want="$(cat "$PROMPT")"
-for agent in claude codex opencode cursor; do
+for agent in claude codex opencode cursor pi; do
     write_config "$agent"
     for kind in new resume resume-id; do
         rm -f "$TMP/agent.log"

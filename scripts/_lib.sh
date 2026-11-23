@@ -9416,7 +9416,9 @@ STUCK_ACTED=0
 # worker pane (by pane id, never the session's current pane), the screen judged in a subshell that
 # loads **that** agent's driver after `agent_screen_rules_reset` (a driver only overrides what it
 # cares about, so without the reset codex inherits claude's 20-line window); the four-state screen
-# rule is `agent_screen_state`, shared with prompt injection. Every per-round check, the nudge and the
+# rule is `agent_screen_state`, shared with prompt injection. A noninteractive driver may declare
+# AGENT_BUSY_WHILE_ALIVE: a confirmed live task pane is busy without interpreting its output.
+# Every per-round check, the nudge and the
 # pre-action re-read use it; any failed or unrecognised read is "unknown" and neither advances nor
 # resets. Before ending a session or writing to GitHub, `stuck_doc` re-reads the target, the bound
 # items and the local session and the whole identity string must equal the one stored when the idle
@@ -9650,7 +9652,9 @@ stuck_sample() {   # <tmux_session>
             agent_screen_rules_reset
             unset -f agent_inject_prompt agent_is_busy
             source_driver "$STUCK_S_AGENT" >/dev/null 2>&1 || exit 3
-            tail -"$AGENT_BUSY_TAIL" "$shot" | agent_screen_state
+            # pane_dead was checked above. Noninteractive tasks cannot sit at an idle prompt.
+            if [ "${AGENT_BUSY_WHILE_ALIVE:-0}" = 1 ]; then echo busy
+            else tail -"$AGENT_BUSY_TAIL" "$shot" | agent_screen_state; fi
         ); then
         rm -f "$shot"
     else

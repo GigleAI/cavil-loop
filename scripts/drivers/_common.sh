@@ -16,6 +16,8 @@
 #   agent_is_busy <tmux_session>
 #     检查 tmux session 里的 agent 是否正在 thinking / tool use。
 #     返回 0 = busy；非 0 = idle / dead。
+#     AGENT_BUSY_WHILE_ALIVE=1: noninteractive tasks cannot wait at an idle prompt;
+#     stuck_sample uses its confirmed live worker pane instead of screen keywords.
 #     daemon 的并发计数现在用 GitHub doing/agent label 真值（见 _lib.sh:list_active_workers）
 #     不依赖这个；agent_is_busy 仍被 cleanup-issue.sh 用——cleanup 前确认 worker 不在跑。
 #
@@ -338,6 +340,8 @@ source_driver() {
     candidates+=("${self_dir}/${name}.sh")
     # 能力标志复位：同一进程里换 driver 时不能留着上一个 driver 的声明
     AGENT_SESSION_ISOLATION=0
+    # Print-mode tasks have no idle prompt; screen text cannot establish liveness.
+    AGENT_BUSY_WHILE_ALIVE=0
     AGENT_SESSION_PROOF=0
     # 注入用的是不是默认实现（往窗格里 paste）。driver 自己覆盖了注入（例如 cursor：
     # 不支持中途注入，直接删 session）时为 0，卡住检测据此不往这种会话里催促。

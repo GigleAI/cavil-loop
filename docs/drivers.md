@@ -14,6 +14,17 @@ The daemon / dispatch scripts and "which CLI runs in tmux" are separated by a **
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (version-dependent) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ first-pass; verify against your installed version |
 | `codex`    | `codex`    | `~/.codex/sessions/` or `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ first-pass; verify against your installed version |
 | `cursor`   | `agent`    | _(not cwd-probed; always new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ stable on macOS (headless `-p --trust --force`); no mid-session stdin inject — new comments respawn session |
+| `pi` | `pi` | `~/.pi/agent/sessions/<encoded-cwd>/` (or configured directory) | live print-mode pane | Pi 1.6.0; role-isolated sessions; comments restart the process |
+
+<details><summary>Example: switching to Pi</summary>
+
+Install Pi coding agent and complete its authentication separately. The driver is verified with Pi 1.6.0; it requires `--print`, `--approve`, `--session-id` and `--session-dir` support. Set `WORKER_AGENT="pi"` in the project config and re-run `setup.sh` with `WORKER_AGENT=pi` so the daemon can find the binary. `REVIEW_WORKER_AGENT="pi"` selects it for the existing review gate.
+
+The driver runs in print mode, reads the prompt from stdin and binds worker/review to separate session IDs. A later comment restarts the process and resumes that role's session. `--approve` trusts project-local Pi resources for this run only; it does not write a permanent trust record or add an OS sandbox. Install only project resources appropriate for automated execution.
+
+Session lookup uses `PI_CODING_AGENT_SESSION_DIR`, then the project/global `sessionDir` setting, then Pi's default cwd directory under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`). The resolved directory is passed explicitly to Pi; malformed settings prevent command construction. If using Pi environment overrides or provider environment credentials, explicitly include the required variables in the existing `WORKER_PASS_ENV` setting; do not put credentials in command arguments. Token accounting uses the existing unknown fallback; provider-specific quota reset detection is not implemented.
+
+</details>
 
 <details><summary>Example: switching to Cursor</summary>
 
@@ -88,6 +99,7 @@ Helper: `encoded_cwd "$cwd"` converts `/foo/bar` to `-foo-bar` (encoding used by
 
 #### `agent_is_busy <tmux_session>`
 Return 0 if the agent is actively thinking / running a tool; non-zero if idle / dead.
+Drivers with noninteractive tasks and no idle prompt can set `AGENT_BUSY_WHILE_ALIVE=1`; the stuck-worker check treats a confirmed live task pane as busy, independently of printed output.
 Typical: `tmux capture-pane -t $sess -p | grep -q "<stable keyword>"`.
 
 #### `agent_command_new` / `agent_command_resume`

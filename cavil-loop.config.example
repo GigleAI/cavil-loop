@@ -696,6 +696,7 @@ WORKTREE_GIT_USER_EMAIL=""
 #   claude    — Claude Code           (default; behavior identical to pre-driver era)
 #   opencode  — OpenCode (sst/opencode)
 #   codex     — Codex CLI (OpenAI)
+#   pi        — Pi coding agent (`pi`, print mode; verified with 1.6.0)
 #   cursor    — Cursor Agent CLI (`agent`; headless with -p --trust --force)
 # Custom: drop scripts/drivers/<name>.sh into the skill, or project-level into
 #   <host>/.agents/skills/cavil-loop/drivers/<name>.sh
@@ -705,6 +706,7 @@ WORKTREE_GIT_USER_EMAIL=""
 #   claude    — Claude Code             （默认；行为完全等同未引入 driver 抽象前）
 #   opencode  — OpenCode (sst/opencode)
 #   codex     — Codex CLI (OpenAI)
+#   pi        — Pi coding agent (`pi`, print mode; verified with 1.6.0)
 #   cursor    — Cursor Agent CLI（`agent`；headless 用 -p --trust --force）
 # 自定义：往 skill 的 scripts/drivers/<name>.sh 加，或放在项目级
 #   <host>/.agents/skills/cavil-loop/drivers/<name>.sh
