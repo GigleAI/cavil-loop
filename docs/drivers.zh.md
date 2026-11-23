@@ -14,6 +14,17 @@
 | `opencode` | `opencode` | `~/.local/share/opencode/...` (按版本) | `thinking` / `working` / `esc to interrupt` / `stop` | ⚠️ 首版适配，请按你装的版本核对 |
 | `codex`    | `codex`    | `~/.codex/sessions/` 或 `~/.codex/history/` | `thinking` / `running` / `esc to interrupt` | ⚠️ 首版适配，请按你装的版本核对 |
 | `cursor`   | `agent`    | _(不按 cwd 探测；始终 new session)_ | `thinking` / `running` / spinner / `esc to interrupt` | ✅ macOS 验收通过（headless `-p --trust --force`）；不支持 mid-session stdin 注入，新 comment 会重起 session |
+| `pi` | `pi` | `~/.pi/agent/sessions/<encoded-cwd>/`（或配置目录） | 非交互进程仍在运行 | Pi 1.6.0；角色隔离；新评论重起进程 |
+
+<details><summary>示例：切换到 Pi</summary>
+
+先自行安装 Pi coding agent 并完成认证。driver 已用 Pi 1.6.0 验证，需要支持 `--print`、`--approve`、`--session-id` 和 `--session-dir`。在项目配置中设 `WORKER_AGENT="pi"`，并以 `WORKER_AGENT=pi` 重跑 `setup.sh`，让 daemon 能找到该程序。`REVIEW_WORKER_AGENT="pi"` 用于现有复审关卡。
+
+driver 以非交互模式运行，从标准输入读取提示词，worker / review 分别绑定独立会话 ID。后续评论重起进程并恢复对应角色的会话。`--approve` 仅在本次运行信任项目内的 Pi 资源，不写永久信任记录，也不增加操作系统沙盒。仅安装适合自动执行的项目资源。
+
+历史查找依次采用 `PI_CODING_AGENT_SESSION_DIR`、项目 / 全局配置的 `sessionDir`、`PI_CODING_AGENT_DIR`（默认 `~/.pi/agent`）下按 cwd 区分的默认目录。解析结果显式传给 Pi；配置损坏时不生成启动命令。使用 Pi 环境覆盖或供应商环境凭据时，将所需变量明确加入现有 `WORKER_PASS_ENV`，不要把凭据放进命令行参数。token 统计沿用已有的未知兜底；未实现供应商专属额度重置检测。
+
+</details>
 
 <details><summary>示例：切到 Cursor</summary>
 
@@ -88,6 +99,7 @@ stdout 写 CLI 可执行名。setup.sh 用它 `command -v` 检查依赖、并把
 
 #### `agent_is_busy <tmux_session>`
 返回 0 = agent 正在 thinking / tool-use；非 0 = idle / dead。
+没有空闲输入提示符的非交互 driver 可设 `AGENT_BUSY_WHILE_ALIVE=1`；卡住检测把已确认存活的任务窗格视为忙碌，不依据打印过的文字。
 通常实现：`tmux capture-pane -t $sess -p | grep -q "<某个稳定关键字>"`。
 
 #### `agent_command_new` / `agent_command_resume`

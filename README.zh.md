@@ -163,7 +163,7 @@ Worker 用的是你本来就付月费的 `claude` CLI（或其他 coding CLI）�
 | **谁先干** | 并发满时按「优先级 → 阶段 → 等待时长」排队。优先级可以读 `priority/p*` 标签，也可以直接读 **GitHub 上的 Priority 字段**（`PRIORITY_SOURCE=project`），看板上拖一下就改档位 | [operations](docs/operations.zh.md) |
 | **多个仓库汇总到一个看板** | `AUTO_ADD_PROJECTS="myorg/4"` —— 守护程序每轮把本仓库开着的 issue / PR（以及开始同步后才新建又关掉的）加进这些 GitHub Project；免费版自带的自动加入每个 Project 只能盯一个仓库。只加不改，默认关 | [operations](docs/operations.zh.md#自动把-issue--pr-加进-github-project可选默认关闭) |
 | **AI 读到的 prompt** | 通用工作流由 skill 提供，项目只写自己的增量（`<name>.extra.md`），追加在通用部分之后。不用整份抄一遍——抄了就再也拿不到上游更新 | [operations](docs/operations.zh.md) |
-| **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
+| **用哪个 AI CLI** | `WORKER_AGENT=claude\|codex\|opencode\|cursor\|pi`，也可以写自己的 driver | [drivers](docs/drivers.zh.md) |
 | **编排流程：交人之前先过另一个 AI** | 配 `LABEL_PENDING_REVIEW` 开复审关卡：PR 每次有代码改动，先交另一个 AI（默认 codex）审，不通过带意见打回给写代码的 AI 改，最多 `REVIEW_MAX_ROUNDS` 轮（默认 6），审过才交你验收；两个 AI 谈不拢就停下等你拍板。再加 `REVIEW_DESIGN_PROPOSALS=true`，设计方案也先审一遍才到你面前。PM → 开发 → 测试这种多角色接力也能用标签编排 | [operations](docs/operations.zh.md#交叉-review-关卡可选默认关闭) · [collaboration](docs/collaboration.zh.md) |
 | **托管：一条 issue 从头交到尾** | 配 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）并在 issue 上打这个标签：方案只过复审、不等你确认，代码复审通过后 daemon 自己合并，合并条件见 operations（维护者亲手打的标签、复审看过的那个提交、检查全绿、没有冲突）。随时摘掉标签、或在 issue / PR 上打 `pending/human` 就能叫停 | [operations](docs/operations.zh.md#托管标签可选默认关闭) · [security](docs/security.zh.md) |
 | **接外部需求机器人（例：grokbot）** | 让另一个 AI 助手直接来提 issue：有问题要问它、或者做完了，自动挂等待标签并调它的 webhook 叫它来看；PR 合并或关闭时也告诉它。默认关 | [对接文档](docs/requester-bot.zh.md) · [Grok 机器人](https://x.ai/bot/JrLKauAqSRAqNQtIP9BJQ) |
@@ -336,11 +336,11 @@ Cavil Loop 桌面客户端（`client/`，macOS 和 Windows）是一个**可以�
 | [docs/security.md](docs/security.zh.md) | **公开仓库务必读**。匿名评论可能塞 prompt injection（用提示词劫持 AI），怎么防 |
 | [docs/orchestration.md](docs/orchestration.zh.md) | 编排：项目能在哪几步插进自己的命令和提示词（装依赖、提示词增量、开 PR 后、复审、合并后清理、刷新常驻站、复盘），以及怎么定制复审 / 测试 / 预览 / 部署 |
 | [docs/operations.md](docs/operations.zh.md) | 配置全字段、派工口径与取工顺序、prompt 模板（base + 项目增量）、多项目共存、升级、macOS launchd、即时触发 webhook、换其他 AI 工具、故障排查 |
-| [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex` / `cursor`、加自家 driver 教程 |
+| [docs/drivers.md](docs/drivers.zh.md) | Worker agent driver —— 内置 `claude` / `opencode` / `codex` / `cursor` / `pi`、加自家 driver 教程 |
 
 ## 备注
 
-本项目是个 **Agent Skill**——给 Claude Code 这类 AI 编程工具加载的功能包。但你不用 Claude Code 也能跑：后台脚本是纯 shell + `gh` 命令，cron / systemd / launchd 都能调度。Worker 选哪个 agent CLI 由 `WORKER_AGENT=<name>` 控制；内置 `claude` / `opencode` / `codex` / `cursor` 四个 driver，加自家 driver 见 [docs/drivers.zh.md](docs/drivers.zh.md)。
+本项目是个 **Agent Skill**——给 Claude Code 这类 AI 编程工具加载的功能包。但你不用 Claude Code 也能跑：后台脚本是纯 shell + `gh` 命令，cron / systemd / launchd 都能调度。Worker 选哪个 agent CLI 由 `WORKER_AGENT=<name>` 控制；内置 `claude` / `opencode` / `codex` / `cursor` / `pi` 五个 driver，加自家 driver 见 [docs/drivers.zh.md](docs/drivers.zh.md)。
 
 ## License
 

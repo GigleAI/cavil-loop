@@ -163,7 +163,7 @@ WORKER_AGENT_PICK="${WORKER_AGENT:-claude}"
 # shellcheck source=scripts/drivers/_common.sh
 source "$SKILL_DIR/scripts/drivers/_common.sh"
 cavil_agent_deps "$SKILL_DIR" "$HOST" "$WORKER_AGENT_PICK" "$OS" || {
-    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex / cursor。"
+    echo "❌ 找不到 driver '$WORKER_AGENT_PICK'。内置：claude / opencode / codex / cursor / pi。"
     exit 1
 }
 WORKER_BIN="$CAVIL_AGENT_BIN"
