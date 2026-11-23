@@ -100,6 +100,8 @@ REVIEW_OMIT='只放要人采取行动或会影响人判断的事；没有就整�
 HR_FOLD='这张表是自审证据，整张放进折叠块'
 # GitHub#649：流程复杂就配图（四份「交人评论怎么写」第 12 条 + 通用复审模板评论版式那一段）
 DIAGRAM_HEAD='**流程复杂就配图**'
+# GitHub#678：描述问题用白话、先讲具体例子（四份第 13 条 + 通用复审模板评论版式那一段之后）
+PLAIN_HEAD='**描述问题用白话，先讲一个具体例子**'
 # 带 / 的短语在 sed 里要转义，grep 前还原
 unesc() { sed 's#\\/#/#g' <<<"$1"; }
 PLAN_HEAD='**方案评论版式（外面只放要人看的，其余折叠）**'
@@ -227,7 +229,10 @@ check_prompts() {
         if [ -z "$t" ]; then echo "$name: 没有「流程复杂就配图」"; continue; fi
         [ "$(wc -l <<<"$t")" -eq 1 ] || { echo "$name: 「流程复杂就配图」有不同写法"; continue; }
         grep -qF -- "12. $DIAGRAM_HEAD" "$f" || echo "$name: 「流程复杂就配图」不在交人评论那段的第 12 条"
-        grep -qF '本项目没配出图地址时，改用表格或分步编号列表' <<<"$t" || echo "$name: 「流程复杂就配图」没写没出图地址时怎么办"
+        grep -qF '本项目没配出图地址时，用表格、mermaid 或分步编号列表' <<<"$t" || echo "$name: 「流程复杂就配图」没写没出图地址时怎么办"
+        grep -qF 'Markdown 表格' <<<"$t" && grep -qF 'mermaid 流程图 / 时序图' <<<"$t" && grep -qF '用发布命令出的图片' <<<"$t" \
+            || echo "$name: 「流程复杂就配图」没列全表格 / mermaid / 图片三种形式"
+        grep -qF '结论和例子仍要写在文字里' <<<"$t" || echo "$name: 「流程复杂就配图」没写图只辅助"
         if [ -z "$ref_dia" ]; then ref_dia="$t"; elif [ "$t" != "$ref_dia" ]; then echo "$name: 「流程复杂就配图」和 ${ALL[0]} 不一致"; fi
     done
     f="$TMP/composed-review-bare.md"
@@ -236,6 +241,29 @@ check_prompts() {
         if [ -z "$t" ]; then echo "review（无项目增量）: 评论版式没有「流程复杂就配图」"
         elif [ -n "$ref_dia" ] && [ "$t" != "$ref_dia" ]; then echo "review（无项目增量）: 「流程复杂就配图」和 worker 不一致"; fi
         texts "$REVIEW_HEAD" "$f" | grep -qF -- "$DIAGRAM_HEAD" || echo "review（无项目增量）: 「流程复杂就配图」不在第 3 步评论版式那一段"
+    fi
+
+    # 8. GitHub#678：描述问题用白话——四份成品第 13 条逐字一致；三要素、例子、自查句都在；
+    #    没有项目增量的复审模板里紧跟评论版式那一段，也是同一句
+    local ref_plain=""
+    for name in "${ALL[@]}"; do
+        f="$TMP/composed-$name.md"; [ -s "$f" ] || continue
+        t=$(texts "$PLAIN_HEAD" "$f" | sort -u)
+        if [ -z "$t" ]; then echo "$name: 没有「描述问题用白话」"; continue; fi
+        [ "$(wc -l <<<"$t")" -eq 1 ] || { echo "$name: 「描述问题用白话」有不同写法"; continue; }
+        grep -qF -- "13. $PLAIN_HEAD" "$f" || echo "$name: 「描述问题用白话」不在交人评论那段的第 13 条"
+        grep -qF '人会遇到什么、本该怎样、实际怎样' <<<"$t" || echo "$name: 「描述问题用白话」缺例子三要素"
+        grep -qF '只读折叠区外的内容，一个不熟这块代码的人能不能说出出了什么问题、要选什么？' <<<"$t" \
+            || echo "$name: 「描述问题用白话」缺发出前自查"
+        if [ -z "$ref_plain" ]; then ref_plain="$t"; elif [ "$t" != "$ref_plain" ]; then echo "$name: 「描述问题用白话」和 ${ALL[0]} 不一致"; fi
+    done
+    f="$TMP/composed-review-bare.md"
+    if [ -s "$f" ]; then
+        t=$(texts "$PLAIN_HEAD" "$f" | sort -u)
+        if [ -z "$t" ]; then echo "review（无项目增量）: 没有「描述问题用白话」"
+        elif [ -n "$ref_plain" ] && [ "$t" != "$ref_plain" ]; then echo "review（无项目增量）: 「描述问题用白话」和 worker 不一致"; fi
+        grep -A1 -F -- "$REVIEW_HEAD" "$f" | tail -1 | grep -qF -- "$PLAIN_HEAD" \
+            || echo "review（无项目增量）: 「描述问题用白话」没紧跟第 3 步评论版式那一段"
     fi
 }
 

@@ -124,7 +124,7 @@ for f in autopilot-worker autopilot-worker-pr; do
         && ok "$f：写了纯提问例外（交接与 daemon 打回两处）" || bad "$f：缺纯提问例外"
 done
 grep -qF '⑤ 人这一轮提了问题，worker 本轮第一条评论的标题下第一段却不是这些问题的答案' "$TMP/review.md" \
-    && grep -qF '逐条对照下面六项' "$TMP/review.md" && ok "复审 2L 有 ⑤（答案不在第一段就打回）" || bad "复审 2L 缺 ⑤"
+    && grep -qF '逐条对照下面七项' "$TMP/review.md" && ok "复审 2L 有 ⑤（答案不在第一段就打回）" || bad "复审 2L 缺 ⑤"
 
 echo "── 6. 「疑问 + 建议」一节（GitHub#654）──"
 S='## 先判断「疑问 + 建议」可不可行（GitHub#654）'
