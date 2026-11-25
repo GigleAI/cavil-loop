@@ -19,7 +19,7 @@ const screens = join(root, 'test-results', 'screens');
 mkdirSync(screens, { recursive: true });
 
 const K = (n: number) => `gigleai/cavil-loop#${n}`;
-const PULLED_TITLE = '此条目不符合搜索条件；因上层有命中的 issue 而显示';
+const PULLED_TITLE = '此条目不符合筛选条件；因上层有命中的 issue 而显示';
 
 let env: AppEnv;
 test.beforeEach(async () => {

@@ -121,7 +121,7 @@
   "关联 PR": "Linked PRs",
   "子 issue 进度": "Sub-issue progress",
   "作者": "Author",
-  "此条目不符合搜索条件；因上层有命中的 issue 而显示": "This item does not match the search; it is shown because an issue above it does",
+  "此条目不符合筛选条件；因上层有命中的 issue 而显示": "This item does not match the filter; it is shown because an issue above it does",
   "仓库来源读不到关联 PR": "Linked PRs cannot be read from a repository source",
   "PR 开着（GitHub 关联）": "PR open (linked on GitHub)",
   "PR 已关闭（GitHub 关联）": "PR closed (linked on GitHub)",
@@ -270,7 +270,7 @@
   "打开这个 PR 的详情（合并、冲突、检查、评审状态在详情底部）": "Open this PR's details (merge, conflicts, checks and review state at the bottom)",
   "这个 PR 不在当前来源里，在 GitHub 打开": "This PR is not in the current sources; open it on GitHub",
   "PR 正文引用": "named in the PR's description",
-  "此 issue 不符合搜索条件；因下面有命中的 PR 而显示": "This issue does not match the search; it is shown because a PR under it does",
+  "此 issue 不符合筛选条件；因下面有命中的 PR 而显示": "This issue does not match the filter; it is shown because a PR under it does",
   "随 PR 显示": "Shown with PR",
   "随 PR 显示 · 不在筛选结果里": "Shown with its PR · not a search match"
 }

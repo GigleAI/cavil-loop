@@ -85,3 +85,40 @@ export function normalizeClearAllOnActivate(raw: unknown): boolean {
 export function normalizeNotifyScope(raw: unknown): NotifyScope {
   return raw === 'mine' ? 'mine' : 'all';
 }
+
+/**
+ * GitHub#689: the view bar's 「只看我的」 — one switch for the whole window (every layout, the lit number,
+ * the view-bar numbers), kept on this machine under its own key like the folds above, so importing a
+ * Project's web view or switching layouts never touches it. `author` = 我提出的, `assignee` = 指派给我;
+ * an item shows when either ticked one matches. At least one stays ticked: a "mine" with nothing to match
+ * would list nothing, and the way to stop narrowing is the switch itself.
+ */
+export interface MineFilter {
+  on: boolean;
+  author: boolean;
+  assignee: boolean;
+}
+
+export const DEFAULT_MINE_FILTER: MineFilter = { on: false, author: true, assignee: true };
+
+/** Whatever was saved: each field a boolean or its default; both boxes unticked reads as both ticked. */
+export function normalizeMineFilter(raw: unknown): MineFilter {
+  const r = (typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  const pick = (k: keyof MineFilter) => (typeof r[k] === 'boolean' ? (r[k] as boolean) : DEFAULT_MINE_FILTER[k]);
+  const out: MineFilter = { on: pick('on'), author: pick('author'), assignee: pick('assignee') };
+  if (!out.author && !out.assignee) return { ...out, author: true, assignee: true };
+  return out;
+}
+
+/**
+ * One change from the window. Fields that are not booleans are ignored; a change that would untick the last
+ * box is refused as a whole. Returns `cur` itself when nothing changes.
+ */
+export function setMineFilter(cur: MineFilter, patch: unknown): MineFilter {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return cur;
+  const p = patch as Record<string, unknown>;
+  const next: MineFilter = { ...cur };
+  for (const k of ['on', 'author', 'assignee'] as const) if (typeof p[k] === 'boolean') next[k] = p[k] as boolean;
+  if (!next.author && !next.assignee) return cur;
+  return next.on === cur.on && next.author === cur.author && next.assignee === cur.assignee ? cur : next;
+}
