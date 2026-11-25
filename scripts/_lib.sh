@@ -553,7 +553,7 @@ dispatch_claim() {   # <编号>
     stuck_release_gate
     dispatch_env_precheck "$num" || rc=$?
     if [ "$rc" != 0 ]; then
-        log "派工 #$num：认领前核对没过（${DISPATCH_PRECHECK_WHY}），不认领、不交任务"
+        log "派工 #${num}：认领前核对没过（${DISPATCH_PRECHECK_WHY}），不认领、不交任务"
         DISPATCH_PHASE=done; exit "$rc"
     fi
     pre="$DISPATCH_PRE_DOC"
@@ -563,33 +563,33 @@ dispatch_claim() {   # <编号>
     # 加 doing/agent 报错就不再摘：读回为准（报错但其实加上了的，读回会按「只做成一部分」复原）
     v=ok
     if ! printf '%s' "$pre" | jq -e --arg d "$LABEL_AGENT_DOING" '.labels | index($d)' >/dev/null; then
-        run_gh "认领 #$num：加 $LABEL_AGENT_DOING" \
+        run_gh "认领 #${num}：加 $LABEL_AGENT_DOING" \
             gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$LABEL_AGENT_DOING" >/dev/null || v=failed
     fi
     if [ "$v" = ok ]; then
         while IFS= read -r l; do
             [ -n "$l" ] || continue
-            run_gh "认领 #$num：摘 $l" \
+            run_gh "认领 #${num}：摘 $l" \
                 gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$l" | jq -sRr @uri)" >/dev/null || true
         done < <(printf '%s' "$pre" | jq -r --argjson want "$want" '.labels - $want.labels | .[]')
     fi
     STUCK_RELEASE_FLIP_OK=""
     if ! post=$(dispatch_item_doc "$num") || [ -z "$post" ]; then
-        log "派工 #$num：认领后读不回条目 → 结果不明，不交任务、不再写"
+        log "派工 #${num}：认领后读不回条目 → 结果不明，不交任务、不再写"
         DISPATCH_PHASE=done; exit "$DISPATCH_RC_UNKNOWN"
     fi
     v=$(dispatch_doc_cmp "$post" "$want" "$pre")
     case "$v" in
         same)
             DISPATCH_CLAIM_DOC="$post"; DISPATCH_PHASE=claimed
-            log "派工 #$num：已认领（$LABEL_AGENT_DOING 已打上、触发标签已摘，读回确认）"
+            log "派工 #${num}：已认领（$LABEL_AGENT_DOING 已打上、触发标签已摘，读回确认）"
             return 0 ;;
         partial)
-            log "派工 #$num：认领只做成一部分 → 不交任务，复原成认领前的样子"
+            log "派工 #${num}：认领只做成一部分 → 不交任务，复原成认领前的样子"
             DISPATCH_CLAIM_DOC="$post"
             dispatch_claim_restore "$num" ;;
         *)
-            log "派工 #$num：认领期间条目被别人改过（标签或状态和预期不符）→ 已撤回，不交任务、不再写"
+            log "派工 #${num}：认领期间条目被别人改过（标签或状态和预期不符）→ 已撤回，不交任务、不再写"
             DISPATCH_PHASE=done; exit "$DISPATCH_RC_WITHDRAWN" ;;
     esac
 }
@@ -605,30 +605,30 @@ dispatch_claim_restore() {   # <编号>
     local num="$1" now v l
     DISPATCH_PHASE=done
     if [ -n "${STUCK_REL_CTX:-}" ]; then
-        log "派工 #$num：恢复派工里不复原标签，结果交给统一收尾"
+        log "派工 #${num}：恢复派工里不复原标签，结果交给统一收尾"
         exit "$DISPATCH_RC_UNKNOWN"
     fi
     if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
-        log "派工 #$num：复原前读不到条目 → 结果不明，不写"; exit "$DISPATCH_RC_UNKNOWN"
+        log "派工 #${num}：复原前读不到条目 → 结果不明，不写"; exit "$DISPATCH_RC_UNKNOWN"
     fi
     v=$(dispatch_doc_cmp "$now" "$DISPATCH_CLAIM_DOC")
     if [ "$v" != same ]; then
-        log "派工 #$num：复原前条目被别人改过 → 已撤回，不写"; exit "$DISPATCH_RC_WITHDRAWN"
+        log "派工 #${num}：复原前条目被别人改过 → 已撤回，不写"; exit "$DISPATCH_RC_WITHDRAWN"
     fi
     while IFS= read -r l; do
         [ -n "$l" ] || continue
-        run_gh "复原 #$num：加回 $l" gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$l" >/dev/null || true
+        run_gh "复原 #${num}：加回 $l" gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$l" >/dev/null || true
     done < <(printf '%s' "$DISPATCH_PRE_DOC" | jq -r --argjson now "$now" '.labels - $now.labels | .[]')
     while IFS= read -r l; do
         [ -n "$l" ] || continue
-        run_gh "复原 #$num：摘 $l" \
+        run_gh "复原 #${num}：摘 $l" \
             gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$l" | jq -sRr @uri)" >/dev/null || true
     done < <(printf '%s' "$now" | jq -r --argjson pre "$DISPATCH_PRE_DOC" '.labels - $pre.labels | .[]')
     if now=$(dispatch_item_doc "$num") && [ -n "$now" ] && [ "$(dispatch_doc_cmp "$now" "$DISPATCH_PRE_DOC")" = same ]; then
-        log "派工 #$num：已复原成认领前的样子（读回确认）→ 派工失败，下一轮重试"
+        log "派工 #${num}：已复原成认领前的样子（读回确认）→ 派工失败，下一轮重试"
         exit 1
     fi
-    log "派工 #$num：复原后读回和认领前不一致或读不到 → 结果不明，不再写"
+    log "派工 #${num}：复原后读回和认领前不一致或读不到 → 结果不明，不再写"
     exit "$DISPATCH_RC_UNKNOWN"
 }
 
@@ -639,14 +639,14 @@ dispatch_write_check() {   # <编号>
     local num="$1" rc=0 now
     if [ -z "$DISPATCH_PHASE" ]; then
         dispatch_env_precheck "$num" || rc=$?
-        [ "$rc" = 0 ] || log "派工 #$num：转人工前核对没过（${DISPATCH_PRECHECK_WHY}），不写"
+        [ "$rc" = 0 ] || log "派工 #${num}：转人工前核对没过（${DISPATCH_PRECHECK_WHY}），不写"
         return "$rc"
     fi
     if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
-        log "派工 #$num：转人工前读不到条目，不写"; return "$DISPATCH_RC_UNKNOWN"
+        log "派工 #${num}：转人工前读不到条目，不写"; return "$DISPATCH_RC_UNKNOWN"
     fi
     if [ "$(dispatch_doc_cmp "$now" "$DISPATCH_CLAIM_DOC")" != same ]; then
-        log "派工 #$num：转人工前条目被别人改过，不写"; return "$DISPATCH_RC_WITHDRAWN"
+        log "派工 #${num}：转人工前条目被别人改过，不写"; return "$DISPATCH_RC_WITHDRAWN"
     fi
     return 0
 }

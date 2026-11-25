@@ -548,6 +548,8 @@ cat > "$FAKEBIN/gh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$CTL/gh.log"
 while [ -e "$CTL/gh-hold" ]; do sleep 0.1; done
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+FAKE_ITEM_DIR="$CTL/items" . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fake_item_labels.sh" "\$@"
 case "\$*" in *title*) echo "测试标题"; exit 0 ;; esac
 echo "{}"
 SH
@@ -619,6 +621,7 @@ CONF
 ON='HEAVY_TEST_COMMANDS="bash tests/run.sh"'
 # 跑一次派工。<skill 目录> <issue|pr>；输出在 $D/dispatch.out
 dispatch() {
+    rm -rf "$CTL/items"   # 每次派工前条目都挂着 pending/agent（GitHub#700：派工先认领）
     (cd "$D/proj" && HOME="$D/home" CODING_AGENT_CONFIG="$D/config" DISPATCH_WORKER_AGENT=claude DISPATCH_PROMPT_KIND="" \
         timeout 120 bash -c '
             if [ "$1" = issue ]; then exec bash "$2/scripts/dispatch-issue-comment.sh" '"$N"' 0
@@ -964,7 +967,7 @@ run_off() {   # <根> <输出目录> [多出来的配置行…]
         worker_env > "$out/$k.env"
         hw_alive="$(wc -l < "$CTL/runs")"; echo "workers=$hw_alive" >> "$out/$k.rc"
         cleanup_item "$root" --force; echo "cleanup=$? wt=$( [ -d "$WT" ] && echo present || echo absent )" >> "$out/$k.rc"
-        cp "$CTL/gh.log" "$out/$k.gh"
+        compat_merge_calls < "$CTL/gh.log" > "$out/$k.gh"   # 派工换标签那一段见 compat_claim_calls
         state_files > "$out/$k.files"
     done
 }

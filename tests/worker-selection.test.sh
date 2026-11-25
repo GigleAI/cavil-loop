@@ -115,7 +115,7 @@ normal_lines=$(grep -F 'collect_queue_rows issue "$LABEL_PENDING_AGENT_DEFAULT" 
 normal_lines=$((normal_lines + $(grep -F 'collect_queue_rows pr "$LABEL_PENDING_AGENT_DEFAULT" "$WORKER_MODEL"' "$POLL" | wc -l)))
 extra_lines=$(grep -F 'collect_queue_rows issue "$_extra_label" "$WORKER_MODEL"' "$POLL" | wc -l)
 extra_lines=$((extra_lines + $(grep -F 'collect_queue_rows pr    "$_extra_label" "$WORKER_MODEL"' "$POLL" | wc -l)))
-greedy_model=$(grep -F 'branch}${US}${US}${WORKER_MODEL}${US}${US}${US}${title}' "$POLL" | wc -l)
+greedy_model=$(grep -F 'branch}${US}${US}${WORKER_MODEL}${US}${US}${US}free${US}${title}' "$POLL" | wc -l)   # free = 派工来源（GitHub#700）
 chk "普通 issue / PR 队列保留 WORKER_MODEL" "$normal_lines" "2"
 chk "追加触发标签保留 WORKER_MODEL" "$extra_lines" "2"
 chk "greedy 队列保留 WORKER_MODEL" "$greedy_model" "1"
