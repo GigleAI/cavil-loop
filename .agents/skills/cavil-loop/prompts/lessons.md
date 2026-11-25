@@ -8,7 +8,7 @@
 
 为满足复盘 8 条上限，本版仅保留硬规则与高价值观察项，其余低频观察项（L6–L8、L10、L12–L28）已移出共享文件，历史见迁移表。
 
-<!-- next-id: 84 -->
+<!-- next-id: 85 -->
 
 ## 硬规则
 
@@ -36,9 +36,9 @@
 ### L34
 - 规则：PR 正文里的实测数字（尤其是新测试套到旧版本的通过/失败/未拦下个数）写明命令与口径，交付前复跑核对；独立复审复跑得出不同数字时，以复跑为准并在正文更正。
 - 适用：PR 正文或交人评论引用对拍或测试计数时。
-- 为什么：PR #78 正文称旧 main 上 1 个反例没被拦下，复审复跑为 4 个；PR #132、#98、#620、#623 的正文数字与复审复跑不符；PR #174 的负对照命令、PR #693 的复跑命令原样执行不了；PR #624 两个数字并存，未标注对应提交与环境；PR #692 有 12 个文件的通过数取自脚本改动前的运行。
-- 这样做是对的：PR #83、#85、#87、#131、#163、#121、#170、#695 正文的通过/失败数经复审复跑一致。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开。PR #620 返工后正文写明文件范围与两条复跑命令，复审复跑一致。PR #692 返工后在所审提交上一次重跑 52 个改过的测试文件并整表重写，与 CI 逐个比对，复审复跑一致。PR #693 返工后写明目录与完整命令，复审复跑一致。
-- Seen 9×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153 · #692 https://github.com/GigleAI/cavil-loop/pull/692#issuecomment-7150442236 · #693 https://github.com/GigleAI/cavil-loop/pull/693#issuecomment-7150650408
+- 为什么：PR #78 正文称旧 main 上 1 个反例没被拦下，复审复跑为 4 个；PR #132、#98、#620、#623 的正文数字与复审复跑不符；PR #174 的负对照命令、PR #693 的复跑命令原样执行不了；PR #624 两个数字并存，未标注对应提交与环境；PR #692 有 12 个文件的通过数取自脚本改动前的运行；PR #702 的设计方案阶段把关键实测数字（卡片与浮层间距约 13px）配了省略筛选条件的命令，复审第 1 轮无法原样复现而打回。
+- 这样做是对的：PR #83、#85、#87、#131、#163、#121、#170、#695 正文的通过/失败数经复审复跑一致。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开。PR #620 返工后正文写明文件范围与两条复跑命令，复审复跑一致。PR #692 返工后在所审提交上一次重跑 52 个改过的测试文件并整表重写，与 CI 逐个比对，复审复跑一致。PR #693 返工后写明目录与完整命令，复审复跑一致。PR #702 的设计方案修订版补齐环境变量、受测提交号、浏览器与临时打点撤回步骤后，复审下一轮按同一命令复现一致。
+- Seen 10×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153 · #692 https://github.com/GigleAI/cavil-loop/pull/692#issuecomment-7150442236 · #693 https://github.com/GigleAI/cavil-loop/pull/693#issuecomment-7150650408 · #702 https://github.com/GigleAI/cavil-loop/issues/694#issuecomment-7151516161
 
 ### L41
 - 规则：daemon 在判定与写 GitHub（评论、翻标签）之间必须重读目标，并把判定所依据的全部身份与状态（是否打开、是否已合并、目标分支、最新提交、来源属性、标签保护）逐项比对；任一项不符或缺字段，本轮不写、不记已处理。
@@ -183,7 +183,7 @@
 ### L47
 - 规则：测试里「改动前的旧版本」基准要取固定提交或「首次引入该文件的提交」的上一版，不取随主干移动的引用；每次模板或脚本合并后，复跑所有用到主干基准的对拍。
 - 适用：新旧实现对拍、问题重现类测试。
-- 为什么：PR #115 发现设计复审对拍把主干的模板当旧基准，任何只改模板文字的 PR 都红 10 条；单元链接修复测试的旧部署器取主干，#111 合并后「问题重现」恒红；PR #623 合入主干新增复审段后，复盘经验拼装对拍只过滤了当前输出、没过滤基线输出，主干与本 PR 同样变红。
+- 为什么：PR #115 发现设计复审对拍把主干的模板当旧基准，任何只改模板文字的 PR 都红 10 条；单元链接修复测试的旧部署器取主干，#111 合并后「问题重现」恒红；PR #623 合入主干后新增复审段后，复盘经验拼装对拍只过滤了当前输出、没过滤基线输出，主干与本 PR 同样变红。
 - 这样做是对的：PR #134 把 6 条不变红的负对照基准固定到 #106 合并前的提交，6 条变红（https://github.com/GigleAI/cavil-loop/pull/134#issuecomment-6633742704）。PR #105 在交付前自查，改成用旧拼装代码拼本版模板（https://github.com/GigleAI/cavil-loop/pull/105）。
 - Seen 2×: #115 https://github.com/GigleAI/cavil-loop/pull/115 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022
 
@@ -432,3 +432,9 @@
 - 为什么：PR #701 的新开关默认开，每次派工多出的条目、权限读取混进 ci-failure-report、concurrent-work、heavy-test、poll-runlog、stuck-worker 的调用对拍；本机快速检查全过，所交提交的 CI 却有 6 个分片失败（其中 4 个来自这类对拍），被复审打回。
 - 这样做是对的：PR #701 返工后五处照已有做法把新开关置空，五个对拍各自实跑通过；默认开启的行为仍由独立的真实派工测试覆盖，没有靠删断言绕过。
 - Seen 1×: #701 https://github.com/GigleAI/cavil-loop/pull/701#issuecomment-7153252813 [tests/]
+
+### L84
+- 规则：WebKit 下界面测试在导航前，若页面上有内容会随异步读取变长的卡片（如本机 daemon 状态卡），要先等该卡片读完（不再显示「读取中」）再触发依赖整页滚动到位的操作，不要假定页面平滑滚动过程中页面长度不会变化。
+- 适用：client/test/e2e/ 里依赖滚动到目标元素才能点击、且页面上存在异步加载后变长的卡片的 WebKit 界面测试。
+- 为什么：PR #702 的验收运行中，「设置页点目录里的快捷键」在 WebKit 上连续两次失败（目标卡片完全不在屏幕上），本机 Chromium 和此前一次 CI 运行均通过；worker 推测是「本机 daemon」卡片在页面画出后才读到状态并变长，导致 WebKit 的平滑滚动途中页面长度变化而提前停止——这一机制是推理，未在本机 WebKit 复现验证，但改为先等该卡片读完再点目录后，WebKit 运行转为通过。
+- Seen 1×: #702 https://github.com/GigleAI/cavil-loop/pull/702#issuecomment-7158628222 [client/test/e2e/]
