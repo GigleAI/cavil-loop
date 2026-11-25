@@ -3015,6 +3015,9 @@ test('GitHub#180: close an issue from the detail (reason + optional comment); th
 });
 
 test('GitHub#191: a click outside the detail puts it away; cards and row titles switch; not inside, not with a dialog up, not with a reply typed', async () => {
+  // step 6 lays the board out by its columns' widths, which follow the cards shown (closed items updated in the
+  // last 14 days): run at the recording, so that does not change with the day the test runs (GitHub#694)
+  await fakeAt(RECORDED_AT);
   const store = { projects: env.fake.state.projects, repos: env.fake.state.repos, w: env.fake.state.w };
   for (const n of [137, 138]) {
     const c = findCopies(store, 'GigleAI/cavil-loop', n)!;
@@ -3025,7 +3028,7 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
   env.fake.state.w.comments.set('gigleai/cavil-loop#138', [
     { id: 'C-191', url: 'https://github.com/GigleAI/cavil-loop/issues/138#c1', createdAt: '2026-11-01T01:00:00Z', bodyHTML: '<p>a comment</p>', author: { login: 'user-2' } },
   ]);
-  const { app, page } = await launch(env);
+  const { app, page } = await launch(env, { clockAt: RECORDED_AT });
   await signInWithSources(page);
   // GitHub#582: written for the panel's old default width (560); the default now follows the window (its own test)
   await page.evaluate(() => (window as any).cavil.setView({ panelWidth: 560 }));
@@ -3129,17 +3132,33 @@ test('GitHub#191: a click outside the detail puts it away; cards and row titles 
 
   // ---- 6. the board's own dialog ("加入看板？", dropping a card that is on no board) ----
   await open(137);
-  // the panel floats over the right of the board: bring the last iteration column to the left
-  // edge, so it and 未加入看板 next to it are both clear of the panel, then drop an unboarded card there
+  // the panel floats over the right of the board: drop an unboarded card on the last iteration column (just
+  // left of 未加入看板). Both must be clear of the panel; how wide the columns are follows the cards in them,
+  // so the board is scrolled by what is measured, not by assuming the two columns fit (GitHub#694)
   const titles = await page.locator('[data-testid="column"]').evaluateAll((cs) => cs.map((c) => c.getAttribute('data-title') ?? ''));
   const target = titles.slice(0, titles.indexOf('未加入看板')).filter((t) => t.startsWith('Iteration')).pop()!;
   const targetCol = page.locator(`[data-testid="column"][data-title="${target}"]`);
   await targetCol.evaluate((el) => el.scrollIntoView({ inline: 'start', block: 'nearest' }));
   const panelLeft = (await detail.boundingBox())!.x;
   const unboarded = page.locator('[data-testid="column"][data-title="未加入看板"] [data-testid="card"]').first();
+  const GAP = 24;
+  const over = (await unboarded.boundingBox())!;
+  const shift = Math.ceil(over.x + over.width - (panelLeft - GAP));
+  if (shift > 0) await targetCol.evaluate((el, by) => { el.closest('.board')!.scrollLeft += by; }, shift);
   const ub = (await unboarded.boundingBox())!;
-  expect(ub.x + ub.width).toBeLessThan(panelLeft);
-  await unboarded.dragTo(targetCol);
+  const board = (await page.locator('.board').first().boundingBox())!;
+  const tc = (await targetCol.boundingBox())!;
+  // the point the card is dropped on: the middle of the target column's part still on screen
+  const dropX = (Math.max(tc.x, board.x) + tc.x + tc.width) / 2;
+  const dropY = tc.y + Math.min(tc.height, board.y + board.height - tc.y) / 2;
+  const layout = `board ${board.x}..${board.x + board.width}, ${target} ${tc.x}..${tc.x + tc.width}, card ${ub.x}..${ub.x + ub.width}, panel from ${panelLeft}`;
+  expect(ub.x + ub.width, `the board's layout leaves no room for the card left of the panel: ${layout}`).toBeLessThanOrEqual(panelLeft - GAP + 1);
+  expect(ub.x, `the card is scrolled off the board's left edge: ${layout}`).toBeGreaterThanOrEqual(board.x);
+  expect(tc.x + tc.width - Math.max(tc.x, board.x), `too little of ${target} is left on screen to drop on: ${layout}`).toBeGreaterThan(tc.width / 4);
+  await page.mouse.move(ub.x + ub.width / 2, ub.y + Math.min(ub.height, 40) / 2);
+  await page.mouse.down();
+  await page.mouse.move(dropX, dropY, { steps: 10 });
+  await page.mouse.up();
   await expect(page.getByTestId('confirm-question')).toContainText('还没加入看板');
   await stays(137);
   await shot(page, '60-outside-click-board-dialog');
