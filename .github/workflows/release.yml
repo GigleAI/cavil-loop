@@ -371,6 +371,14 @@ jobs:
     needs: client-plan
     if: needs.client-plan.outputs.tag != ''
     uses: ./.github/workflows/client.yml
+    # A called workflow's jobs may ask for no more than this job grants, or GitHub refuses to start the
+    # whole Release run (startup_failure, no job runs and no failure issue is opened — GitHub#578: the
+    # nightly report job of client.yml asks for issues: write + actions: read). Checked by
+    # tests/workflow-call-permissions.test.sh.
+    permissions:
+      contents: write
+      issues: write
+      actions: read
     with:
       tag: ${{ needs.client-plan.outputs.tag }}
       sha: ${{ needs.client-plan.outputs.sha }}
