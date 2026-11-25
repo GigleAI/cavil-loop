@@ -334,7 +334,7 @@ export function ProjectConfigDialog({
                 </>
               );
             })()}
-            <div className="muted small pcfg-note">{t('其余设置（目录、命令、钩子、令牌等）不在这里显示。')}</div>
+            <div className="muted small pcfg-note">{t('其余设置（本机目录、命令、钩子、令牌等）不在这里显示。')}</div>
           </fieldset>
           </div>
         )}

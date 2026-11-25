@@ -495,6 +495,18 @@ valid_value() {   # <类型> <值>
             lo="${type#bool:}"; hi="${lo#*:}"; lo="${lo%%:*}"
             [ "$v" = "$lo" ] || [ "$v" = "$hi" ] && return 0
             BAD_WHY="只能是 $lo 或 $hi"; return 1 ;;
+        repodir)
+            # 项目仓库里的相对目录（GitHub#688）：规则和复盘程序的 report_dir_problem 是同一条，
+            # 同一份正反例对拍（tests/fixtures/repodir-cases.txt）。空 = 使用方的默认目录
+            [ -z "$v" ] && return 0
+            BAD_WHY="只能是项目仓库里的相对目录：用 / 分隔的字母、数字、. _ -，不以 / 开头或结尾，不含 . 或 .. 段，不进 .git"
+            [ "${#v}" -le 200 ] && [[ "$v" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] || return 1
+            a="$v/"
+            while [ -n "$a" ]; do
+                o="${a%%/*}"; a="${a#*/}"
+                case "$o" in .|..|[.][Gg][Ii][Tt]) return 1 ;; esac
+            done
+            BAD_WHY=""; return 0 ;;
         enum:*)
             opts="${type#enum:}"
             while [ -n "$opts" ]; do

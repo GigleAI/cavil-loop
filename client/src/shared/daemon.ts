@@ -300,7 +300,7 @@ export interface ConfigField {
   mode: 'edit' | 'show';
   label: string;
   help: string;
-  /** agent | model | int | bool | enum | label | text (a plain value read as written: a flow label, a label list, a branch) — one this client does not know is shown only */
+  /** agent | model | int | bool | enum | repodir (a directory inside the project's repository, may be empty) | label | text (a plain value read as written: a flow label, a label list, a branch) — one this client does not know is shown only */
   type: string;
   options?: { value: string; label: string }[];
   min?: number;
@@ -359,12 +359,16 @@ export interface ConfigSave extends DaemonResult {
   detail?: { changes?: ConfigChange[]; backup?: string; config?: string; field?: string; reason?: string };
 }
 
-const KNOWN_TYPES = new Set(['agent', 'model', 'int', 'bool', 'enum']);
+const KNOWN_TYPES = new Set(['agent', 'model', 'int', 'bool', 'enum', 'repodir']);
 /** the most digits an integer setting may have: every value the window sends is at most 200 characters (the back end's
  * valid_value, the remote entry's VALUE_RE); scripts/project-config.sh INT_MAX_DIGITS is the same number */
 const INT_MAX_DIGITS = 200;
 /** what project-config.sh may write on one config line (its LIT_CHARS) */
 const PLAIN = /^[A-Za-z0-9._:/@,+-]*$/;
+
+/** `repodir` (GitHub#688): empty, or letters / digits / . _ - parts between single slashes, none of them . .. or .git (any case) */
+export const repoDirOk = (v: string) =>
+  v === '' || (v.length <= 200 && /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(v) && v.split('/').every((p) => p !== '.' && p !== '..' && p.toLowerCase() !== '.git'));
 
 /** A field the form lets the person change: the daemon says editable, and this client knows the type. */
 export const canEdit = (f: ConfigField) => f.mode === 'edit' && f.editable && KNOWN_TYPES.has(f.type);
@@ -385,6 +389,10 @@ export function fieldProblem(f: ConfigField, v: string): string | null {
     }
     case 'model':
       return v === '' || (v.length <= 80 && /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(v)) ? null : t('模型名只能含字母、数字和 . _ : / @ -');
+    case 'repodir':
+      // GitHub#688: a directory inside the project's repository; the same rule as scripts/project-config.sh `repodir` and
+      // the retrospective's report_dir_problem, one list of values for all three (tests/fixtures/repodir-cases.txt)
+      return repoDirOk(v) ? null : t('只能是项目仓库里的相对目录：用 / 分隔的字母、数字、. _ -，不以 / 开头或结尾，不含 . 或 .. 段，不进 .git');
     case 'agent':
     case 'enum':
       return (f.options ?? []).some((o) => o.value === v) ? null : t('不在可选的值里');

@@ -54,6 +54,16 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 COMPAT_FILES="scripts/project-config.sh scripts/_names.sh"
 OLD="$SANDBOX/old"; copy_tree "$OLD"
 for f in $COMPAT_FILES; do git -C "$REPO_DIR" show "$BASE_REV:$f" > "$OLD/$f" || { echo "❌ 取不到改动前的 $f"; exit 1; }; done
+# 新的值类型（例：GitHub#688 的 repodir）改动前的脚本不认识，那一行两边本来就该不同：两边都从登记表里拿掉
+# 改动前的脚本不认识的类型的行，对拍只比两边都认识的行（新类型的行为由 tests/project-config.test.sh 等测）
+for t in repodir; do
+    if ! grep -q "^        $t)" "$OLD/scripts/project-config.sh"; then
+        for d in "$OLD" "$NEW"; do
+            grep -vE "^[^#|]*\|[^|]*\|[[:space:]]*$t[[:space:]]*\|" "$d/scripts/config-fields.txt" > "$d/scripts/config-fields.txt.tmp" \
+                && mv "$d/scripts/config-fields.txt.tmp" "$d/scripts/config-fields.txt"
+        done
+    fi
+done
 
 if compat_skip "项目配置脚本改动前后的输出" "$OLD" "$NEW" scripts; then
     compat_summary

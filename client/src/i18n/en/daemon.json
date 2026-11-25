@@ -219,7 +219,7 @@
   "正在读取配置…": "Reading the settings…",
   "{what}，所以这里不显示任何值（读不出不等于没设置）。": "{what}, so no values are shown here (unreadable is not the same as not set).",
   "读不出这个项目的配置": "This project's config cannot be read",
-  "其余设置（目录、命令、钩子、令牌等）不在这里显示。": "Other settings (folders, commands, hooks, tokens and so on) are not shown here.",
+  "其余设置（本机目录、命令、钩子、令牌等）不在这里显示。": "Other settings (folders on this machine, commands, hooks, tokens and so on) are not shown here.",
   "有没保存的修改，按 Esc 不会丢掉；点「取消」才会丢掉。": "There are unsaved changes: Esc does not drop them; only \"Cancel\" does.",
   "用编辑器打开配置文件": "Open the config file in an editor",
   "已改 {n} 项，还没保存": {
@@ -291,6 +291,7 @@
   "只能是不小于 {lo} 的整数": "Only a whole number of {lo} or more",
   "只能是不小于 {lo} 的整数，或者留空": "Only a whole number of {lo} or more, or blank",
   "模型名只能含字母、数字和 . _ : / @ -": "A model name may only contain letters, digits and . _ : / @ -",
+  "只能是项目仓库里的相对目录：用 / 分隔的字母、数字、. _ -，不以 / 开头或结尾，不含 . 或 .. 段，不进 .git": "Only a folder inside the project's repository: letters, digits and . _ - separated by single /, no / at the start or end, no . or .. part, nothing inside .git",
   "不在可选的值里": "Not one of the allowed values",
   "只能是 {on} 或 {off}": "Only {on} or {off}",
   "这一项不能在这里改": "This setting cannot be changed here",

@@ -2088,7 +2088,8 @@ echo "snapshots holding a token after / 清理后带令牌的快照: $(with_toke
 
 ## 合并后的对话复盘
 
-PR 合并后，一条后台队列让模型通读这个 PR 的全部讨论，在来源项目里写一份报告 `docs/retrospectives/pr-N.md`，
+PR 合并后，一条后台队列让模型通读这个 PR 的全部讨论，在来源项目里写一份报告 `docs/retrospectives/pr-N.md`
+（可以换成该仓库里的别的目录，见下），
 并更新项目的计次经验文件，之后的派工和复审说明都会带上它。`POST_MERGE_RETROSPECTIVE=true` 才打开；设为 `false`
 暂停（保留队列）。需要 Python 3、支持 safe mode / 结构化输出的 Claude CLI 和来源项目的推送权限。
 
@@ -2097,13 +2098,19 @@ PR 合并后，一条后台队列让模型通读这个 PR 的全部讨论，在�
 - 首次运行记录启用时间，后续分页扫描更新过的 closed PR，只处理之后合并的；不补跑历史、不处理未合并关闭项，
   也不依赖自动 cleanup。
 - 分页采集关联 issue、普通评论、review、行内评论。Claude（`RETROSPECTIVE_MODEL=sonnet`）没有工具或 MCP 权限。
-- 固定发布程序只提交 `docs/retrospectives/pr-N.md` 和 `.agents/skills/cavil-loop/prompts/lessons.md`（配了项目
+- 固定发布程序只提交报告（`docs/retrospectives/pr-N.md`，或下面配置的目录）和 `.agents/skills/cavil-loop/prompts/lessons.md`（配了项目
   命令时再加上它的改动，见下）到**来源项目自己的仓库** `origin/$BASE_BRANCH`（默认 main），使用隔离 worktree、
   仅 fast-forward 推送。项目经验从该项目远端读取，只加载进该项目的 prompt，位于项目增量要求之前。
 - 公开 cavil 仓库的 `prompts/lessons.md` 只保留经过独立审查、脱离项目也成立的公开流程原则。自动发布程序不会向
   cavil 写入生成的项目内容、标识、链接或复盘。通用改进候选先保存在项目报告中，另行去项目化审查后才能公开。证据
   保存在来源项目和本机状态目录。
 - 不修改旧评论或业务 worker 标签。
+- **报告目录**（`RETROSPECTIVE_REPORT_DIR`，客户端项目配置里在「合并后复盘 → 高级」）：项目仓库里的一个目录，
+  相对仓库根，给会把 `docs/` 导出或公开发布的项目用。不写或留空 = `docs/retrospectives`。只认用单个 `/` 分隔的
+  字母、数字和 `. _ -`，不以 `/` 开头或结尾，不含 `.` 或 `..` 段，不进 `.git`；其他值会让复盘在读队列之前停下，
+  原因写进 `retrospective.log`。目录经过符号链接通到仓库外时，那个 PR 的任务在调用模型之前就失败（每小时重试，
+  3 次后放弃）。报告在配置的目录**或** `docs/retrospectives` 里都算这个 PR 复盘过，所以换目录不会把同一个 PR
+  再复盘（再花钱）一遍。已经写好的报告留在原处，想挪到新目录就手动挪。
 
 </details>
 

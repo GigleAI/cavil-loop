@@ -1004,7 +1004,8 @@ class DirectoryInstructionTest(unittest.TestCase):
     def test_未开启时提示词与去掉占位符的模板逐字节相同(self):
         self.assertIn('${DIRECTORY_LESSONS}', self.template)
         for mode in ('auto', 'confirm'):
-            plain = self.template.replace('${DIRECTORY_LESSONS}', '').replace('${RULE_LIMIT}', '')
+            plain = (self.template.replace('${DIRECTORY_LESSONS}', '').replace('${RULE_LIMIT}', '')
+                     .replace('${REPORT_DIR}', 'docs/retrospectives'))
             expected = plain.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
             self.assertEqual(runner.render_instruction(self.template, mode), expected)
             self.assertNotIn('目录经验', runner.render_instruction(self.template, mode))
