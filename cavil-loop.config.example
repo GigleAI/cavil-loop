@@ -175,7 +175,7 @@ REVIEW_MAX_ROUNDS=6
 # 写了「方案交复审」的项目，开不开这一项都照常工作。
 REVIEW_DESIGN_PROPOSALS=false
 
-# ── Optional autopilot label / 托管标签（默认关闭，GitHub#114）──
+# ── Autopilot label / 托管标签（GitHub#114；默认开启，GitHub#691）──
 # A maintainer puts this label on an ISSUE to hand the whole thing to the agents: the design goes
 # through the review gate only (no human confirmation), and once the code review passes the PR is
 # flipped to LABEL_PENDING_MERGE and the daemon merges it — only if ALL of these hold:
@@ -195,7 +195,9 @@ REVIEW_DESIGN_PROPOSALS=false
 # The loop's write account and the maintainer must be different accounts, otherwise no label
 # can ever count as the maintainer's. Requests filed by the external requester bot are never put
 # on autopilot (they need the requester's confirmation, which the daemon cannot judge).
-# Leave LABEL_AUTOPILOT empty to keep the previous behaviour exactly. setup.sh creates both labels.
+# On by default (GitHub#691): a config without this line uses "autopilot". Set it to an empty value
+# (LABEL_AUTOPILOT="") to turn it off and keep the previous behaviour exactly. Nothing happens until a
+# maintainer puts the label on an item. setup.sh creates both labels unless the value is empty.
 #
 # 维护者在 **issue** 上打这个标签 = 从方案到合并全交给 agent：方案只过复审、不等人确认，代码复审
 # 通过后 PR 翻 LABEL_PENDING_MERGE，由 daemon 合并——以下全部成立才合：
@@ -210,8 +212,9 @@ REVIEW_DESIGN_PROPOSALS=false
 # 必须同时配了 LABEL_PENDING_REVIEW（没有复审关卡 = 没人把关，什么都不托管）。
 # loop 的写入账号和维护者不能是同一个账号，否则任何标签都算不上维护者打的。
 # 外部需求机器人提的需求不托管（要提需求方确认，daemon 判断不了）。
-# 留空 = 关闭，行为与从前完全一致。setup.sh 会按这里的名字建这两个标签。
-LABEL_AUTOPILOT=""
+# 默认开启（GitHub#691）：配置里没有这一行 = 用 autopilot。写成空值（LABEL_AUTOPILOT=""）= 关闭，行为与从前
+# 完全一致。开着也要维护者亲手在条目上打这个标签才会托管。setup.sh 会按这里的名字建这两个标签（写成空值不建）。
+LABEL_AUTOPILOT="autopilot"
 LABEL_PENDING_MERGE="pending/merge"
 # squash / merge / rebase（仓库设置里得允许这种方式，不允许时交人）
 AUTOPILOT_MERGE_METHOD="squash"

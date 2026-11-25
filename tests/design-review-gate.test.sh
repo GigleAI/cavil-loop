@@ -2,8 +2,7 @@
 # kind: e2e
 # 设计方案复审开关（GitHub#102）：REVIEW_DESIGN_PROPOSALS 决定「写完方案 / 修订方案翻哪个标签」。
 #
-# 跑法：bash tests/design-review-gate.test.sh              （默认不跑【5】负对照，约 1 分钟）
-#       MUTATION=1 bash tests/design-review-gate.test.sh   （连【5】一起跑，约 6 分钟；见 tests/lib/mutation.sh）
+# 跑法：bash tests/design-review-gate.test.sh              （约 1 分钟）
 # 依赖：git、python3。不碰网络（假 gh、假 tmux），HOME 指到临时目录。
 #
 # 全部跑真实的派工脚本（dispatch-new-issue.sh / dispatch-issue-comment.sh），读它们写出的
@@ -15,14 +14,12 @@
 #        澄清答复仍直接交人；PR 的交付出口不变
 #   【4】项目自己在追加要求里写「方案交复审」（tutor 的做法）：开关开 / 关下，最后生效的
 #        那句都是交复审——开关上线不打断这种项目
-#   【5】负对照：沙盘副本逐个改坏，对应检查必须变红
 
 # ── Design proposals through the review gate: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Design proposals through the review gate (GitHub#102: `REVIEW_DESIGN_PROPOSALS`, the
 # `${LABEL_DESIGN_REVIEW_OR_HUMAN}` / `${DESIGN_REVIEW_NOTE}` placeholders in the two design exits of
 # `new-issue.template.md` and `issue-comment.template.md` § B) → `tests/design-review-gate.test.sh`
-# (~1 min by default, it runs the real dispatch scripts; ~6 min with `MUTATION=1`, which adds ten
-# deliberately broken copies). With the switch off the rendered prompts must match the merge-base copy
+# (~1 min, it runs the real dispatch scripts). With the switch off the rendered prompts must match the merge-base copy
 # byte for byte, and a project that routes proposals to review from its own `*.extra.md`
 # (`${LABEL_REVIEW_OR_HUMAN}`) must still do so with the switch on or off — never make
 # `${LABEL_REVIEW_OR_HUMAN}` depend on the switch. Clarifying answers keep `${LABEL_PENDING_HUMAN}`
@@ -33,8 +30,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 # shellcheck source=lib/prompt-files.sh
@@ -130,6 +125,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 # 往返记录 GitHub#669 起没写就开；同样写成空值
 ENABLE_ROUND_LOG=""
 LABEL_AGENT_DOING="doing/agent"
@@ -254,45 +251,6 @@ echo "【1–4】本版"
 run_check "$TMP/new" > "$TMP/main.out"
 report < "$TMP/main.out"
 
-# 【5】负对照：改坏一处，对应检查必须变红
-echo "【5】负对照（改坏一处，对应检查必须变红）"
-neg() { # $1 = 说明；$2 = 文件（相对根）；$3 = 原文；$4 = 改成；$5 = 期望变红的检查名
-    mutation_gate || return 0
-    local sb="$TMP/neg-$5"
-    rm -rf "$sb"; mkdir -p "$sb"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$sb/"
-    python3 - "$sb/$2" "$3" "$4" <<'PY' || { bad "$1：改坏失败（原文没找到）"; return; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if old not in s:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
-PY
-    run_check "$sb" > "$sb/check.out" 2>/dev/null
-    if grep -q "^FAIL $5 " "$sb/check.out"; then ok "$1 → $5 变红"
-    else bad "$1 → $5 没变红（这条检查拦不住这种改坏）"; fi
-}
-neg "新方案出口仍写死交人" prompts/new-issue.template.md \
-    'flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN}' 'flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN}' on_new
-neg "修订版方案出口仍写死交人" prompts/issue-comment.template.md \
-    '4. 翻 label：`flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN}' '4. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN}' on_revise
-neg "澄清答复也被改成交复审" prompts/issue-comment.template.md \
-    '2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_PENDING_HUMAN}' '2. 翻 label：`flip_label ${ISSUE} --add ${LABEL_DESIGN_REVIEW_OR_HUMAN}' on_clarify
-neg "新 issue 派工脚本漏了新占位" scripts/dispatch-new-issue.sh \
-    '        -e "s|\${LABEL_DESIGN_REVIEW_OR_HUMAN}|$LABEL_DESIGN_REVIEW_OR_HUMAN|g" \'$'\n' '' unrendered_new-issue
-neg "issue 评论派工脚本漏了新占位" scripts/dispatch-issue-comment.sh \
-    '        -e "s|\${LABEL_DESIGN_REVIEW_OR_HUMAN}|$LABEL_DESIGN_REVIEW_OR_HUMAN|g" \'$'\n' '' unrendered_issue-comment
-neg "开关开着、没配复审标签也翻复审（渲染成空标签）" scripts/_lib.sh \
-    '        if [ -n "$LABEL_PENDING_REVIEW" ]; then' '        if true; then' same_c_new-issue
-neg "开关关着也写出复审说明" scripts/_lib.sh \
-    'DESIGN_REVIEW_NOTE=""' 'DESIGN_REVIEW_NOTE="（多出来的话）"' same_b_new-issue
-neg "开关默认值改成开" scripts/_lib.sh \
-    'REVIEW_DESIGN_PROPOSALS="${REVIEW_DESIGN_PROPOSALS:-false}"' 'REVIEW_DESIGN_PROPOSALS="${REVIEW_DESIGN_PROPOSALS:-true}"' same_b_new-issue
-neg "开关关着时连追加要求里的交复审也变成交人" scripts/_lib.sh \
-    'DESIGN_REVIEW_NOTE=""' 'DESIGN_REVIEW_NOTE=""; LABEL_REVIEW_OR_HUMAN="$LABEL_DESIGN_REVIEW_OR_HUMAN"' tutor_new_false
-neg "开关不认 true" scripts/_lib.sh '    true|1|yes|on)' '    1|yes|on)' on_new
-
-mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

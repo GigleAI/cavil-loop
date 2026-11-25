@@ -45,7 +45,7 @@ fprice() { jq -cS --arg a "$1" --arg m "$2" '.[$a][$m].prices // null | if . the
 no_latest() { echo 9999999999 > "$CACHE/latest-prices.next"; }
 reset() { rm -rf "$CACHE"; mkdir -p "$MARK"; no_latest; }
 
-echo "── 1. 抓价：两源一致才写，逐条规则各有负对照 ──"
+echo "── 1. 抓价：两源一致才写，逐条规则各有拒收用例 ──"
 reset
 for m in claude--claude-test-9 claude--claude-clash-9 claude--claude-lone-9 claude--claude-split-9 \
          claude--claude-bad-9 claude--claude-partial-9 claude--claude-opus-5 \

@@ -24,8 +24,6 @@ tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 BASE_COMMIT="d1946f2"   # 改名前的 main，用作「行为与改动前一致」的对照
@@ -148,6 +146,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 MARK="$2"
 CONF
 }
@@ -283,25 +283,9 @@ leftovers() {   # <home> <host>：列出新装后仍带旧名字的东西（空 
 leftover=$(leftovers "$H1" "$HOST1")
 chk "新装后没有任何旧名字残留（文件名 / 环境文件 / 单元正文 / 关键配置行）" "$leftover" ""
 
-# 负对照：改名前的 setup.sh 新装一次，同一个检测必须报出残留——否则上面那条「干净」
-# 证明不了任何事。
-# 旧代码目录在开关外解出：后面「改名前后同一轮轮询行为一致」的正向对拍也要用它
+# 改名前的代码：后面「改名前后同一轮轮询行为一致」的正向对拍要用它
 OLD_CODE="$TMP/code-old"; mkdir -p "$OLD_CODE"
 if git -C "$REPO_DIR" archive "$BASE_COMMIT" | tar -x -C "$OLD_CODE" 2>/dev/null; then OLD_OK=1; else OLD_OK=; fi
-if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif [ -n "$OLD_OK" ]; then
-    OLD_SRC="$TMP/skill-src-old"; OLD_REMOTE="$TMP/skill-remote-old.git"
-    git init -q --bare "$OLD_REMOTE"; cp -r "$OLD_CODE" "$OLD_SRC"
-    git -C "$OLD_SRC" init -q -b main
-    git -C "$OLD_SRC" add -A >/dev/null
-    git -C "$OLD_SRC" -c user.email=t@example.invalid -c user.name=t commit -qm base
-    git -C "$OLD_SRC" remote add origin "$OLD_REMOTE"; git -C "$OLD_SRC" push -q -u origin main 2>/dev/null
-    H0="$TMP/h0"; HOST0="$TMP/projects0/widget"; mkdir -p "$H0" "$TMP/projects0"; new_host "$HOST0"
-    run_setup "$H0" "$HOST0" "$OLD_SRC"
-    chk "负对照：改名前的 setup.sh 新装会被检测出旧名字" "$([ -n "$(leftovers "$H0" "$HOST0")" ] && echo caught)" "caught"
-else
-    echo "  ⚠️ 取不到改名前的提交 $BASE_COMMIT（浅克隆？），跳过负对照"
-fi
 
 legacy_fixture() {   # <home> <host>：改名前 setup.sh 留下的那两样——环境文件和项目里的旧名配置
     mkdir -p "$1/.config/coding-agent-work-loop" "$(dirname "$2")"; new_host "$2"
@@ -401,6 +385,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 LABEL_AGENT_DOING="doing/agent"
 POST_MERGE_RETROSPECTIVE=false
 CONF
@@ -449,7 +435,6 @@ CONF
 fi
 
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

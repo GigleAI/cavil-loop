@@ -320,7 +320,7 @@ chk "没有父的普通 issue → 一轮就出队、没有任何写" "$(q 60)$(w
 # 【5d】合并后子 issue 自己的评论和标签：GitHub#656 起由合并后的交接做（读不到就不写、下轮再判），
 # 在 tests/merge-followup.test.sh 里用真实 agent-poll.sh 测；这里只测父 issue 汇总这一段。
 
-echo "【6】负对照：普通 issue（没有父）行为不变"
+echo "【6】对照：普通 issue（没有父）行为不变"
 reset_fx
 set_err "$R/issues/60/parent" "$NOPARENT"
 sub_issue_rollup 60 >/dev/null 2>&1

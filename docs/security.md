@@ -137,9 +137,9 @@ With this feature on ([Hooking up an external requester bot](requester-bot.md)) 
 
 </details>
 
-## Autopilot label (optional)
+## Autopilot label
 
-With `LABEL_AUTOPILOT` set ([operations](operations.md#autopilot-label-optional-off-by-default)) the daemon **merges PRs itself** — the one place it changes the base branch on its own. The boundary is drawn so that nothing a worker or a comment can do is enough: authorization is a maintainer's label event, and removing the label or adding `pending/human` stops it.
+With `LABEL_AUTOPILOT` on (the default, see [operations](operations.md#autopilot-label-autopilot)), the daemon **merges PRs itself** on items a maintainer labelled — the one place it changes the base branch on its own. The boundary is drawn so that nothing a worker or a comment can do is enough: authorization is a maintainer's label event, and removing the label or adding `pending/human` stops it.
 
 <details><summary>Details: the boundary rules</summary>
 

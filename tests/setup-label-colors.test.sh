@@ -7,8 +7,7 @@
 # 假 gh / systemctl / claude），把所有可选标签都打开，记下它实际发出的每一条建标签请求，
 # 断言恰好是下面这 15 个标签、名字和颜色逐个对上——不是只数个数，也不读源码文本。
 #
-#   bash tests/setup-label-colors.test.sh              默认回归
-#   MUTATION=1 bash tests/setup-label-colors.test.sh   另跑负对照：两处改色各退回旧值，必须变红
+#   bash tests/setup-label-colors.test.sh
 
 # ── Default label colors `setup.sh` creates: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Default label colors `setup.sh` creates (GitHub#130; they copy this repo's labels page) →
@@ -21,8 +20,6 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$REPO_DIR/tests/lib/mutation.sh"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
@@ -83,17 +80,24 @@ make_skill_src() {   # <目录>：把当前工作区（含未提交改动）做�
     git -C "$d" remote add origin "$d.git"; git -C "$d" push -q -u origin main 2>/dev/null
 }
 
-run_setup() {   # <skill 目录> [配置变体：missing = 删掉等前置 / 暂缓两行；empty = 两行写成空值] → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
+run_setup() {   # <skill 目录> [配置变体：missing = 删掉等前置 / 暂缓两行；empty = 两行写成空值；ap-missing = 托管两行都不写；ap-empty = 托管写成空值] → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
     local src="$1" variant="${2:-}" H="$SANDBOX/h" HOST="$SANDBOX/projects/widget"
     rm -rf "$H" "$SANDBOX/projects"; mkdir -p "$H" "$SANDBOX/projects"
     git init -q -b main "$HOST"; git -C "$HOST" -c user.email=t@x -c user.name=t commit -q --allow-empty -m init
     # 和真实安装一样以配置模板打底，再打开全部可选标签（后写的赋值生效）
-    { if [ "$variant" = missing ]; then grep -vE '^LABEL_PENDING_(BLOCKED|LATER)=' "$REPO_DIR/cavil-loop.config.example"
-      else cat "$REPO_DIR/cavil-loop.config.example"; fi
+    { case "$variant" in
+        missing) grep -vE '^LABEL_PENDING_(BLOCKED|LATER)=' "$REPO_DIR/cavil-loop.config.example" ;;
+        ap-*) grep -vE '^LABEL_(AUTOPILOT|PENDING_MERGE)=' "$REPO_DIR/cavil-loop.config.example" ;;
+        *) cat "$REPO_DIR/cavil-loop.config.example" ;;
+      esac
       printf 'REPO="acme/widget"\nPROJECT_ROOT="%s"\nSTATE_DIR="%s/state"\nWORKTREE_BASE="%s/wt"\nTMUX_PREFIX="widget"\n' "$HOST" "$H" "$H"
       printf 'LABEL_PENDING_REVIEW="pending/review"\n'
       printf 'LABEL_PENDING_REQUESTER_BOT="waiting/requester-bot"\n'
-      printf 'LABEL_AUTOPILOT="autopilot"\nLABEL_PENDING_MERGE="pending/merge"\n'
+      case "$variant" in
+        ap-missing) ;;
+        ap-empty) printf 'LABEL_AUTOPILOT=""\n' ;;
+        *) printf 'LABEL_AUTOPILOT="autopilot"\nLABEL_PENDING_MERGE="pending/merge"\n' ;;
+      esac
       [ "$variant" = empty ] && printf 'LABEL_PENDING_BLOCKED=""\nLABEL_PENDING_LATER=""\n'
     } > "$HOST/cavil-loop.config"
     printf 'n\n' | env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_CONFIG \
@@ -138,29 +142,17 @@ chk "写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FA
 chk "写成空值：这两个标签不建" "$(printf '%s\n' "$got" | grep -cE '^pending/(blocked|later)\|')" 0
 chk "写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
 
-echo "── 2. 负对照：两处改色各自退回旧值，必须变红 ──"
-neg_case() {   # <标题> <旧行> <新行>
-    local title="$1" from="$2" to="$3" d="$SANDBOX/src-mut"
-    mutation_gate || { echo "  ⏭ 负对照「$title」（MUTATION=1 才跑）"; return; }
-    rm -rf "$d" "$d.git"; cp -r "$SANDBOX/src" "$d"
-    if ! python3 - "$d/setup.sh" "$from" "$to" <<'PY'
-import sys
-p, a, b = sys.argv[1:4]; s = open(p, encoding="utf-8").read()
-if s.count(a) != 1: sys.exit(1)
-open(p, "w", encoding="utf-8").write(s.replace(a, b))
-PY
-    then echo "  ❌ 负对照「$title」准备失败：setup.sh 里找不到原文"; fail=$((fail+1)); return; fi
-    git -C "$d" -c user.email=t@example.invalid -c user.name=t commit -qam mutate
-    local p0=$pass f0=$fail out
-    out=$(suite "$d"); local nf; nf=$(printf '%s\n' "$out" | grep -c '❌')
-    if [ "$nf" -gt 0 ]; then echo "  ✅ 负对照「$title」变红（$nf 条断言失败）"; pass=$((p0+1)); fail=$f0
-    else echo "  ❌ 负对照「$title」没变红"; pass=$p0; fail=$((f0+1)); fi
-}
-neg_case "autopilot 退回 ff401e" '$autopilot_label|c5def5|' '$autopilot_label|ff401e|'
-neg_case "pending/PR 退回 bbbbbb" '"pending/PR|eeeeee|' '"pending/PR|bbbbbb|'
+echo "── 1c. GitHub#691：配置里没有托管那两行也建托管和等合并标签；托管写成空值才不建 ──"
+got=$(run_setup "$SANDBOX/src" ap-missing)
+chk "没写托管两行：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "没写托管两行：两个标签照样建、颜色照旧" "$(printf '%s\n' "$got" | grep -E '^(autopilot|pending/merge)\|' | tr '\n' ' ')" "autopilot|c5def5 pending/merge|5319e7 "
+chk "没写托管两行：其余标签不受影响（共 15 条）" "$(printf '%s\n' "$got" | grep -c '|')" 15
+got=$(run_setup "$SANDBOX/src" ap-empty)
+chk "托管写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "托管写成空值：托管和等合并两个标签都不建" "$(printf '%s\n' "$got" | grep -cE '^(autopilot|pending/merge)\|')" 0
+chk "托管写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
 
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

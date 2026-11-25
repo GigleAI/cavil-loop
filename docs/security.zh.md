@@ -137,9 +137,9 @@ daemon 的 auto-cleanup 也会顺手把 worktree / session 收掉，状态最终
 
 </details>
 
-## 托管标签（可选）
+## 托管标签
 
-配了 `LABEL_AUTOPILOT`（[operations](operations.zh.md#托管标签可选默认关闭)）后，daemon **会自己合并 PR**——这是它唯一一处自己改主干的地方。边界画在「worker 和评论做什么都不够」上：授权是维护者打标签的那条事件，摘掉标签或打上 `pending/human` 就叫停。
+`LABEL_AUTOPILOT` 开着时（默认开，见 [operations](operations.zh.md#托管标签autopilot)），daemon **会自己合并**维护者打了标签的条目的 **PR**——这是它唯一一处自己改主干的地方。边界画在「worker 和评论做什么都不够」上：授权是维护者打标签的那条事件，摘掉标签或打上 `pending/human` 就叫停。
 
 <details><summary>详情：边界规则</summary>
 

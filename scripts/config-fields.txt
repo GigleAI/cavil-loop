@@ -74,7 +74,7 @@ LABEL_DONE | 流程标签 | text | Done | show | 已完成 | PR 合并后挂上 
 REVIEW_MAX_ROUNDS | 复审 | int:1:20 | 6 | edit | 复审最多几轮 | 超过后交人裁决 | | main
 REVIEW_DESIGN_PROPOSALS | 复审 | bool:true:false | false | edit | 设计方案也先过复审 | 关 = 方案写完直接交人 | | main
 LABEL_PENDING_REVIEW | 复审 | label |  | show | 复审关卡 |  | 开关复审关卡会改变每条 PR 的流转，标签也要先在仓库里建好 | main
-LABEL_AUTOPILOT | 托管（自动合并） | label |  | show | 托管（自动合并） |  | 打开后 daemon 会自己合并 PR；标签也要先在仓库里建好 | main
+LABEL_AUTOPILOT | 托管（自动合并） | label | autopilot;empty= | show | 托管（自动合并） | 配置里没写这一行 = 开；写成空值 = 关；还要开着复审关卡才生效 | 打开后 daemon 会自己合并 PR；标签也要先在仓库里建好 | main
 LABEL_PENDING_MERGE | 托管（自动合并） | label | pending/merge | show | 等合并的标签 | 复审通过后挂上它，daemon 核对检查后合并；托管关着时不用 | 标签名要和仓库里建好的标签一致 | more
 AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS | 托管（自动合并） | bool:on:off | on | show | 托管合并时测试文件不算「需人过目」 | 配了合并前需人过目的文件清单时，PR 只改了清单里的测试文件就不交人；关 = 测试文件也照清单交人 | 决定托管合并前哪些改动要人过目，放宽它等于放宽自动合并 | more
 AUTOPILOT_OUTSIDER_GUARD | 托管（自动合并） | enum:=关,mark=只标出,block=标出并拦住自动合并 |  | show | 外部账号的评论 | 托管条目上没有写权限的账号写的内容：只标出 = 标明作者、去掉里面的链接和代码等；拦住 = 授权之后有外部内容的 PR 不自动合并、交人 | 几选一的保护模式，改它会改变托管 PR 能不能自动合并 | more

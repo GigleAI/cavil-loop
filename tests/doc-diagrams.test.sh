@@ -11,7 +11,7 @@
 #      不含脚本 / 元素 id / 外链 / 主机名、所有动画同一周期从 0 秒开始（check.py）
 #   3. 静态版和动图的说明逐字一致
 #   4. 六份文档（README、架构文档、编排文档各中英一份）各自引用了对应语言的动图和静态版，且文件存在
-# 再对 check.py 的每条承诺各造一个坏图做负对照：检查放过了哪一种坏图，这里就红。
+# 再对 check.py 的每条承诺各造一个坏图喂给它：检查放过了哪一种坏图，这里就红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -62,8 +62,8 @@ for lang in en zh; do
     done
 done
 
-echo "== 负对照：每种坏图都必须被检查拦下"
-# <name> <python that mutates the text s>, applied to a copy of the zh lifecycle pair
+echo "== 坏图：每种坏图都必须被检查拦下"
+# <name> <python that edits the text s>, applied to a copy of the zh lifecycle pair
 # (27 s cycle: 9 steps × 3 s; the red box slides 0.5 s, captions fade 0.25 s).
 # Helpers: anims(s, attr) lists the <animate> tags for attr in document order;
 # retime(s, m, kts_secs, vals) rewrites one of them (keyTimes given in seconds).
@@ -101,8 +101,8 @@ for name in ('issue-lifecycle.zh.svg', 'issue-lifecycle.zh.static.svg'):
     exec(code, env)
     changed |= env['s'] != s
     open(p, 'w', encoding='utf-8').write(env['s'])
-if not changed:   # a no-op mutation would "pass" this control for the wrong reason
-    sys.exit('mutation changed nothing')
+if not changed:   # a no-op edit would "pass" this check for the wrong reason
+    sys.exit('bad-image edit changed nothing')
 PY
     if python3 "$CHECK" "$d" >"$d.out" 2>&1; then
         bad "$name：检查没拦住"

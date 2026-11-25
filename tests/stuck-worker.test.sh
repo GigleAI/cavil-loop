@@ -3,7 +3,7 @@
 # parts: 6
 # 条目卡在 doing/agent、会话还在却没人干活 → daemon 催一次 / 重派 / 交人（GitHub#339）。
 #
-# 跑法：bash tests/stuck-worker.test.sh        （六段合计约 22 分钟（CI 上实测）；没有负对照；STUCK_ONLY=9,13 只跑指定的组，13x = 恢复派工失败那组）
+# 跑法：bash tests/stuck-worker.test.sh        （六段合计约 22 分钟（CI 上实测）；STUCK_ONLY=9,13 只跑指定的组，13x = 恢复派工失败那组）
 # 依赖：tmux（3.0+）、git、jq、python3。
 #
 # 真跑 agent-poll.sh（连带真的派工脚本），配有状态的假 GitHub（tests/lib/fake_github.py）和

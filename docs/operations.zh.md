@@ -5,7 +5,7 @@
 `setup.sh` 之后运维要用到的全在这里：`cavil-loop.config` 里的配置、每个可选功能（做什么、默认开不开、怎么开关）、跑 daemon 的命令、故障排查。每节开头先给结论；规则、边界情况和逐步命令在折叠块里，需要时点开。一个项目怎么接入自己的提示词和命令，见[编排](orchestration.zh.md)。
 
 - **先配这些**：[配置（`cavil-loop.config`）](#配置cavil-loopconfig)
-- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [新建的 issue / PR 自动指派提出者](#新建的-issue--pr-自动指派提出者) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签（可选，默认关闭）](#托管标签可选默认关闭) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
+- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [新建的 issue / PR 自动指派提出者](#新建的-issue--pr-自动指派提出者) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签：`autopilot`](#托管标签autopilot) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
 - **运行 daemon**：[文件结构](#文件结构) · [按 OS 选调度器](#按-os-选调度器) · [多 project 共存](#多-project-共存) · [用脚本安装、查状态、断开](#用脚本安装查状态断开) · [用脚本读 / 改一个项目的常用配置](#用脚本读--改一个项目的常用配置) · [给流程标签改名](#给流程标签改名) · [远程入口：让另一台电脑上的客户端看这台机器的 daemon](#远程入口让另一台电脑上的客户端看这台机器的-daemon) · [升级、迁移、回退与开发模式](#升级迁移回退与开发模式) · [改名前的安装](#改名前的安装) · [手动 cron 兜底](#手动-cron-兜底) · [升级到 webhook（即时触发）](#升级到-webhook即时触发) · [自定义 worker（不是 Claude Code）](#自定义-worker不是-claude-code) · [发版节奏](#发版节奏)
 - **出问题时**：[故障排查](#故障排查)
 
@@ -694,12 +694,12 @@ daemon 和读项目 prompt 文件一样从 `origin/<base>` 读它，结果分三
 
 </details>
 
-## 托管标签（可选，**默认关闭**）
+## 托管标签：`autopilot`
 
 托管让维护者给某个 issue 打一个标签，就把它从方案、代码、复审到合并整个交出去：每一步由独立复审把关，固定条件都满足时
-daemon 自动合并。默认关闭：配 `LABEL_AUTOPILOT`（例如 `autopilot`），同时开着它必需的复审关卡 `LABEL_PENDING_REVIEW`
-即开启；把 `LABEL_AUTOPILOT` 留空即关闭（见[怎么整体关闭托管](#怎么整体关闭托管)）。没打标签的 issue 不受影响；从没开过
-托管的项目，`LABEL_AUTOPILOT` 留空时一切照旧。
+daemon 自动合并。默认开启：配置里没有 `LABEL_AUTOPILOT` 这一行 = 用 `autopilot`；要同时开着它必需的复审关卡
+`LABEL_PENDING_REVIEW` 才生效。写成 `LABEL_AUTOPILOT=""` 即关闭（见[怎么整体关闭托管](#怎么整体关闭托管)）。没打标签的
+issue 不受影响；从没用过托管的项目，写成空值时一切照旧。
 
 <details><summary>流程图</summary>
 
@@ -1305,7 +1305,7 @@ echo "HOST_VERDICT=$verdict"
 
 ### 怎么整体关闭托管
 
-在配置里把 `LABEL_AUTOPILOT` 留空（`LABEL_AUTOPILOT=""`）或删掉那一行就行，不用停定时任务、不用跑别的。下一轮起不再自动合并，
+在配置里写 `LABEL_AUTOPILOT=""` 就行，不用停定时任务、不用跑别的。删掉那一行不算关：没写这一行 = 开。下一轮起不再自动合并，
 本机等合并的 PR 交给人。⚠️ issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，
 不想这样就摘掉。
 
@@ -1316,7 +1316,7 @@ echo "HOST_VERDICT=$verdict"
   跑完的复审若又翻出等合并，下一轮照样收；
 - 排队中、正在跑的活不清空，照普通流程走完、交人；已完成的合并不撤回。
 
-只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没开过托管的项目一个
+只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没用过托管的项目一个
 GitHub 调用都不多。
 
 </details>
@@ -1541,7 +1541,7 @@ COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drive
   「未记到结束」；印了编号但没有记录 →「没有记账」；读不到编号 →「无法关联」；记录里有、没有任何会话
   命令印出过 → 单独算一次、实测计时。嵌套运行（测试里再跑 `tests/run.sh`）不记账。
 - **单跑测试**——从 agent 自己的会话里认出的测试命令（`bash tests/<名字>.test.sh`、
-  `bash test/tauri/mutations.sh`、`npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
+  `npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
   `cargo test`；引号和 here-doc 里的文字不算），按工具调用到工具结果计时，是整条命令的估算。
 - **回答**：任何一栏读不了 → `unknown`；有实测部分 → 各段时间的并集（并行的同一秒只算一次；另有未计时的
   写进细节，所以是下限）；看到了运行、一秒都没计上 → `unknown`；两栏都读到、一次都没跑 → 0。
@@ -1668,12 +1668,8 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   （按名字跑几个文件或 `--changed-from`）、全部（不带挑选条件）、其他；`Tests` 工作流的 CI 每次尝试按汇总
   那一步印的挑选方式分（全量 / 只跑改动够得着的 / 未知），`Client` 工作流单列；本地小计、CI 小计（各次尝试
   取并集）、测试总耗时。
-- 「完整测试」= 带负对照的整套运行，只有每晚的 `Negative controls` 工作流在主干上这么跑、不属于某个 PR：
-  这一栏为 0，报告另列它每次运行多久——只算「负对照那一步」自己真的跑了的那几次（shell 分片、autopilot、
-  客户端三种作业都按步骤判断；跑红的照实计入）。只做了准备就收尾的运行（不在主干上的手动运行、定时运行发现
-  同一个提交上次已经跑绿），以及准备步骤失败、负对照那一步没开始的运行，整条运行照样显示完成或失败，都不算
-  进去、单列为「没真跑」；作业或步骤读不到、负对照那一步被取消或状态认不出的，也不算、单列，下次重读。发版
-  流水线和客户端完整测试单列为「其他主干测试」，不算完整测试。
+- 发版流水线和客户端完整测试（每周定时、发版标签）属于主干、不属于某个 PR：报告另列它们每次运行多久，
+  标为「主干测试参考」。
 
 </details>
 
@@ -3680,7 +3676,7 @@ Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的�
 - **何时**：`.github/workflows/release.yml` 的定时触发，**每天** 00:10 北京时间（16:10 UTC）。周一那次发刚结束的那一周；其余六天发现这一周已发布，十几秒就结束——周一门禁没过时，修复合进 main 之后的第一次每天检查把这一周补发出来，名字和标题仍归那一周。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
 - **发哪一周**：「刚结束的那一周」= 运行开始时按北京时间算、最近一个已经过完的周日 D（北京时间周日 23:59 还是上一周，周一 00:00 起是这一周）。计划那步只算一次，门禁和打标签都用它定下的周、提交和 tag，跨过零点也不变。只补最近这一周：连续漏发两周以上时更早的周不单独出版本，它们的提交算进补发的这一版。
 - **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁也要跑一阵，这期间 main 常会有新提交。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
-- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。负对照**不在**门禁里：它们每晚单独跑（见后面第二节），红了开 issue，不拦发版。
+- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。
 - **发什么**：tag 是 `release/vD.N`。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。计划那步（`scripts/release.sh --plan`）按顺序判断，命中第一条即定：
   1. main 最新提交上有 `release/v*` tag 还没有 Release 页面 → 门禁测这个提交，给这个 tag 补建页面，不打新 tag
   2. 刚结束那一周的 tag 里有没有页面的（取序号最大的那个）→ 门禁测**这个 tag 自己的提交**，给它补建页面，不打新 tag
@@ -3730,34 +3726,6 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `RELEASE_FAILURE_REPORT off`，恢复后没有这一项。
 <!-- release-failure-ops:end -->
-
-</details>
-
-### 负对照每晚单独跑
-
-负对照是故意把代码改坏、要求测试变红——检验的是测试本身，不是代码。全部负对照（每个 `tests/*.test.sh` 带 `MUTATION=1`、autopilot 分到六个任务的改坏副本、客户端的 `test/mutation` 和真实应用那一套）只在 `.github/workflows/negative-controls.yml` 里跑：
-
-<details><summary>什么时候在哪跑、红了怎样</summary>
-
-- **何时**：每晚 02:10 北京时间（18:10 UTC），测 main 最新提交。定时运行在第一个任务里先查：本工作流上一次成功运行就在同一个提交上，就到此为止；查不到就照跑。Actions → Negative controls → Run workflow（选 main）手动跑，总是跑；在别的分支上运行什么都不做。
-- **不在 PR 上跑，也不在 Tests、Client 里跑**：这两个工作流的手动运行也没有「也跑负对照」的选项。worker 和复审在开发期间不跑负对照。
-- **不拦发版**：发版门禁只跑普通回归（见上面「门禁跑什么」）。
-- **红了自动开 issue**：和 Release 运行失败同一个脚本、同样的规则（只新建或评论、写前重读、从不改已有 issue 的标签），但是单独一条：标题 `负对照每晚运行失败（自动报告）`，标记 `<!-- cavil-negative-controls-failure -->`，带 `pending/agent`（`RELEASE_FAILURE_LABEL`）。两种报告互不评论到对方的 issue 上。正文列出失败的任务、没按预期变红的 shell 单位和客户端条目。
-
-</details>
-
-<details><summary>停用 / 恢复每晚报告</summary>
-
-<!-- negative-controls-ops:begin -->
-**停用每晚报告**（照常每晚运行，红了只是不开 issue）与**恢复**：
-
-```bash
-gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
-gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
-```
-
-停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `NEGATIVE_CONTROLS_REPORT off`，恢复后没有这一项。
-<!-- negative-controls-ops:end -->
 
 </details>
 

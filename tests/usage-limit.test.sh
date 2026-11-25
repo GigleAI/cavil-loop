@@ -2,7 +2,7 @@
 # kind: e2e
 # agent 撞到用量上限：这个 agent 停派到解除，被打断的条目留言并转人工 —— GitHub#341。
 #
-# 跑法：bash tests/usage-limit.test.sh        （约 2 分钟；没有负对照）
+# 跑法：bash tests/usage-limit.test.sh        （约 2 分钟）
 # 依赖：bash、jq、python3、git、tmux（3.0+）。不碰网络。
 #
 # 真跑 agent-poll.sh 和三个派工脚本；真 tmux，但开在**私有 socket** 上（绝不碰本机跑着 worker 的
@@ -126,6 +126,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
 WORKER_AGENT="claude"
@@ -788,7 +790,6 @@ fi
 
 echo
 compat_summary
-REPORT_REGRESS_ONLY=1
 report_counts "$pass" "$fail"
 echo "通过 $pass，失败 $fail"
 [ "$fail" = 0 ]

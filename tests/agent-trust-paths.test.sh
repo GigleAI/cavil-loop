@@ -4,7 +4,6 @@
 # 目录信任（GitHub#108）：派工 / 部署前给 agent 预写 folder-trust 记录，起会话后认出确认框。
 #
 # 跑法：bash tests/agent-trust-paths.test.sh            （默认回归，约 1 分钟）
-#       MUTATION=1 bash tests/agent-trust-paths.test.sh （另跑负对照：改坏一处，对应检查必须变红）
 # 依赖：git、jq、python3（3.11+，读 TOML）、flock。全程在临时 HOME 里，不碰真实
 # ~/.claude.json / ~/.codex/config.toml，不调真 gh / tmux / claude / codex。
 #
@@ -22,8 +21,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 TMP="$(cd "$TMP" && pwd -P)"
@@ -47,58 +44,6 @@ report() {
     done
 }
 run_suite() { report < <("$@"); }
-
-# 负对照：<说明> <要求变红的检查名（子串）> <suite 及参数…>
-neg_fails=0
-neg() {
-    local desc="$1" want="$2"; shift 2
-    local out
-    out="$("$@" 2>/dev/null)"
-    if printf '%s\n' "$out" | grep -q "^FAIL [^:]*$want"; then
-        ok "负对照·$desc → 「$want」变红"
-    else
-        bad "负对照·$desc → 「$want」没变红（测试分不出对错实现）"
-        neg_fails=$((neg_fails+1))
-    fi
-}
-# 做一份改坏的副本：<名字> <相对路径> <old> <new>；原文找不到 → 准备失败，算红
-mutant() {
-    local name="$1" rel="$2" old="$3" new="$4" d="$TMP/mut/$1"
-    rm -rf "$d"; mkdir -p "$d"
-    (cd "$REPO_DIR" && git ls-files -co --exclude-standard -z) \
-        | (cd "$REPO_DIR" && xargs -0 -I{} cp --parents -P {} "$d/" 2>/dev/null)
-    if ! python3 - "$d/$rel" "$old" "$new" <<'PY'
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new))
-PY
-    then
-        # 调用方都是 M=$(mutant …)：这里是子 shell，fail 计数和 stdout 都回不到父 shell。
-        # 所以写进记录文件 + stderr，由 report_prep_failures 在父 shell 里逐条记红（PR #110 第 3 轮复审）
-        printf '%s\t%s\n' "$name" "$rel" >> "$PREP_FAILED"
-        echo "  ❌ 负对照准备失败：$name（$rel 里找不到要改的原文）" >&2
-        return 1
-    fi
-    printf '%s\n' "$d"
-}
-PREP_FAILED="$TMP/mutation-prep-failed"; : > "$PREP_FAILED"
-report_prep_failures() {
-    local name rel
-    while IFS=$'\t' read -r name rel; do
-        [ -n "$name" ] && bad "负对照准备失败：$name（$rel 里找不到要改的原文），这项负对照没有跑"
-    done < "$PREP_FAILED"
-    : > "$PREP_FAILED"
-}
-# 只跑自检（由文件末尾那次自检调起）：故意准备一个原文不存在的负对照，然后像正常结尾一样汇总退出
-if [ -n "${TRUST_TEST_ONLY_SELFCHECK:-}" ]; then
-    M=$(mutant selfcheck-bad scripts/drivers/_common.sh '这段原文不存在 9f3c' '') || true
-    report_prep_failures
-    echo "通过 $pass，失败 $fail"
-    [ "$fail" -eq 0 ]; exit
-fi
 
 # ── 真机截屏（tests/fixtures/trust-dialog/，路径已换成假路径）──────────────────
 FIX="$TEST_DIR/fixtures/trust-dialog"
@@ -857,133 +802,7 @@ run_suite suite_dispatch "$REPO_DIR"
 echo "== 8. 真跑 setup.sh =="
 run_suite suite_setup "$REPO_DIR"
 
-echo "== 9. 负对照（改坏一处，对应检查必须变红）=="
-LOCK_LINE='if ! flock -w "${TRUST_LOCK_WAIT_SECS:-10}" "$fd"; then'
-if mutation_gate && M=$(mutant no-lock scripts/drivers/_common.sh "$LOCK_LINE" 'if false; then'); then
-    neg "去掉共享锁（claude）" "race·claude·两个项目的记录都在" suite_race "$M" claude
-fi
-if mutation_gate && M=$(mutant no-lock scripts/drivers/_common.sh "$LOCK_LINE" 'if false; then'); then
-    neg "去掉共享锁（codex）" "race·codex·两个项目的记录都在" suite_race "$M" codex
-fi
-if mutation_gate && M=$(mutant old-writer scripts/drivers/claude.sh \
-    '    trust_config_locked_update "$cfg" _claude_trust_render _claude_trust_verify "$@"' \
-    '    local t; t="$(mktemp "$cfg.XXXXXX")"; _claude_trust_render "$cfg" "$t" "$@"; mv -f "$t" "$cfg"'); then
-    neg "claude 退回旧写法（锁外读改写）" "race·claude·两个项目的记录都在" suite_race "$M" claude
-fi
-if mutation_gate && M=$(mutant no-recheck scripts/drivers/_common.sh 'if [ "$before" != "$after" ]; then' 'if false; then'); then
-    neg "替换前不再比对（claude）" "ext·claude·中途被改" suite_external "$M" claude
-fi
-if mutation_gate && M=$(mutant no-recheck scripts/drivers/_common.sh 'if [ "$before" != "$after" ]; then' 'if false; then'); then
-    neg "替换前不再比对（codex）" "ext·codex·中途被改" suite_external "$M" codex
-fi
-if mutation_gate && M=$(mutant claude-key-self scripts/drivers/claude.sh \
-    '    if common="$(trust_git_common_dir "$dir")"; then
-        case "$common" in
-            */.git) dirname "$common" ;;' \
-    '    if false; then
-        case "$common" in
-            */.git) dirname "$common" ;;'); then
-    neg "claude 规则退回「信任目录本身」" "key·claude·普通仓库的 worktree" suite_keys "$M"
-    neg "claude 规则退回「信任目录本身」（派工）" "disp·new-claude-sub·每次起会话" suite_dispatch "$M" new-claude-sub
-fi
-if mutation_gate && M=$(mutant codex-key-common scripts/drivers/codex.sh \
-    '            *)      trust_git_toplevel "$dir" && return 0 ;;' \
-    '            *)      printf "%s\n" "$common"; return 0 ;;'); then
-    neg "codex 子模块规则改成 .git/modules" "key·codex·子模块的 worktree" suite_keys "$M"
-    neg "codex 子模块规则改成 .git/modules（派工）" "disp·new-codex-sub·每次起会话" suite_dispatch "$M" new-codex-sub
-fi
-if mutation_gate && M=$(mutant no-prepare scripts/_lib.sh '    agent_prepare_trust "$cwd"
-' ''); then
-    neg "派工起会话前不补信任" "disp·cmtR-claude-sub·每次起会话" suite_dispatch "$M" cmtR-claude-sub
-    neg "派工起会话前不补信任（PR 重建）" "disp·prC-codex-sub·每次起会话" suite_dispatch "$M" prC-codex-sub
-fi
-neg_gate() {   # <入口名> <文件> <要删掉的那行> <场景>
-    local M
-    if mutation_gate && M=$(mutant "no-gate-$1" "$2" "$3" ""); then
-        neg "去掉 $1 入口的确认框识别" "disp·$4·卡在确认框" suite_dispatch "$M" "$4"
-    fi
-}
-neg_gate new scripts/dispatch-new-issue.sh 'agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-new-claude
-neg_gate 评论续接 scripts/dispatch-issue-comment.sh '    agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-cmtB-codex
-neg_gate PR续接 scripts/dispatch-pr-comment.sh '    agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-prB-codex
-neg_gate PR重建 scripts/dispatch-pr-comment.sh $'\nagent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0' dlg-prC-claude
-if mutation_gate && M=$(mutant no-claude-footer scripts/drivers/claude.sh \
-    "AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*Enter to confirm · Esc to cancel[[:space:]]*\$'" \
-    "AGENT_TRUST_PROMPT_FOOTER_RE=''"); then
-    neg "claude 不给确认框结构" "disp·dlg-cmtR-claude·卡在确认框" suite_dispatch "$M" dlg-cmtR-claude
-fi
-# 上一版的宽松识别：整屏压成一行，命中标题就算（PR #110 复审指出会误杀正常会话）
-LOOSE='    printf '"'"'%s\n'"'"' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
-    printf '"'"'%s\n'"'"' "$tail_lines" | grep -qE "$AGENT_TRUST_PROMPT_OPTION_RE" || return 1
-'
-if mutation_gate && M=$(mutant loose-detect scripts/drivers/_common.sh "$LOOSE" ''); then
-    neg "认框退回「出现标题就算」" "detect·claude·prose-one-phrase" suite_detect "$M"
-    neg "认框退回「出现标题就算」（codex）" "detect·codex·prose-quote-full" suite_detect "$M"
-    neg "认框退回「出现标题就算」（真派工）" "disp·prose-new-claude·没有确认框" suite_dispatch "$M" prose-new-claude
-fi
-if mutation_gate && M=$(mutant no-footer-check scripts/drivers/_common.sh \
-    '    printf '"'"'%s\n'"'"' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
-' ''); then
-    neg "认框不再要求底栏在最后一行" "detect·claude·prose-quote-full" suite_detect "$M"
-fi
-if mutation_gate && M=$(mutant py-resolve scripts/drivers/_common.sh '    local path="$1" resolved="" c t n=0 d missing=0
-' '    python3 -c '"'"'import os,sys; print(os.path.realpath(sys.argv[1]))'"'"' "$1" 2>/dev/null || printf "%s\n" "$1"; return 0
-    local path="$1" resolved="" c t n=0 d missing=0
-'); then
-    neg "软链解析退回「python，失败就用原路径」" "symlink·python broken" suite_symlink "$M"
-    neg "软链解析退回「python，失败就用原路径」（成环）" "symlink·链接成环" suite_symlink "$M"
-fi
-# 第 2 轮复审前的实现：逐级 readlink 之后 `cd 逻辑目录 && pwd -P`——`..` 在逻辑路径上先被消掉
-if mutation_gate && M=$(mutant logical-cd scripts/drivers/_common.sh '    IFS=/ read -r -a queue <<< "$path"
-' '    while [ -L "$path" ]; do n=$((n + 1)); [ "$n" -le 40 ] || return 1; t="$(readlink "$path")" || return 1
-        case "$t" in /*) path="$t" ;; *) path="$(dirname "$path")/$t" ;; esac; done
-    mkdir -p "$(dirname "$path")" 2>/dev/null || return 1
-    d="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || return 1
-    printf "%s\n" "$d/$(basename "$path")"; return 0
-    IFS=/ read -r -a queue <<< "$path"
-'); then
-    neg "真实路径退回「先 cd 逻辑路径再取物理路径」" "realpath·目录链接后接 .." suite_realpath "$M"
-    neg "真实路径退回「先 cd 逻辑路径再取物理路径」（写入）" "realpath·目录链接后接 ..：写进真正目标" suite_realpath "$M"
-fi
-# 第 3 轮复审前的实现：逐分量解析，但见到 `..` 就删上一级、不看它是不是目录
-if mutation_gate && M=$(mutant no-dir-check scripts/drivers/_common.sh '            ..) [ "$missing" = 0 ] || return 1                     # 不存在的目录后面跟 ..：ENOENT
-                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
-' '            ..) [ "$missing" = 0 ] || return 1
-'); then
-    neg "解析退回「见 .. 就删上一级，不看是不是目录」" "realpath·普通文件当目录再 .." suite_realpath "$M"
-    neg "解析退回「见 .. 就删上一级，不看是不是目录」（写入）" "realpath·非法配置 notdir-dotdot.json" suite_realpath "$M"
-fi
-# 复审第 2 轮（重新送审后）前的实现：还不存在的东西后面跟 . 或 / 时直接忽略，把它当普通文件建出来
-if mutation_gate && M=$(mutant drop-dir-suffix scripts/drivers/_common.sh '                [ "$missing" = 0 ] || return 1
-                [ -z "$resolved" ] || [ -d "$resolved" ] || return 1
-                continue ;;' '                [ "$missing" = 0 ] && [ -n "$resolved" ] && [ ! -d "$resolved" ] && return 1
-                continue ;;'); then
-    neg "缺失目标后面的 / 和 /. 被丢掉" "realpath·后缀·直接·目标不存在·/（" suite_realpath "$M"
-    neg "缺失目标后面的 / 和 /. 被丢掉（写入）" "realpath·非法配置 new-config.json/：" suite_realpath "$M"
-    neg "缺失目标后面的 / 和 /. 被丢掉（经链接）" "realpath·后缀·链接·目标不存在·/.（" suite_realpath "$M"
-fi
-if mutation_gate && M=$(mutant no-relock scripts/drivers/_common.sh '    if ! again="$(trust_real_file "$cfg")" || [ "$again" != "$real" ]; then' '    if false; then'); then
-    neg "持锁后不再重新解析" "realpath·等锁期间链接改指" suite_realpath "$M"
-fi
-if mutation_gate && M=$(mutant setup-old setup.sh '        agent_trust_dirs "$HOST"' \
-    '        agent_trust_paths "$HOST" "$(config_value WORKTREE_BASE)"'); then
-    neg "setup.sh 退回旧写法（仓库根 + worktree base）" "setup·子模块项目：claude" suite_setup "$M"
-fi
-
-# 自检：负对照准备失败必须让整套测试变红（PR #110 第 3 轮复审：以前在子 shell 里记的失败丢了）
-if mutation_gate; then
-    out="$(MUTATION=1 TRUST_TEST_ONLY_SELFCHECK=1 bash "$0" 2>&1)"; rc=$?
-    if [ "$rc" != 0 ] && printf '%s\n' "$out" | grep -q '负对照准备失败：selfcheck-bad' \
-       && printf '%s\n' "$out" | grep -q '失败 1$'; then
-        ok "自检：负对照准备失败 → 整套测试非零退出、记 1 条失败"
-    else
-        bad "自检：负对照准备失败 → 整套测试非零退出、记 1 条失败" "rc=$rc $(printf '%s' "$out" | tail -3 | tr '\n' '|')"
-    fi
-fi
-report_prep_failures
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

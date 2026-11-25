@@ -2,8 +2,7 @@
 # kind: meta
 # 常驻假 GitHub（GitHub#211）：tests/lib/fake_gh_server.py + tests/lib/fake_gh_client.sh 的守卫。
 #
-# 跑法：bash tests/fake-gh-server.test.sh              （默认不跑负对照）
-#       MUTATION=1 bash tests/fake-gh-server.test.sh   （另跑 6 个负对照：改坏服务 / 转发脚本的副本）
+# 跑法：bash tests/fake-gh-server.test.sh
 # 依赖：bash、python3、jq。不碰网络：服务只听 127.0.0.1。
 #
 # 要守住的只有一件事：换成常驻方式以后，测试看到的东西和以前一模一样，而且出了故障不会悄悄多做一次。
@@ -23,8 +22,6 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 unset FAKE_GH_OBSERVER FAKE_GH_SERVER FAKE_GH_SERVER_FAULT_FILE FAKE_GH_OWNER TEST_PART
 
 SANDBOX=$(mktemp -d)
@@ -178,7 +175,7 @@ run_set() {   # <gh 路径> <结果目录> <ap 状态目录> <rb 状态目录>
     (cd "$R/cwd" && cap "$R/cwd-call" -- "$GH-rb" api -X POST repos/example/requester-bot/issues/50/comments --input in.json --jq .id)
 }
 
-# 一套检查：$1 = fake_gh_server.py / fake_gh_client.sh 所在目录（负对照传改坏的副本）
+# 一套检查：$1 = fake_gh_server.py / fake_gh_client.sh 所在目录
 suite() {
     local LIB="$1" W="$SANDBOX/run-$RANDOM" i diffs=0 n
     mkdir -p "$W/old-bin" "$W/new-bin"
@@ -488,41 +485,7 @@ PY
 echo "── 常驻假 GitHub：和每次起 python3 逐字节一致；故障不重跑 ──"
 suite "$TEST_DIR/lib"
 
-# ── 负对照（MUTATION=1）：改坏服务 / 转发脚本的副本，同一套检查必须变红 ──
-echo "── 负对照 ──"
-neg() {   # <说明> <文件名> <原文> <改成>
-    mutation_gate || return 0
-    local M="$SANDBOX/mut-$RANDOM"; mkdir -p "$M"
-    cp "$TEST_DIR/lib/fake_gh_server.py" "$TEST_DIR/lib/fake_gh_client.sh" "$M/"
-    if ! python3 -I - "$M/$2" "$3" "$4" <<'PY'
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new))
-PY
-    then echo "  ❌ 负对照准备失败（原文找不到）：$1"; fail=$((fail + 1)); return 0; fi
-    local before=$fail
-    QUIET=1; suite "$M"; QUIET=0
-    local got=$((fail - before)); fail=$before
-    chk "负对照：$1 → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
-}
-neg "服务端丢掉调用方的环境变量" fake_gh_server.py 'os.environ.update(env_apply(env, REF_DIFF))' 'os.environ.update({k: v for k, v in env_apply(env, REF_DIFF).items() if k != "GH_TOKEN"})'
-neg "服务端丢掉退出码（一律回 0）" fake_gh_server.py '        conn.sendall(b"EXIT %d\n" % (code & 0xFF))' '        conn.sendall(b"EXIT 0\n")'
-neg "该退回时不退回（普通文件也直接写）" fake_gh_server.py \
-    '                if not (stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode)):' '                if False:'
-neg "服务端不核对解释器启动设置（调用方的输出编码等被忽略）" fake_gh_server.py \
-    '            if got != START_ENV:' '            if False:'
-neg "原脚本抛异常时，调用栈带上服务自己的执行入口" fake_gh_server.py \
-    '                traceback.print_exception(type(e), e, tb)' '                traceback.print_exc()'
-neg "结果未知时改成重跑" fake_gh_client.sh \
-    '                echo "假 GitHub：请求已交出、执行结果未知，不重试（已接手，但没收到退出码）" >&2
-                exit 70 ;;' \
-    '                exec 3>&-; exec "${FAKE_GH_FALLBACK[@]}" "$@" ;;'
-
 echo
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

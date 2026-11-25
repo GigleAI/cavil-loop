@@ -44,6 +44,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 # 往返记录 GitHub#669 起没写就开；这里看的是它关着时拼出的提示词
 ENABLE_ROUND_LOG=""
 CONF
@@ -104,7 +106,7 @@ project_lessons() {
 MD
 }
 
-# 每组断言：给一次拼装结果打分，返回失败条数（负对照用它判断「变红」）
+# 每组断言：给一次拼装结果打分，返回失败条数
 judge_compose() {   # <合成文件>
     local out="$1" n=0
     grep -q '^HARD-RULE\|规则：HARD-RULE' "$out" || n=$((n+1))

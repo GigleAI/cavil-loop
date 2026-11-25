@@ -478,10 +478,7 @@ REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
 # count; `requester_bot_wait_hold` in `_lib.sh` and its three callers — the greedy pass and
 # `collect_autopilot_rows` in `agent-poll.sh`, `autopilot_takeover_permit` for a PR with no flow
 # label; `prompts/autopilot-requester-bot.md`, appended by `compose_prompt_template` only when both
-# features are on and the item is on autopilot) → `tests/requester-bot-wait.test.sh` (~10 s;
-# `MUTATION=1` adds sixteen broken copies — one per call site and per rule, including putting a
-# verdict cache back and dropping the rules revision — plus two whole implementations swapped in: the
-# versions rejected in code review rounds 1 and 2, ~3 min) plus the bot cases in
+# features are on and the item is on autopilot) → `tests/requester-bot-wait.test.sh` (~10 s) plus the bot cases in
 # `tests/autopilot.test.sh` (§2, §7, §12b, §13j, each run with only the account set and with the
 # feature fully on). The hold is judged from GitHub's label history ordered by **event id**, never
 # from whether this machine saw the waiting label (a label added and removed between two polls must
@@ -863,14 +860,16 @@ LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAUL
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
-# ── 托管标签（GitHub#114，可选，默认关闭）──
+# ── 托管标签（GitHub#114；GitHub#691 起默认开启）──
 # 维护者在 issue 上打这个标签 = 这条从方案到合并全交给 agent：方案只过复审、不等人确认，
 # 代码复审通过后翻 LABEL_PENDING_MERGE，由 daemon 按固定条件合并（autopilot_merge_tick）。
 # 它是「模式标签」不是触发标签：派工时不摘、全程挂着。只在 issue 上打才算数——PR 上的同名
 # 标签一概不看（PR 由 worker 开，上面的任何标签都可能是 worker 打的）。
-# 留空 = 关闭：下面的 LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json
-# 和以前逐字节一样。开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
-LABEL_AUTOPILOT="${LABEL_AUTOPILOT:-}"
+# 配置里没有这一行 = 开，用 autopilot；写成空值（LABEL_AUTOPILOT=""）= 人决定不开：下面的
+# LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json 和以前逐字节一样。
+# 用 ${X-默认}（不带冒号），和等前置、暂缓两个标签同一条规则（GitHub#551）。
+# 开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
+LABEL_AUTOPILOT="${LABEL_AUTOPILOT-autopilot}"
 LABEL_PENDING_MERGE="${LABEL_PENDING_MERGE:-pending/merge}"
 # 关掉之后的收尾（autopilot_off_sweep）还要认得这个标签名，所以清空之前先留一份
 AUTOPILOT_MERGE_LABEL_NAME="$LABEL_PENDING_MERGE"
@@ -1703,8 +1702,7 @@ PACE_MAX_DIGITS=11
 # half-finished run looks like a failure); the idle probe and its cap (GitHub#252) →
 # `tests/poll-probe.test.sh` (~40 s idle box, real `agent-poll.sh` against a fake `gh` that answers
 # conditional requests the way the real one does — 304 exits 1, the 304 ETag drops `W/`; with the
-# probe off it diffs the GitHub calls and pace state against the merge-base copy; `MUTATION=1` adds
-# seven broken copies). `poll-pace.test.sh` runs with the probe off, since its tiers are the ladder's
+# probe off it diffs the GitHub calls and pace state against the merge-base copy). `poll-pace.test.sh` runs with the probe off, since its tiers are the ladder's
 # own
 #
 pace_num() {
@@ -3206,8 +3204,7 @@ SPLIT_PARENT_REPO=""; SPLIT_PARENT_NUM=""; SPLIT_PARENT_JSON=""; SPLIT_PARENT_WH
 # `autopilot_pr_binding` (the closing-keyword bounce in `autopilot_permit` was removed in GitHub#461),
 # `autopilot_merged_comment` / `autopilot_merged_handoff` behind `merged_issue_label`,
 # `sub_issue_rollup_parent` / `sub_issue_rollup_discover`, `TRUSTED_REPOS` in `blocked_decide`) →
-# `tests/autopilot-split.test.sh` (~1 min by default; `MUTATION=1` adds thirteen broken copies, ~12
-# min) plus `tests/autopilot.test.sh`. The fake GitHub serves a second repo from
+# `tests/autopilot-split.test.sh` (~1 min) plus `tests/autopilot.test.sh`. The fake GitHub serves a second repo from
 # `$FAKE_GH_DIR/repos/<owner>__<repo>/` and parent / sub-issue relations (`parent_issue_url`,
 # `subs.json`). A sub-issue is judged on three places — sub-issue, PR, parent — by the same rule as
 # issue + PR; "is this a split sub-issue" has three outcomes and "cannot read" never becomes "not a
@@ -3429,8 +3426,7 @@ closed_done_flow_labels() {
 # `Done` on issues closed by hand as completed (GitHub#159: `closed_done_enqueue` /
 # `closed_done_drain` / `closed_done_label` / `closed_done_flow_labels` in `_lib.sh`, the enqueue +
 # drain in `agent-poll.sh` § 4) → `tests/closed-issue-done.test.sh` (~20 s by default, real
-# `agent-poll.sh` against the stateful fake GitHub with `FAKE_GH_LISTS=1`; `MUTATION=1` adds fourteen
-# broken copies, ~4.5 min). Only `completed` writes; `not_planned` / `duplicate` / reopened write
+# `agent-poll.sh` against the stateful fake GitHub with `FAKE_GH_LISTS=1`). Only `completed` writes; `not_planned` / `duplicate` / reopened write
 # nothing and leave the queue; anything unreadable or unknown stays queued. "Done" means `Done`
 # present **and** every workflow label confirmed gone — a DELETE is a success only on 2xx or 404. A
 # finished or given-up entry is marked `"done"`, never deleted, until the issue is also in
@@ -3882,8 +3878,8 @@ blocked_trusted_json() {
 # ── Waiting on another item: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # Waiting on another item (GitHub#157: `LABEL_PENDING_BLOCKED`, the `blocked_*` block in `_lib.sh` —
 # `blocked_decide` / `blocked_apply` / `blocked_tick`, `blocked_handoff_section` — the 3f step and the
-# pace cap in `agent-poll.sh`, `prompts/blocked-handoff.md`) → `tests/blocked-label.test.sh` (~1 min
-# by default; `MUTATION=1` adds seventeen broken copies, ~4 min). It runs the real poller against the
+# pace cap in `agent-poll.sh`, `prompts/blocked-handoff.md`) → `tests/blocked-label.test.sh` (~1 min).
+# It runs the real poller against the
 # stateful fake GitHub (`blocked_by.json` is the native relationship) and the real dispatch scripts
 # for the prompts. With the label set to an empty value it diffs the poller's calls, `state.json` and
 # the rendered / composed prompts against the merge-base scripts byte for byte (since GitHub#551 a
@@ -4629,10 +4625,8 @@ requester_bot_done_drain() {   # <state_file>
 
 # ── Re-checking `pending/human` PRs for conflicts with their base: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # Re-checking `pending/human` PRs for conflicts with their base (GitHub#86) →
-# `tests/pending-human-conflict.test.sh` (~10 s by default; with `MUTATION=1` it also reruns every
-# scenario on seven deliberately broken copies of the scripts and fails if any of them slips through —
-# ~1 min. Both modes cross-check the daemon's verdict against the worker's hand-off conflict-check
-# snippet on the same PRs). It counts every GitHub call — the whole point of the design is that an
+# `tests/pending-human-conflict.test.sh` (~10 s; it cross-checks the daemon's verdict against the
+# worker's hand-off conflict-check snippet on the same PRs). It counts every GitHub call — the whole point of the design is that an
 # unchanged base costs zero extra calls. If you change the hand-off snippet's verdict rules, change
 # `pr_conflict_verdict` in `_lib.sh` the same way
 #
@@ -4641,7 +4635,7 @@ requester_bot_done_drain() {   # <state_file>
 pr_conflict_verdict() {
     local num="$1" base="$2" tip="$3" head="$4" out rc=0 line
     # --refmap= 关掉 git 的「顺手更新 origin/<分支>」：不加的话 `fetch origin refs/heads/main`
-    # 会悄悄挪动主 checkout 的 origin/main（负对照实测出来的）。
+    # 会悄悄挪动主 checkout 的 origin/main（实测过）。
     if ! out=$(git -C "$PROJECT_ROOT" fetch -q --no-write-fetch-head --refmap= origin \
             "refs/heads/$base" "refs/pull/$num/head" 2>&1); then
         log "  ⚠️ PR #$num: 拉取 $base 与 PR 提交失败，本轮判不了冲突:"
@@ -4935,9 +4929,8 @@ AUTOPILOT_PLACE_COPY=""; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=""
 # Autopilot label (GitHub#114: `LABEL_AUTOPILOT` / `LABEL_PENDING_MERGE`, the `autopilot_*` block in
 # `_lib.sh` — PR↔issue binding, authorization from the issue's label events, the merge pass —
 # `collect_autopilot_rows` / `autopilot_dispatch_flags` in `agent-poll.sh`,
-# `prompts/autopilot-{worker,worker-pr,review}.md`) → `tests/autopilot.test.sh` (~3.5 min by default;
-# `MUTATION=1` runs 120 broken copies plus five previous implementations swapped in whole, ~2.5 min
-# each — `AUTOPILOT_MUT_SHARD=K/N` runs every N-th one so N processes can share the load). It runs the
+# `prompts/autopilot-{worker,worker-pr,review}.md`) → `tests/autopilot.test.sh` (~3.5 min).
+# It runs the
 # real poller against a stateful fake GitHub (`tests/lib/fake_github.py`: labels, label events,
 # comments, the merge endpoint, failure and mid-round hooks). With the feature off it diffs the
 # poller's GitHub calls, `state.json` and all four composed prompts against the merge-base copy byte
@@ -9415,7 +9408,7 @@ STUCK_ACTED=0
 # `agent_screen_rules_reset` in `drivers/_common.sh`, `prompts/stuck-nudge.md`) →
 # `tests/stuck-worker.test.sh` (six parts, ~22 min in all on CI; real `agent-poll.sh` and dispatch
 # scripts, the stateful fake GitHub, real tmux on a private socket with a fake agent whose screen is
-# set from a control file, clock moved with `POLL_FAKE_NOW`; no negative controls; `STUCK_ONLY=9,13`
+# set from a control file, clock moved with `POLL_FAKE_NOW`; `STUCK_ONLY=9,13`
 # runs only those groups). All detection is script comparison — never add a model call here. "Busy" is
 # sampled in one place, `stuck_sample`: the agent and role recorded on the session, the recorded
 # worker pane (by pane id, never the session's current pane), the screen judged in a subshell that

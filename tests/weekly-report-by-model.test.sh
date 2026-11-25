@@ -11,7 +11,7 @@
 #     几种归属规则分开：重算过的单模型派工、重算过的**多模型**派工（时长整次进「多模型派工」，
 #     token 与金额按调用拆）、没写模型的沿用原值记录（整条进「未记录模型 / 多模型」）、
 #     codex 侧单模型记录、以及一组进不了去重合计的重叠派工（不进任何一行）。
-#   · 自检要能真的拦住：负对照删掉一行 / 改掉一格，report.py 必须非零退出。
+#   · 自检要能真的拦住：数据删掉一行 / 改掉一格，report.py 必须非零退出。
 #   · 版式：五个类别各起一页、10 周表紧跟图、本周行加粗、末行环比。
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -177,7 +177,7 @@ chk "token 表：codex 模型 5%"             "$(has '| `gpt-6-sol` | 100.0k | 0
 chk "token 表：多模型派工不出现"          "$(grep -c '^| 多模型派工 |' "$TMP/r.md")" "1"
 chk "注明重叠组不在表里"                  "$(has '不在上面两张表里')" "yes"
 
-echo "── 4. 负对照：按模型拆分对不上总数，报告必须报错 ──"
+echo "── 4. 坏数据：按模型拆分对不上总数，报告必须报错 ──"
 python3 - "$TMP/d.json" "$TMP/drop.json" "$TMP/bump.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))

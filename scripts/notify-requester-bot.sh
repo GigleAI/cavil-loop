@@ -27,8 +27,7 @@
 # External requester bot (GitHub#95 / #97: the waiting label, `scripts/notify-requester-bot.sh` (+ the
 # early-name forwarder `notify-relay.sh`), `prompts/requester-bot-handoff.md`, `flip_to_doing`, the
 # greedy skip list / self-heal skip, the webhook call (GitHub#100), the daemon's merge / close notice,
-# old `RELAY_*` config names) → `tests/requester-bot.test.sh` (~4 min by default, ~12 min with
-# `MUTATION=1`; a fake webhook on 127.0.0.1 records every request; one timeout case really waits the
+# old `RELAY_*` config names) → `tests/requester-bot.test.sh` (~4 min; a fake webhook on 127.0.0.1 records every request; one timeout case really waits the
 # default 10 s, the others shorten it with `REQUESTER_BOT_WEBHOOK_TIMEOUT` or answer after 2 s,
 # GitHub#211). With the feature off it diffs the poller's GitHub calls, dispatches, all four composed
 # prompts (merge-base scripts composing the current templates, so later template edits do not trip it)

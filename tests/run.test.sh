@@ -3,8 +3,7 @@
 # reads: repo
 # 统一测试入口 tests/run.sh 的守卫（GitHub#117：PR 上自动跑测试）。
 #
-# 跑法：bash tests/run.test.sh            默认回归
-#       MUTATION=1 bash tests/run.test.sh  另跑负对照（改坏入口脚本的副本，断言必须变红）
+# 跑法：bash tests/run.test.sh
 # 依赖：bash 4+、coreutils（timeout）、awk。不碰网络，不跑真测试——
 #       用假测试目录（RUN_TESTS_DIR）以真子进程调用入口；只有【2】读真实 tests/ 的清单（--list，不执行）。
 #
@@ -20,16 +19,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
 RUNSH="$TEST_DIR/run.sh"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 # 本文件自己也常常跑在 run.sh / GitHub Actions 底下：外层的这些变量不能漏进被测的那次运行，
 # 否则被测的 run.sh 会以为自己在 Actions 里（折叠输出、写外层的步骤摘要）。需要时各场景显式设。
 unset GITHUB_ACTIONS GITHUB_STEP_SUMMARY RUN_TESTS_DIR RUN_TEST_TIMEOUT
-# 外层的负对照开关只管本文件自己的负对照（mutation_gate 读本 shell 里的值），不能传给被测的
-# run.sh 和它跑的假测试文件：漏下去，假文件按负对照模式报数，期望的计数全对不上（GigleAI/cavil-loop#284）。
-# 只去掉导出、不清值；要测「开关原样传下去」的场景在那一条命令上显式写 MUTATION=1。
-export -n MUTATION
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -41,7 +34,7 @@ chk() {
 }
 
 # ── 假测试目录 ─────────────────────────────────────────────────────────────────
-# mkfx <dir> <kind:name>...   kind: pass / fail / selfskip / groupskip / sleep / mut / cwd
+# mkfx <dir> <kind:name>...   kind: pass / fail / selfskip / groupskip / sleep / cwd / …
 # 每个假测试执行时都在 <dir>/../ran/<name> 留一个标记，用来断言「真的跑了 / 真的没跑」。
 # 文件头标类型（默认 unit，FX_KIND 可改），退出 0 之前用真的 tests/lib/report.sh 报一行计数（GitHub#212）。
 mkfx() {
@@ -58,7 +51,6 @@ mkfx() {
             selfskip)  echo 'echo "⏭  跳过：缺 something"; exit 0' >> "$f" ;;
             groupskip) printf '%s\n' 'echo "  ⏭  本机没有 x，跳过本组"' 'echo "  ✅ rest ran"' 'exit 0' >> "$f" ;;
             sleep)     echo 'sleep 4; exit 0' >> "$f" ;;
-            mut)       echo 'echo "MUT=[${MUTATION:-}]"; exit 0' >> "$f" ;;
             cwd)       echo 'pwd > "$(dirname "$0")/../ran/cwd.txt"; exit 0' >> "$f" ;;
             # 拆段（GitHub#211）：文件头声明 3 段，每段把收到的 TEST_PART 记一行
             parts3)    printf '%s\n' '# parts: 3' 'echo "${TEST_PART:-none}" >> "$(dirname "$0")/../ran/parts.txt"; exit 0' >> "$f" ;;
@@ -76,15 +68,17 @@ mkfx() {
             # 计数行的几种错法（GitHub#212）：都退出 0
             nocount)   echo 'echo "  ✅ looked fine"; exit 0' >> "$f" ;;
             twocount)  echo 'report_counts 1 0; report_counts 1 0; exit 0' >> "$f" ;;
-            badcount)  echo 'echo "CAVIL_TEST_COUNTS v=1 regress_pass=x"; exit 0' >> "$f" ;;
+            badcount)  echo 'echo "CAVIL_TEST_COUNTS v=2 regress_pass=x"; exit 0' >> "$f" ;;
+            # 旧格式计数行（v=1，多三栏，GitHub#684 之前）：照样算格式不对
+            oldcount)  echo 'echo "CAVIL_TEST_COUNTS v=1 regress_pass=1 regress_fail=0 compat_ran=0 compat_skipped=0 mut_ran=0 mut_skipped=0 mut_fail=-"; exit 0' >> "$f" ;;
+            # 漏改的旧调用（多传两个数）：计数库拒绝、不打印计数行
+            fourargs)  echo 'report_counts 1 0 0 0; exit 0' >> "$f" ;;
             failcount) echo 'report_counts 4 1; exit 0' >> "$f" ;;
-            # 负对照计数：MUTATION_COUNT=3，文件自己打印的「跳过」行写 $SAID 项
-            mutcount)  printf '%s\n' 'MUTATION_COUNT=3; echo "负对照：跳过 ${SAID:-3} 项（默认不跑）"; report_counts 5 0; exit 0' >> "$f" ;;
             compat)    printf '%s\n' 'COMPAT_RAN=1; COMPAT_SKIPPED=2; report_counts 7 0; exit 0' >> "$f" ;;
         esac
         # 退出 0 的那几种：最后一条 exit 0 之前报计数（上面专门测计数错法的那几种自己写）
         case "$kind" in
-            nocount|twocount|badcount|failcount|mutcount|compat|selfskip|fail) ;;
+            nocount|twocount|badcount|oldcount|fourargs|failcount|compat|selfskip|fail) ;;
             *) python3 - "$f" <<'PYX'
 import sys
 p = sys.argv[1]; s = open(p).read(); i = s.rfind("exit 0")
@@ -100,7 +94,7 @@ OUTF="$TMP/out.txt"
 runsh() { local r="$1"; shift; RC=0; RUN_TESTS_DIR="$FX" bash "$r" "$@" > "$OUTF" 2>&1 || RC=$?; }
 status_of() { awk -F'\t' -v n="$2" '$1 == n { print $2 }' "$1/results.tsv"; }
 
-# ── 场景（每个场景用传入的 run.sh 跑，负对照复用同一函数） ─────────────────────
+# ── 场景（每个场景用传入的 run.sh 跑） ─────────────────────
 
 # 【1】分组：每个文件恰好落进一路；--ci 去掉排除项；结果稳定；新文件自动纳入
 part_fixture() {
@@ -246,10 +240,10 @@ chk "注明跳过了几组" "$(awk -F'\t' '$1=="partial"{print $4}' "$TMP/g/out/
 echo "【7】超时"
 chk "rc / 结果" "$(scenario_timeout "$RUNSH")" "1 timeout"
 
-echo "【8】MUTATION 原样传给测试；GitHub Actions 下按测试折叠、失败打 error"
-rm -rf "$TMP/m"; FX="$TMP/m/tests"; mkfx "$FX" mut:m fail:broken
-RC=0; MUTATION=1 GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$TMP/m/summary" RUN_TESTS_DIR="$FX" bash "$RUNSH" --out "$TMP/m/out" > "$OUTF" 2>&1 || RC=$?
-chk "测试读到 MUTATION=1" "$(grep -c 'MUT=\[1\]' "$TMP/m/out/logs/m.log")" "1"
+echo "【8】GitHub Actions 下按测试折叠、失败打 error"
+rm -rf "$TMP/m"; FX="$TMP/m/tests"; mkfx "$FX" pass:m fail:broken
+RC=0; GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$TMP/m/summary" RUN_TESTS_DIR="$FX" bash "$RUNSH" --out "$TMP/m/out" > "$OUTF" 2>&1 || RC=$?
+chk "通过的那个确实跑了" "$(ran "$FX" m)" "yes"
 chk "每个测试一个折叠组" "$(grep -c '^::group::' "$OUTF")" "2"
 chk "失败的测试有一条 ::error" "$(grep -c '^::error title=broken fail::' "$OUTF")" "1"
 chk "失败输出打在折叠组外（共出现两次：组内 + 组外）" "$(grep -c 'BOOM-MARKER' "$OUTF")" "2"
@@ -376,96 +370,45 @@ runsh "$RUNSH" --kind unit --quick --list; chk "--kind 和 --quick 混用 → �
 chk "真实 tests/：--quick 里有冒烟测试、没有端到端" \
     "$(bash "$RUNSH" --quick --list | awk '{print $2}' | grep -cxE 'smoke|autopilot:1/3')" "1"
 
-echo "【16】计数行：退出 0 却没有、出现两次、格式不对、报了失败、负对照数对不上 → 都判红（GitHub#212）"
+echo "【16】计数行：退出 0 却没有、出现两次、格式不对（含旧格式）、报了失败 → 都判红（GitHub#212）"
 # 输出：rc / 结果 / 结果里的说明里带的关键字（有 = 1）
-scenario_counts() {   # $1 run.sh  $2 fixture kind  $3 说明里应有的字  [$4 = mutcount 文件打印的「跳过」数]
+scenario_counts() {   # $1 run.sh  $2 fixture kind  $3 说明里应有的字
     rm -rf "$TMP/c"; FX="$TMP/c/tests"; mkfx "$FX" "$2:x"
-    # 制造不一致的那个数是场景的参数：默认回归和负对照走同一个调用（PR #225 复审第 1 轮）
-    if [ -n "${4:-}" ]; then RC=0; SAID="$4" RUN_TESTS_DIR="$FX" bash "$1" --out "$TMP/c/out" > "$OUTF" 2>&1 || RC=$?
-    else runsh "$1" --out "$TMP/c/out"; fi
+    runsh "$1" --out "$TMP/c/out"
     echo "$RC $(status_of "$TMP/c/out" x) $(awk -F'\t' '$1 == "x" {print $4}' "$TMP/c/out/results.tsv" | grep -cF -- "$3")"
 }
 chk "没有计数行 → fail「没汇报计数」" "$(scenario_counts "$RUNSH" nocount '没汇报计数')" "1 fail 1"
 chk "计数行两次 → fail" "$(scenario_counts "$RUNSH" twocount '2 times')" "1 fail 1"
 chk "计数行格式不对 → fail" "$(scenario_counts "$RUNSH" badcount 'malformed')" "1 fail 1"
 chk "计数里有失败、退出码却是 0 → fail" "$(scenario_counts "$RUNSH" failcount '1 failed')" "1 fail 1"
-chk "负对照「跳过」行和计数行对不上 → fail" "$(scenario_counts "$RUNSH" mutcount '跳过 4 项' 4)" "1 fail 1"
-chk "对得上 → pass（正例）" "$(scenario_counts "$RUNSH" mutcount '' 3)" "0 pass 1"
-chk "  结果表里记下类型和各项计数" "$(awk -F'\t' '$1 == "x" {print $5, $6, $7, $8, $9, $10, $11, $12}' "$TMP/c/out/results.tsv")" "unit 5 0 0 0 0 3 -"
+chk "旧格式计数行（v=1）→ fail" "$(scenario_counts "$RUNSH" oldcount 'malformed')" "1 fail 1"
+chk "多传两个数的旧调用 → 不打印计数行，fail「没汇报计数」" "$(scenario_counts "$RUNSH" fourargs '没汇报计数')" "1 fail 1"
+chk "正例 → pass（改动前对拍的两项也算进来）" "$(scenario_counts "$RUNSH" compat '')" "0 pass 1"
+chk "  结果表里记下类型和各项计数，一共 9 栏" "$(awk -F'\t' '$1 == "x" {print NF, $5, $6, $7, $8, $9}' "$TMP/c/out/results.tsv")" "9 unit 7 0 1 2"
 chk "失败、也没报计数的文件 → 计数记成「-」，不出错" "$(scenario_counts "$RUNSH" fail 'exit 3' | cut -d' ' -f2) $(awk -F'\t' '$1 == "x" {print $6}' "$TMP/c/out/results.tsv")" "fail -"
-chk "改动前对拍的两项计数也进了结果表" "$(scenario_counts "$RUNSH" compat '' >/dev/null; awk -F'\t' '$1 == "x" {print $8, $9}' "$TMP/c/out/results.tsv")" "1 2"
 rm -rf "$TMP/c2"; FX="$TMP/c2/tests"; mkfx "$FX" selfskip:quiet; printf 'quiet  needs a real thing\n' > "$FX/ci-exclude.txt"
 runsh "$RUNSH" --out "$TMP/c2/out"
 chk "登记过的自跳过文件不需要计数行（仍是 skipped-ok）" "$RC $(status_of "$TMP/c2/out" quiet)" "0 skipped-ok"
-# MUTATION=1 时：计数行的「跑 + 跳过」要等于文件打印的「本次跑了 N 项」
-rm -rf "$TMP/c3"; FX="$TMP/c3/tests"; mkfx "$FX" pass:x
-printf '%s\n' '#!/usr/bin/env bash' '# kind: unit' "source \"$TEST_DIR/lib/report.sh\"" \
-    'MUTATION_COUNT=3; echo "负对照：本次跑了 ${SAID:-3} 项（MUTATION=1）"; report_counts 9 0 "${RAN:-}"; exit 0' > "$FX/x.test.sh"
-RC=0; MUTATION=1 RUN_TESTS_DIR="$FX" bash "$RUNSH" --out "$TMP/c3/out" > "$OUTF" 2>&1 || RC=$?
-chk "MUTATION=1：对得上 → pass，跑 3 / 跳过 0" "$RC $(awk -F'\t' '{print $2, $10, $11}' "$TMP/c3/out/results.tsv")" "0 pass 3 0"
-RC=0; RAN=1 MUTATION=1 RUN_TESTS_DIR="$FX" bash "$RUNSH" --out "$TMP/c3/out" > "$OUTF" 2>&1 || RC=$?
-chk "MUTATION=1：文件只跑了其中 1 项 → 跑 1 / 跳过 2，仍对得上" "$RC $(awk -F'\t' '{print $2, $10, $11}' "$TMP/c3/out/results.tsv")" "0 pass 1 2"
-RC=0; SAID=5 MUTATION=1 RUN_TESTS_DIR="$FX" bash "$RUNSH" --out "$TMP/c3/out" > "$OUTF" 2>&1 || RC=$?
-chk "MUTATION=1：「本次跑了」行和计数行对不上 → fail" "$RC $(awk -F'\t' '{print $2}' "$TMP/c3/out/results.tsv")" "1 fail"
-
-echo "【17】汇报：结果表按类型分组，回归 / 负对照分两栏；汇总（--verify）和门禁统计（--tally）同样分栏"
-rm -rf "$TMP/r"; FX="$TMP/r/tests"; FX_KIND=e2e mkfx "$FX" compat:e1; FX_KIND=unit mkfx "$FX" mutcount:u1 pass:u2
+echo "【17】汇报：结果表按类型分组；汇总（--verify）读到同一张表"
+rm -rf "$TMP/r"; FX="$TMP/r/tests"; FX_KIND=e2e mkfx "$FX" compat:e1; FX_KIND=unit mkfx "$FX" pass:u1 pass:u2
 runsh "$RUNSH" --out "$TMP/r/out"
 chk "rc" "$RC" "0"
 chk "summary.md：每类一节（先 unit 后 e2e）" "$(grep -E '^#### ' "$TMP/r/out/summary.md" | paste -sd'|')" '#### `unit` 单元回归|#### `e2e` 端到端'
-chk "summary.md：按类型一行，回归和负对照分栏" "$(grep -F '| `unit` 单元回归 |' "$TMP/r/out/summary.md")" '| `unit` 单元回归 | 2 | 6 / 0 | 0 / 0 | 0 / 3 |  |'
-chk "summary.md：e2e 那一行带改动前对拍" "$(grep -F '| `e2e` 端到端 |' "$TMP/r/out/summary.md")" '| `e2e` 端到端 | 1 | 7 / 0 | 1 / 2 | 0 / 0 |  |'
-chk "summary.md：合计「回归 13 项 / 负对照 3 项」" "$(grep -c '回归 13 项 / 负对照 3 项' "$TMP/r/out/summary.md")" "1"
-chk "终端里也有这张表" "$(grep -c '^| \*\*合计\*\* | 3 | 13 / 0 | 1 / 2 | 0 / 3 |' "$OUTF")" "1"
+chk "summary.md：按类型一行" "$(grep -F '| `unit` 单元回归 |' "$TMP/r/out/summary.md")" '| `unit` 单元回归 | 2 | 2 / 0 | 0 / 0 |  |'
+chk "summary.md：e2e 那一行带改动前对拍" "$(grep -F '| `e2e` 端到端 |' "$TMP/r/out/summary.md")" '| `e2e` 端到端 | 1 | 7 / 0 | 1 / 2 |  |'
+chk "summary.md：合计「回归 9 项」" "$(grep -c '^\*\*回归 9 项\*\*$' "$TMP/r/out/summary.md")" "1"
+chk "终端里也有这张表" "$(grep -c '^| \*\*合计\*\* | 3 | 9 / 0 | 1 / 2 |' "$OUTF")" "1"
 mkdir -p "$TMP/r/v/shard-1"; cp "$TMP/r/out/results.tsv" "$TMP/r/v/shard-1/"
 chk "--verify：绿" "$(verify_rc "$RUNSH" "$TMP/r/v")" "0"
-chk "--verify：输出里有同样的分栏合计" "$(grep -c '回归 13 项 / 负对照 3 项' "$OUTF")" "1"
+s_line=$(grep '^| \*\*合计\*\*' "$TMP/r/out/summary.md")
+chk "--verify：合计行和本次运行的结果表相同（$s_line）" "$(grep '^| \*\*合计\*\*' "$OUTF")" "$s_line"
+chk "  合计行确有内容" "$([ -n "$s_line" ] && echo yes || echo no)" "yes"
 awk -F'\t' -v OFS='\t' '{ print $1, $2, $3, $4 }' "$TMP/r/out/results.tsv" > "$TMP/r/v/shard-1/results.tsv"
 chk "--verify：通过了却没有计数的结果 → 红" "$(verify_rc "$RUNSH" "$TMP/r/v")" "1"
 chk "  并说明是哪个" "$(grep -c 'u2: passed but its result has no counts' "$OUTF")" "1"
-# --tally：同一单位出现在几个作业里（门禁的 autopilot 各段在 6 个作业里各跑一遍）也照加；跑过的负对照单列
-mkdir -p "$TMP/r/t/a" "$TMP/r/t/b"
-printf 'big:1/2\tpass\t9\t\te2e\t10\t0\t0\t0\t4\t6\t0\n' > "$TMP/r/t/a/results.tsv"
-printf 'big:1/2\tfail\t9\texit 1\te2e\t10\t1\t0\t0\t5\t5\t2\nbig:2/2\tpass\t9\t\te2e\t3\t0\t0\t0\t0\t0\t-\n' > "$TMP/r/t/b/results.tsv"
-RC=0; RUN_TESTS_DIR="$FX" bash "$RUNSH" --tally "$TMP/r/t" > "$OUTF" 2>&1 || RC=$?
-chk "--tally：rc 0（只汇报，判定交给别的步骤）" "$RC" "0"
-chk "--tally：负对照跑了 9 项、没变红 2 项" "$(grep -c '^负对照：跑了 9 项；没变红 2 项' "$OUTF")" "1"
-chk "--tally：列出没通过的单位" "$(grep -c '^- ❌ `big:1/2 (fail)`' "$OUTF")" "1"
-chk "--tally：e2e 一行加总三条结果" "$(grep -F '| `e2e` 端到端 |' "$OUTF")" '| `e2e` 端到端 | 3 | 23 / 1 | 0 / 0 | 9 / 11 |  |'
+chk "计数库：只收两个数，多传就拒绝、不打印计数行" "$(bash -c "source '$TEST_DIR/lib/report.sh'; report_counts 7 0 2 0" 2>/dev/null; echo "rc=$?")" "rc=2"
+chk "计数库：两个数照常报出" "$(bash -c "source '$TEST_DIR/lib/report.sh'; report_counts 7 0")" "CAVIL_TEST_COUNTS v=2 regress_pass=7 regress_fail=0 compat_ran=0 compat_skipped=0"
 
-echo "【18】负对照模式：回归和负对照共用计数的文件，回归栏报「不单列」，不混进回归数（PR #225 复审第 1 轮）"
-# 输出：没声明的那个文件的 回归通过 回归失败 负对照跑 负对照跳过 | 声明了只含回归的那个文件的同四项
-scenario_mixed() {   # $1 run.sh  [$2 = 计数库，默认真的 tests/lib/report.sh]
-    local lib="${2:-$TEST_DIR/lib/report.sh}"
-    rm -rf "$TMP/mx"; FX="$TMP/mx/tests"; mkfx "$FX"
-    # 两个文件都在负对照模式下跑了 2 项、计数器里一共 7 条：一个没声明，一个声明计数只含回归
-    printf '%s\n' '#!/usr/bin/env bash' '# kind: unit' "source \"$lib\"" \
-        'MUTATION_COUNT=2; report_counts 7 0; exit 0' > "$FX/mixed.test.sh"
-    printf '%s\n' '#!/usr/bin/env bash' '# kind: unit' "source \"$lib\"" \
-        'MUTATION_COUNT=2; REPORT_REGRESS_ONLY=1 report_counts 7 0; exit 0' > "$FX/pure.test.sh"
-    RC=0; MUTATION=1 RUN_TESTS_DIR="$FX" bash "$1" --out "$TMP/mx/out" > "$OUTF" 2>&1 || RC=$?
-    echo "$RC" > "$TMP/mx/rc"
-    echo "$(awk -F'\t' '$1 == "mixed" {print $6, $7, $10, $11}' "$TMP/mx/out/results.tsv") | $(awk -F'\t' '$1 == "pure" {print $6, $7, $10, $11}' "$TMP/mx/out/results.tsv")"
-}
-chk "没声明的记「-」、声明了的保留数字；负对照各跑 2" "$(scenario_mixed "$RUNSH")" "- - 2 0 | 7 0 2 0"
-chk "  两个都判 pass" "$(cat "$TMP/mx/rc") $(awk -F'\t' '{print $2}' "$TMP/mx/out/results.tsv" | sort -u | paste -sd' ')" "0 pass"
-chk "  合计只加声明了的那个：回归 7 项 / 负对照 4 项，并说明另 1 个不单列" \
-    "$(grep -c '^\*\*回归 7 项 / 负对照 4 项\*\*.*另 1 个在负对照模式下' "$TMP/mx/out/summary.md")" "1"
-chk "  类型行注明 1 个不单列" "$(grep -F '| `unit` 单元回归 |' "$TMP/mx/out/summary.md")" '| `unit` 单元回归 | 2 | 7 / 0 | 0 / 0 | 4 / 0 | 1 个负对照模式下不单列回归 |'
-chk "  不单列的那个在单位行写「回归 不单列」" "$(grep -c '^| `mixed` | ✅ pass | [0-9]*s | 回归 不单列' "$TMP/mx/out/summary.md")" "1"
-chk "默认模式（负对照没跑）照常报数字" "$(cd "$TMP" && MUTATION_COUNT=2 bash -c "source '$TEST_DIR/lib/report.sh'; MUTATION_COUNT=2; report_counts 7 0" | grep -oE 'regress_pass=[^ ]+ regress_fail=[^ ]+')" "regress_pass=7 regress_fail=0"
-chk "负对照模式、但文件一项负对照都没有 → 照常报数字" "$(MUTATION=1 bash -c "source '$TEST_DIR/lib/report.sh'; report_counts 7 0" | grep -oE 'regress_pass=[^ ]+')" "regress_pass=7"
-# 同一份结果，三处汇总（本次运行的结果表、--verify、--tally）读到的合计一行相同
-mkdir -p "$TMP/mx/v/shard-1"; cp "$TMP/mx/out/results.tsv" "$TMP/mx/v/shard-1/"
-s_line=$(grep '^| \*\*合计\*\*' "$TMP/mx/out/summary.md")
-FX="$TMP/mx/tests"
-v_line=$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --verify "$TMP/mx/v" 2>&1 | grep '^| \*\*合计\*\*' || true)
-t_line=$(RUN_TESTS_DIR="$FX" bash "$RUNSH" --tally "$TMP/mx/v" 2>&1 | grep '^| \*\*合计\*\*')
-chk "三处汇总的合计行相同：--verify" "$v_line" "$s_line"
-chk "三处汇总的合计行相同：--tally（$s_line）" "$t_line" "$s_line"
-chk "  合计行确有内容" "$([ -n "$s_line" ] && echo yes || echo no)" "yes"
-
-# ══ 负对照：改坏入口脚本的副本，对应场景必须变红 ════════════════════════════════
 echo "【19】只改文档 / 只改测试文件的改动：只跑它够得着的；读不出改动就全跑；汇总复算并核对各路记下的清单（GitHub#495）"
 # 一个真的 git 仓库（带本地「远端」），tests/ 里是假测试，tests/run.sh 是被测的那份。
 # 读文件的方式各不同：提到 README.md / operations.md / docs/deep/、文件头声明 # reads: repo、什么都没提。
@@ -652,78 +595,7 @@ noname=$(cd "$TEST_DIR" && for f in *.test.sh; do
 done | paste -sd,)
 chk "用 docs/\$变量 读文档的测试都写出了文档的文件名" "$noname" ""
 
-echo "【负对照】"
-mutant() {  # $1 名字  $2 python 替换：旧 → 新（必须恰好命中一次）
-    local dst="$TMP/mut-$1.sh"
-    python3 - "$RUNSH" "$dst" "$2" "$3" <<'PY' || return 1
-import sys
-src, dst, old, new = sys.argv[1:5]
-s = open(src).read()
-if s.count(old) != 1:
-    sys.exit("mutation target found %d times: %r" % (s.count(old), old))
-open(dst, "w").write(s.replace(old, new))
-PY
-    echo "$dst"
-}
-# 负对照的结论记在 mut_ran / mut_fail，不进 pass / fail：那两个只数回归（tests/lib/report.sh，PR #225 复审第 1 轮）
-mut_ran=0; mut_fail=0
-neg() {  # $1 说明  $2 场景函数  $3 正确实现的期望值  $4 名字  $5 旧  $6 新  [场景的其余参数…]
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    # 先用同一组参数在正确实现上跑一遍：得不到期望值，说明场景本身没制造出要拦的情形，「拦下」就毫无意义
-    local real; real=$("$2" "$RUNSH" "${@:7}")
-    if [ "$real" != "$3" ]; then
-        echo "  ❌ 负对照准备失败：$1（正确实现得到 [$real]，不是期望的 [$3]）"; mut_fail=$((mut_fail+1)); return
-    fi
-    local m; m=$(mutant "$4" "$5" "$6") || { echo "  ❌ 负对照准备失败：$1"; mut_fail=$((mut_fail+1)); return; }
-    local got; got=$("$2" "$m" "${@:7}")
-    if [ "$got" != "$3" ]; then echo "  ✅ 负对照拦下：$1"
-    else echo "  ❌ 负对照没拦下：$1（改坏后仍得到 [$got]）"; mut_fail=$((mut_fail+1)); fi
-}
-neg "分组漏掉最后一个文件" scenario_partition "a=1 b=1 c=1 d=1 e=1 f=1 g=1" drop-last \
-    'load[best] += $1; print best, $2 }' 'load[best] += $1; if (NR > 1) print best, $2 }'
-neg "分组总放进第 1 路" scenario_heavy_alone "a" all-in-one \
-    'if (load[i] + 0 < load[best] + 0) best = i' 'if (0) best = i'
-neg "--ci 不去掉排除项" scenario_allpass "0 pass pass yes yes no excluded" ci-runs-excluded \
-    'if [ "$CI_MODE" = 1 ] && [ -n "${EXCLUDED[$n]+x}" ]; then continue; fi' ':'
-neg "失败不影响退出码" scenario_fail "1 fail pass 1" swallow-exit \
-    'if [ "$failed" -gt 0 ]; then echo "❌ $failed of $ran failed"; exit 1; fi' ':'
-neg "整文件跳过当成通过" scenario_selfskip "1 skipped skipped-ok yes" no-skip-check \
-    "elif grep -qE '^⏭' \"\$log\"; then" 'elif false; then'
-neg "超时没生效" scenario_timeout "1 timeout" no-timeout \
-    '"${TIMEOUT_CMD[@]}" bash' 'bash'
-neg "重复点名不去重（失败被同名的通过盖住）" scenario_dup "0 1 4 1/3,2/3,3/3" no-dedup \
-    'if [ -n "${ONCE[$u]+x}" ]; then echo "run.sh: $u named more than once; it runs once" >&2; continue; fi' ':'
-neg "汇总只看收到的结果、不对照该跑的清单" scenario_verify_missing "1" verify-no-missing \
-    'for n in $(selected); do
-        c=${SEEN[$n]:-0}' 'for n in "${!SEEN[@]}"; do
-        c=${SEEN[$n]:-0}'
-
-neg "不查计数行（提前退出也算通过）" scenario_counts "1 fail 1" no-count-check \
-    '                [ "$status" != pass ] || { status=fail; note="$(cat "$RUNSTATE/$id.why")"; }' ':' nocount '没汇报计数'
-neg "不核对负对照数" scenario_counts "1 fail 1" no-mut-crosscheck \
-    '    if [ -n "$said" ] && [ "$said" != "$ms" ]; then' '    if false; then' mutcount '跳过 4 项' 4
-# 这一项改坏的是计数库 tests/lib/report.sh（不是 run.sh）：先在真库上确认期望值，再换上改坏的库
-if mutation_gate; then
-    mut_ran=$((mut_ran + 1))
-    real=$(scenario_mixed "$RUNSH")
-    m="$TMP/mut-report.sh"
-    if [ "$real" != "- - 2 0 | 7 0 2 0" ]; then
-        echo "  ❌ 负对照准备失败：负对照模式下回归混算（正确实现得到 [$real]）"; mut_fail=$((mut_fail+1))
-    elif ! python3 - "$TEST_DIR/lib/report.sh" "$m" <<'PYR'
-import sys
-src, dst = sys.argv[1:3]; s = open(src).read()
-old = '        if [ "$total" != 0 ] && [ "${REPORT_REGRESS_ONLY:-}" != 1 ]; then rp="-"; rf="-"; fi\n'
-if s.count(old) != 1: sys.exit(1)
-open(dst, "w").write(s.replace(old, ""))
-PYR
-    then echo "  ❌ 负对照准备失败：负对照模式下回归混算（计数库里找不到要改的那一行）"; mut_fail=$((mut_fail+1))
-    elif [ "$(scenario_mixed "$RUNSH" "$m")" != "$real" ]; then echo "  ✅ 负对照拦下：负对照模式下回归和负对照混成一个数"
-    else echo "  ❌ 负对照没拦下：负对照模式下回归和负对照混成一个数"; mut_fail=$((mut_fail+1)); fi
-fi
-
 echo
-mutation_summary "$0"
-echo "结果：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

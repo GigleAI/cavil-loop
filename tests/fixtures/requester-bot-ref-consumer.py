@@ -4,7 +4,7 @@
 
 直接读假 GitHub 的 state.json（不经 gh，避免在观察钩子里递归），对一个条目给出机器人此刻的判定：
 
-  python3 -I requester-bot-ref-consumer.py <state.json> <编号> [--minutes N] [--rule v4|v2|v3]
+  python3 -I requester-bot-ref-consumer.py <state.json> <编号> [--minutes N]
 
 输出一行：
   not-waiting                    没挂等待标签（机器人不拉它）
@@ -15,8 +15,6 @@
   error <原因>                   不转达，留言交维护者
 
 --minutes = 假设机器人在挂标签之后过了多少分钟才扫到（默认 0）。
---rule 只给负对照用：bodymark = 只看当前条目正文里有没有来源标记来分流（代码复审第 2 轮指出的旧规则）；v3 = 找不到对应的叫醒记录就判出错（方案第 3 版的规则）；v2 = 不看编号，取挂标签
-账号「时间早于挂标签」的最后一条评论（方案第 2 版的规则）。
 """
 import hashlib
 import json
@@ -31,11 +29,9 @@ GRACE_MIN = 30
 
 args = sys.argv[1:]
 path, num = args[0], args[1]
-minutes, rule = 0, "v4"
+minutes = 0
 if "--minutes" in args:
     minutes = int(args[args.index("--minutes") + 1])
-if "--rule" in args:
-    rule = args[args.index("--rule") + 1]
 
 st = json.load(open(path, encoding="utf-8"))
 it = st["items"][num]
@@ -80,8 +76,7 @@ def origin(x):
     return "bot" if is_bot_request(linked) else "other"
 
 
-o = "bot" if rule == "bodymark" and ORIGIN_MARK in (it.get("body") or "") else \
-    ("other" if rule == "bodymark" else origin(it))
+o = origin(it)
 if o == "bot":
     print("bot-origin"); sys.exit(0)
 if o == "unknown":
@@ -118,14 +113,6 @@ def target_ok(t):
     return bool(t) and len(t) <= 100 and not any(ch in t for ch in "<>;") and all(ord(ch) >= 32 and ord(ch) != 127 for ch in t)
 
 
-if rule == "v2":
-    # 第 2 版：挂标签账号「早于挂标签时间」的最后一条评论（不看编号）。时间都是同一秒 → 一条也选不到
-    t_ev = ev.get("created_at", "2026-10-01T00:00:00Z")
-    cands = [c for c in comments if c[1] == A and "2026-10-01T00:00:00Z" < t_ev]
-    if not cands:
-        print("error 选不到评论"); sys.exit(0)
-    print(f"ready {max(cands)[0]} ?"); sys.exit(0)
-
 receipts = []
 for cid, who, body in comments:
     if who != A:
@@ -137,7 +124,7 @@ for cid, who, body in comments:
     if m and m.group(1) == str(E):
         receipts.append(m)
 if not receipts:
-    if rule == "v3" or minutes >= GRACE_MIN:
+    if minutes >= GRACE_MIN:
         print("error 挂标签之后没有对应的叫醒记录"); sys.exit(0)
     print("preparing"); sys.exit(0)
 if len(receipts) > 1:

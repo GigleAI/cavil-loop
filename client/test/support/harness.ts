@@ -15,7 +15,7 @@ import type { CredentialStore } from './credentials';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const TAURI_DIR = join(root, 'src-tauri');
 
-/** Path of the harness binary; CAVIL_HARNESS overrides (the negative-control runner points it at a mutated build). */
+/** Path of the harness binary; CAVIL_HARNESS overrides (a test can point it at another build). */
 export function harnessBin(): string {
   return process.env.CAVIL_HARNESS ?? join(TAURI_DIR, 'target', 'debug', 'cavil-harness');
 }
