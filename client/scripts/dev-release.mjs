@@ -60,14 +60,25 @@ export function devReleases(list) {
 }
 
 /**
- * The files every development build carries (GitHub#628): the Apple-silicon dmg and update package
- * with its signature, the Windows installer (also its update package) with its signature, and the
- * manifest installed apps read. One list for the workflow's "the builds are that version" check, this
+ * The files every client build carries (GitHub#628), a development build and a release alike: for
+ * each Mac (Apple silicon, Intel) the dmg and the update package with its signature, the Windows
+ * installer (also its update package) with its signature, and the manifest installed apps read. One list for the workflow's "the builds are that version" check, this
  * script's refusal to publish without them, and scripts/dev-plan.mjs's "is the last build complete".
  */
 export function devFiles(version) {
+  return [...macFiles(version), ...windowsFiles(version), 'latest.json'];
+}
+
+/** The Macs' files (Apple silicon and Intel: dmg, update package, its signature), built and signed on the maintainers' Mac (scripts/mac-release.sh). */
+export function macFiles(version) {
   const v = `Cavil-Loop-${version}`;
-  return [`${v}-arm64.dmg`, `${v}-arm64.app.tar.gz`, `${v}-arm64.app.tar.gz.sig`, `${v}-windows-x64.exe`, `${v}-windows-x64.exe.sig`, 'latest.json'];
+  return ['arm64', 'x64'].flatMap((a) => [`${v}-${a}.dmg`, `${v}-${a}.app.tar.gz`, `${v}-${a}.app.tar.gz.sig`]);
+}
+
+/** Windows' files (the installer, also its update package, and its signature), built by the Client workflow. */
+export function windowsFiles(version) {
+  const v = `Cavil-Loop-${version}`;
+  return [`${v}-windows-x64.exe`, `${v}-windows-x64.exe.sig`];
 }
 
 /**
@@ -301,9 +312,36 @@ export function composeBody(notes, added) {
   return `${notes.replace(/\s+$/, '')}\n\n${NOTES_HEADING}\n\n${added.join('\n')}\n`;
 }
 
+/** A development build's page title. */
+export const devTitle = (version, sha) => `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
+
+/**
+ * Create the draft of development build `version` on `sha` carrying `paths`: its title, and its text
+ * (`notesFile`, then what changed since the previous published build — composeBody / buildNotes).
+ * Used here and by scripts/handover.mjs (the draft the Mac fills in).
+ */
+export function createDraft(repo, list, version, sha, paths, notesFile) {
+  const base = previousBuildCommit(list, version);
+  const got = base ? buildNotes(base, sha) : null;
+  console.log(
+    got?.lines.length
+      ? `发版页带上 ${got.notes} 条更新说明${got.titles ? `、补上 ${got.titles} 个没写更新说明的提交标题` : ''}（相对 ${base.slice(0, 7)}）`
+      : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : got ? '发版说明没有新增条目，也没有没写说明的 App 改动' : '比不出发版说明的变化'}`,
+  );
+  // the notes go through a file of their own, removed whether the create worked or not (GitHub#469)
+  const bodyDir = mkdtempSync(join(tmpdir(), 'cavil-dev-release-'));
+  try {
+    const body = join(bodyDir, 'notes.md');
+    writeFileSync(body, composeBody(readFileSync(notesFile, 'utf8'), got?.lines));
+    gh(['release', 'create', `${TAG_PREFIX}${version}`, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', devTitle(version, sha), '--notes-file', body]);
+  } finally {
+    rmSync(bodyDir, { recursive: true, force: true });
+  }
+}
+
 // ---- talking to GitHub (the gh CLI, with the workflow's token) ---------------------------
 
-function gh(args) {
+export function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
@@ -507,25 +545,8 @@ function main() {
     if (!t.ok) throw new Error(`${tag} 已经发布、文件齐全，但${t.why}：不当作发过，不清理旧版本，什么都不写`);
     console.log(`✅ ${tag} 已经发布过了，带齐了文件，标签在这次构建的提交上`);
   } else {
-    const title = `Cavil Loop 客户端 ${version}（开发版，${sha.slice(0, 7)}）`;
-    if (d.action === 'create') {
-      const base = previousBuildCommit(before, version);
-      const got = base ? buildNotes(base, sha) : null;
-      console.log(
-        got?.lines.length
-          ? `发版页带上 ${got.notes} 条更新说明${got.titles ? `、补上 ${got.titles} 个没写更新说明的提交标题` : ''}（相对 ${base.slice(0, 7)}）`
-          : `发版页不带更新说明：${!base ? '找不到上一个开发版的提交' : got ? '发版说明没有新增条目，也没有没写说明的 App 改动' : '比不出发版说明的变化'}`,
-      );
-      // the notes go through a file of their own, removed whether the create worked or not (GitHub#469)
-      const bodyDir = mkdtempSync(join(tmpdir(), 'cavil-dev-release-'));
-      try {
-        const body = join(bodyDir, 'notes.md');
-        writeFileSync(body, composeBody(readFileSync(notes, 'utf8'), got?.lines));
-        gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--prerelease', '--latest=false', '--target', sha, '--title', title, '--notes-file', body]);
-      } finally {
-        rmSync(bodyDir, { recursive: true, force: true });
-      }
-    } else {
+    if (d.action === 'create') createDraft(repo, before, version, sha, paths, notes);
+    else {
       // Filling in a draft of this version (never public: installed apps cannot see it) replaces every
       // file from this build: the files depend on each other (latest.json carries each package's
       // signature), so a file from this build next to one from an earlier build would not verify.

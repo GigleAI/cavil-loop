@@ -77,9 +77,9 @@ impl Channel {
 /// The machines development builds are published for (updater platform keys). The release job's
 /// manifest builder has the same table (scripts/update-manifest.mjs `CHANNEL_PLATFORMS.dev`);
 /// test/unit/update-manifest.test.ts compares the two.
-pub const DEV_TARGETS: &[&str] = &["darwin-aarch64", "windows-x86_64"];
+pub const DEV_TARGETS: &[&str] = &["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
 
-/// Why the development channel cannot be chosen on a machine with no development builds (an Intel Mac).
+/// Why the development channel cannot be chosen on a machine with no development builds (none outside `DEV_TARGETS`).
 pub fn no_dev_build() -> String {
     tr("开发版只有 Apple 芯片的包，这台 Mac 只能用正式版", &[])
 }

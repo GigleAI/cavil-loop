@@ -72,17 +72,32 @@ echo "$out" | grep -E 'CAVIL_SMOKE_(OK|FAIL)' || true
 grep -q 'CAVIL_SMOKE_OK' <<<"$out" || { echo "❌ smoke test failed"; echo "$out" | tail -20; exit 1; }
 
 echo "== 2. signature"
-codesign -dv "$app" 2>&1 | grep -E 'Signature=|Identifier=' || true
+codesign -dv "$app" 2>&1 | grep -E 'Signature=|Identifier=|Authority=|flags=' || true
 codesign --verify --deep --strict "$app"
-echo "✅ codesign --verify passed (ad-hoc)"
-
-echo "== 3. quarantined copy is rejected by Gatekeeper"
-xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$app"
-if spctl --assess --type execute -vv "$app" 2>&1; then
-  echo "❌ Gatekeeper accepted an unsigned quarantined app — the first-open instructions would be wrong"
-  exit 1
+# CAVIL_EXPECT_SIGNER (scripts/mac-release.sh): the Developer ID the app must be signed with, with the
+# hardened runtime; unset = the ad-hoc signature of a build anywhere else
+if [ -n "${CAVIL_EXPECT_SIGNER:-}" ]; then
+  info="$(codesign -dvv "$app" 2>&1)"
+  grep -qxF "Authority=$CAVIL_EXPECT_SIGNER" <<<"$info" || { echo "❌ not signed by $CAVIL_EXPECT_SIGNER"; exit 1; }
+  grep -qE '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime' <<<"$info" || { echo "❌ no hardened runtime"; exit 1; }
+  echo "✅ codesign --verify passed ($CAVIL_EXPECT_SIGNER, hardened runtime)"
+else
+  echo "✅ codesign --verify passed (ad-hoc)"
 fi
-echo "✅ rejected as expected (the user sees the first-open dialog)"
+
+# Notarized (CAVIL_EXPECT_NOTARIZED=true): Gatekeeper accepts the downloaded app. Otherwise it must
+# reject it, or the first-open instructions in the dmg would be wrong.
+echo "== 3. quarantined copy: Gatekeeper's verdict"
+xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$app"
+if [ "${CAVIL_EXPECT_NOTARIZED:-}" = true ]; then
+  spctl --assess --type execute -vv "$app" 2>&1 || { echo "❌ Gatekeeper rejected a notarized app"; exit 1; }
+  echo "✅ accepted (notarized)"
+elif spctl --assess --type execute -vv "$app" 2>&1; then
+  echo "❌ Gatekeeper accepted a quarantined app that is not notarized — the first-open instructions would be wrong"
+  exit 1
+else
+  echo "✅ rejected as expected (the user sees the first-open dialog)"
+fi
 
 echo "== 4. documented step: xattr -dr com.apple.quarantine, then open like a double-click"
 xattr -dr com.apple.quarantine "$app"

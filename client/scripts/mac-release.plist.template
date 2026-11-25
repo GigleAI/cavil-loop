@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The LaunchAgent of scripts/mac-release.sh, written by `mac-release.sh install`. A LaunchAgent runs
+     in the logged-in desktop session, where codesign can use the keychain (over ssh it cannot). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@LABEL@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@SCRIPT@</string>
+    <string>round</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CAVIL_MAC_RELEASE_CONF</key>
+    <string>@CONF@</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>@INTERVAL@</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>@LOG@</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG@</string>
+</dict>
+</plist>

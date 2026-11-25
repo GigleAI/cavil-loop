@@ -33,7 +33,7 @@
   "这个版本不自动更新": "This build does not update itself",
   "不认识的更新渠道": "Unknown update channel",
   "新版还没装好": "The new version is not installed yet",
-  "开发版只有 Apple 芯片的包，这台 Mac 只能用正式版": "Development builds exist for Apple silicon only; this Mac can only use Release",
+  "开发版只有 Apple 芯片的包，这台 Mac 只能用正式版": "No development builds exist for this machine; it can only use Release",
   "连不上 GitHub（{e}）": "Cannot reach GitHub ({e})",
   "GitHub 返回的发版列表看不懂": "The release list GitHub returned cannot be read",
   "发版列表超过 {n} 页，没读完": { "one": "The release list is longer than {n} page and was not read to its end", "other": "The release list is longer than {n} pages and was not read to its end" },

@@ -33,12 +33,12 @@ export const REPO = 'GigleAI/cavil-loop';
 /** the updater's platform names → the machine's name in the package's file name */
 export const PLATFORMS = { 'darwin-aarch64': 'arm64', 'darwin-x86_64': 'x64', 'windows-x86_64': 'windows-x64' };
 /**
- * The machines each channel's manifest must carry (GitHub#215). Development builds are made on
- * the Apple silicon Mac and on Windows (the push-to-main build, .github/workflows/client.yml,
- * GitHub#577); the app has the same list (`DEV_TARGETS`, src-tauri/crates/core/src/update.rs) to
+ * The machines each channel's manifest must carry (GitHub#215). Both channels carry both Macs
+ * (built and signed on the maintainers' Mac, scripts/mac-release.sh) and Windows (the Client
+ * workflow, GitHub#577); the app has the same list (`DEV_TARGETS`, src-tauri/crates/core/src/update.rs) to
  * grey the channel out on other machines — test/unit/update-manifest.test.ts compares the two.
  */
-export const CHANNEL_PLATFORMS = { stable: ['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'], dev: ['darwin-aarch64', 'windows-x86_64'] };
+export const CHANNEL_PLATFORMS = { stable: ['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'], dev: ['darwin-aarch64', 'darwin-x86_64', 'windows-x86_64'] };
 /** the version each channel publishes */
 export const VERSION_SHAPE = { stable: /^\d+\.\d+\.\d+$/, dev: /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-dev\.(0|[1-9]\d*)$/ };
 

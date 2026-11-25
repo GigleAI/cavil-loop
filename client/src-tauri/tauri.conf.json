@@ -46,12 +46,12 @@
     "macOS": {
       "minimumSystemVersion": "14.0",
       "signingIdentity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": true
     }
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzNEE0RTdCM0EzQkM1RjEKUldUeHhUczZlMDVLMHdBY1R4M0xySUxMVCtPVHdLNzJpY2dzUWdWT3A1RUZEK1EySHp4YlRUa0EK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyNkU0MzY2NDQzOEREREYKUldUZjNUaEVaa051OG4yZmlaUjhJT01UYm0zaTFCSmdWTFZJYlc0UEl3bElGSk1BZGhKMzIwL20K"
     }
   }
 }
