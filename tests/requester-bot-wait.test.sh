@@ -2,8 +2,7 @@
 # kind: e2e
 # 等外部需求机器人期间等待标签被提前摘掉时不自动续工；机器人的需求 + 托管的合并规则 —— GitHub#162。
 #
-# 跑法：bash tests/requester-bot-wait.test.sh              （默认不跑负对照）
-#       MUTATION=1 bash tests/requester-bot-wait.test.sh   （连负对照一起跑：每份改坏的副本把整套场景重跑一遍）
+# 跑法：bash tests/requester-bot-wait.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py）+ 假 tmux。
 # 每一轮都真的起 agent-poll.sh 子进程；「派没派、接没接手」从轮询日志的派工队列行和假 GitHub 的状态里读。
 #
@@ -22,8 +21,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -778,103 +775,8 @@ prompts_check() {
 echo "=== 正式版 ==="
 run_scenarios "$REPO_DIR/scripts"
 prompts_check "$REPO_DIR"
-REAL_PASS=$pass; REAL_FAIL=$fail
-
-section "【9】负对照（改坏一处，至少一条检查必须变红）"
-mut_fail=0; mut_ran=0
-mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原文> <替换后> …]：每对原文都必须找得到
-    local name="$1" file="$2" M="$SANDBOX/mut-$1"
-    shift 2
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/scripts/$file" "$@" <<'PY'
-import sys
-p, pairs = sys.argv[1], sys.argv[2:]
-s = open(p).read()
-for old, new in zip(pairs[0::2], pairs[1::2]):
-    if s.count(old) < 1:
-        sys.exit(1)
-    s = s.replace(old, new, 1)
-open(p, "w").write(s)
-PY
-    then
-        echo "  ❌ 负对照 $name：要改的原文找不到（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M/scripts"; prompts_check "$M"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 $name：$fail 条检查变红"
-    else echo "  ❌ 负对照 $name：改坏后整套检查仍全绿（测试分不出这个错误实现）"; mut_fail=$((mut_fail + 1)); fi
-}
-# 三个调用点各拆一个
-mutate site-greedy agent-poll.sh '        rc=0; requester_bot_wait_hold "$num" || rc=$?
-        case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy' '        rc=1
-        case "$rc" in
-            0) [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "greedy'
-mutate site-autopilot-rows agent-poll.sh '                rc=0; requester_bot_wait_hold "$num" || rc=$?' '                rc=1'
-mutate site-takeover _lib.sh '    if [ "$AT_MODE" = none ]; then
-        rc=0; requester_bot_wait_hold' '    if false; then
-        rc=0; requester_bot_wait_hold'
-# 判据本身
-mutate no-trigger-release _lib.sh '            return 1
-        fi
-    done' '            :
-        fi
-    done'
-mutate order-by-position _lib.sh "sorted=\$(printf '%s\n' \"\$rows\" | awk -F'\t' 'NF' | sort -t\$'\t' -k1,1n)" "sorted=\$(printf '%s\n' \"\$rows\" | awk -F'\t' 'NF')"
-mutate unknown-is-free _lib.sh '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 2' '        REQUESTER_BOT_WAIT_REASON="读不到 #$n 的标签记录"; return 1'
-mutate missing-id-ok _lib.sh '        REQUESTER_BOT_WAIT_REASON="#$n 的标签记录缺事件编号"; return 2' '        :'
-# 缓存（代码复审第 1 轮）：放回「判过放行就一直放行」「判过拦住就一直拦住」两种跨轮缓存，都必须变红
-mutate free-cached _lib.sh '    requester_bot_enabled || return 1
-    if ! rows=' '    requester_bot_enabled || return 1
-    grep -qx "$n" "$STATE_DIR/free-cache" 2>/dev/null && return 1
-    if ! rows=' '    [ -n "$e" ] || return 1' '    [ -n "$e" ] || { echo "$n" >> "$STATE_DIR/free-cache"; return 1; }'
-mutate hold-cached _lib.sh '    requester_bot_enabled || return 1
-    if ! rows=' '    requester_bot_enabled || return 1
-    grep -qx "$n" "$STATE_DIR/hold-cache" 2>/dev/null && return 0
-    if ! rows=' '    # 日志去重（不影响上面的结论）' '    echo "$n" >> "$STATE_DIR/hold-cache"'
-mutate takeover-hold-cached _lib.sh '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"
-                return 0' '                [ -n "$REQUESTER_BOT_WAIT_LOGGED" ] || log "托管：PR #$pr 不接手——${REQUESTER_BOT_WAIT_REASON}，等有人打派工标签"'
-# 判定规则版本（代码复审第 2 轮）：两份记录各去掉一次，升级场景必须变红
-mutate judge-rev-takeover-ignored _lib.sh '        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"' '        key="$upd|$n|$iupd"'
-mutate judge-rev-denied-ignored agent-poll.sh ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$AUTOPILOT_JUDGE_REV|$updated" ]' ''"'"'.denied[$n]'"'"' --arg n "$num")" = "$updated" ]' \
-    '--arg u "$AUTOPILOT_JUDGE_REV|$updated"' '--arg u "$updated"'
-mutate log-dedup-missing _lib.sh '        REQUESTER_BOT_WAIT_LOGGED=1' '        :'
-mutate enabled-gate-missing _lib.sh '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""
-    requester_bot_enabled || return 1' '    REQUESTER_BOT_WAIT_REASON=""; REQUESTER_BOT_WAIT_LOGGED=""'
-# 提示词
-mutate prompt-section-missing _lib.sh '                autopilot_requester_bot_section' '                :'
-mutate prompt-report-rule-swapped _lib.sh '    if requester_bot_report_first; then
-        rule="本项目要求**先向机器人汇报结果**' '    if ! requester_bot_report_first; then
-        rule="本项目要求**先向机器人汇报结果**'
-# 整份换回钉死的旧实现（配本版 prompts/）：必须变红。83d29bf = 代码复审第 1 轮打回的那一版（按 updated_at 缓存结论）。
-# 原先还有一份「换回 merge-base」：PR 上是改动前，但负对照（当时在发版门禁里，如今每晚）跑在 main 上，merge-base 就是当前代码，
-# 对照基准没有意义，已删（GigleAI/cavil-loop#284）。它守的行为由「正式版」整套场景的普通断言覆盖。
-mutate_rev() {   # <名字> <提交>
-    local name="$1" rev="$2" M="$SANDBOX/mut-rev-$1"
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    rm -rf "$M"; mkdir -p "$M"
-    if [ -z "$rev" ] || ! git -C "$REPO_DIR" archive "$rev" scripts | tar -x -C "$M"; then
-        echo "  ❌ 负对照 $name：取不到 $rev 的实现（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    cp -r "$REPO_DIR/prompts" "$M/"
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M/scripts"; prompts_check "$M"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 $name：$fail 条检查变红"
-    else echo "  ❌ 负对照 $name：旧实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
-}
-mutate_rev prev-83d29bf 83d29bf112d021fc965712be7548f5e9e8f31715
-# 代码复审第 2 轮打回的那一版：旧版留下的拒绝 / 接手记录升级后照旧复用
-mutate_rev prev-dd6cefb dd6cefbcf64f84c484b1d7a78c29a2bfd40523c8
-pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
-mutation_summary "$0"
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "正式版：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

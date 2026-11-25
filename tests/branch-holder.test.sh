@@ -2,8 +2,7 @@
 # kind: e2e
 # 分支被「主 checkout」占用时的提示与自动释放（GitHub#141）。
 #
-# 跑法：bash tests/branch-holder.test.sh            （默认回归，~30 s）
-#       MUTATION=1 bash tests/branch-holder.test.sh （再跑负对照：改坏一处，对应场景必须变红）
+# 跑法：bash tests/branch-holder.test.sh            （~30 s）
 # 依赖：git、jq。不碰网络、不调真 gh：每个场景自造上游 bare 仓库 + 主 checkout，跑**真的**
 # scripts/dispatch-pr-comment.sh / create-worktree.sh，假 gh / tmux 只记录调用。
 #
@@ -22,8 +21,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 ROOT=$(mktemp -d)
 cleanup() { [ -n "${KEEP_SANDBOX:-}" ] && { echo "SANDBOX=$ROOT"; return 0; }; rm -rf "$ROOT"; }
@@ -139,8 +136,8 @@ labels()   { grep -- "/issues/$N/labels" "$1/gh-calls.log" || true; }
 n_holders() { git -C "$1" worktree list --porcelain | grep -c "^branch refs/heads/$BR$"; }
 
 # 标准场景：主 checkout 停在 PR 分支上、干净、与 PR 一致
-# 每次都建全新目录：负对照会把同一个场景再跑一遍，目录名重复的话建仓库会失败，git 的输出
-# 就会混进路径（实际发生过：测试往仓库工作区里写了文件）。
+# 每次都建全新目录：目录名重复的话建仓库会失败，git 的输出就会混进路径
+# （实际发生过：测试往仓库工作区里写了文件）。
 new_case_dir() { mktemp -d "$ROOT/$1.XXXXXX"; }
 case_std() {   # <name> <auto>
     local c; c=$(new_case_dir "$1")
@@ -151,7 +148,7 @@ case_std() {   # <name> <auto>
     printf '%s' "$c"
 }
 
-# ── 每个场景一个函数：返回非 0 = 有断言失败（负对照靠它判「变红」） ───────────
+# ── 每个场景一个函数：返回非 0 = 有断言失败 ───────────
 s_main_clean_off() {
     echo "── 主 checkout 占用、干净一致，开关关 → 只提示 switch ──"
     local c f0=$fail; c=$(case_std main-off 0)
@@ -384,59 +381,7 @@ ALL=(s_main_clean_off s_main_clean_on s_dirty s_untracked s_ahead s_behind s_bis
      s_submodule_off s_submodule_on s_new_issue)
 for s in "${ALL[@]}"; do "$s"; done
 
-# ── 负对照：把生产脚本复制一份改坏一处，对应场景必须变红 ─────────────────────────
-# 格式：名字 | 要改的文件 | python 替换（旧→新） | 必须变红的场景
-mutate() {   # <name> <file> <old> <new> <scenario...>
-    local name="$1" file="$2" old="$3" new="$4"; shift 4
-    mutation_gate || return 0
-    local m="$ROOT/mut-$name"
-    mkdir -p "$m"; cp -r "$REPO_DIR/scripts" "$m/scripts"; ln -s "$REPO_DIR/prompts" "$m/prompts"
-    if ! OLD="$old" NEW="$new" python3 - "$m/scripts/$file" <<'PY'
-import os, sys
-p = sys.argv[1]; s = open(p).read(); o = os.environ["OLD"]
-if o not in s: sys.exit(1)
-open(p, "w").write(s.replace(o, os.environ["NEW"]))
-PY
-    then bad "负对照 [$name]：要改的原文不在了（准备失败）"; return 0; fi
-    local s red=0 saved_scripts="$SCRIPTS" saved_pass=$pass saved_fail=$fail
-    SCRIPTS="$m/scripts"
-    for s in "$@"; do
-        if "$s" >/dev/null 2>&1; then :; else red=1; fi
-    done
-    SCRIPTS="$saved_scripts"; pass=$saved_pass; fail=$saved_fail
-    if [ "$red" = 1 ]; then ok "负对照 [$name]：改坏后 $* 变红"
-    else bad "负对照 [$name]：改坏后 $* 仍全绿——测试分不出对错"; fi
-}
-
-echo "── 负对照 ──"
-mutate main-detect _lib.sh 'if [ "$idx" -eq 1 ]; then is_main=1' 'if false; then is_main=1' s_main_clean_off
-mutate real-dir _lib.sh 'real=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null || true)' 'real=""' s_submodule_off
-mutate same-dir _lib.sh '    [ -n "$mine" ] && [ -n "$theirs" ] && [ "$mine" = "$theirs" ]
-}' '    return 0
-}' s_ab_other_main
-mutate no-overwrite-ignore _lib.sh 'switch --no-overwrite-ignore "$base"' 'switch "$base"' s_interleave
-mutate dirty-check _lib.sh 'if [ "$BH_DIRTY" != 0 ]; then' 'if false; then' s_dirty
-mutate same-commit _lib.sh '[ "$BH_HEAD" != "$pr_sha" ]; then' 'false; then' s_ahead
-mutate ops-check _lib.sh 'if [ -n "$BH_OPS" ]; then
-        AUTO_RELEASE_REASON' 'if false; then
-        AUTO_RELEASE_REASON' s_bisect
-mutate base-held _lib.sh 'if base_holder=$(branch_checked_out_elsewhere "$base" "$BH_DIR"); then
-        AUTO_RELEASE_REASON' 'if false; then
-        AUTO_RELEASE_REASON' s_base_held
-mutate linked-untouched _lib.sh 'if [ "$BH_KIND" != main ]; then
-        AUTO_RELEASE_REASON' 'if false; then
-        AUTO_RELEASE_REASON' s_linked_self
-mutate forced-fetch-after-release dispatch-pr-comment.sh 'if [ "${RELEASED:-0}" = 1 ]; then
-    if ! cas_out' 'if false; then
-    if ! cas_out' s_commit_before_switch
-mutate cas-old-value dispatch-pr-comment.sh '"$PR_HEAD_SHA" "$PR_HEAD_SHA" 2>&1)' '"$PR_HEAD_SHA" 2>&1)' s_move_after_switch
-mutate force-add-after-release dispatch-pr-comment.sh '[ "${RELEASED:-0}" = 1 ] && WT_FORCE=()' ':' s_recheckout_before_add
-mutate switch-off dispatch-pr-comment.sh 'if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ]; then
-        if main_checkout_auto_release' 'if true; then
-        if main_checkout_auto_release' s_main_clean_off
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

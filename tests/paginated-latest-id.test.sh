@@ -10,7 +10,7 @@
 #      prompt 原样交给 agent——当时就是 `"$(cat <未加引号的路径>)"` 被换行切成两条命令，
 #      agent 收到空字符串。
 #
-# 负对照：REPO_DIR=<旧版 checkout> bash tests/paginated-latest-id.test.sh 应当变红。
+# 和旧版对比：REPO_DIR=<旧版 checkout> bash tests/paginated-latest-id.test.sh 应当变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

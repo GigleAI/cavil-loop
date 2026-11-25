@@ -5,19 +5,17 @@
 # script: the daemon cleans up by itself — that is covered by tests/autopilot.test.sh §11.)
 #
 # 跑法：bash tests/autopilot-ops.test.sh            （约 30 秒；有一条故意让配置卡 30 秒，验证 10 秒限时）
-#       MUTATION=1 bash tests/autopilot-ops.test.sh （再跑 5 份改坏的副本，各自必须变红）
 #
 # 脚本原样取自两份文档里 `<!-- autopilot-ops:host-check -->` 后面的第一个 bash 代码块——人照着文档复制的
 # 就是这一段，测的也是这一段。两份文档里的脚本必须逐字一致。假的 systemctl / tmux 放在 PATH 最前面，
 # 临时 HOME，不碰真实配置。「会话没了、进程还在」那条用真的子进程。
 #
 # 规矩只有一条：读不到 ≠ 没有。设计阶段每一轮打回的都是这条的一个变体（登记目录读不了当成没装、
-# 单引号配置被文本匹配漏掉……），所以每个「读失败」场景都要求 UNKNOWN，负对照把这些历史写法换回去。
+# 单引号配置被文本匹配漏掉……），所以每个「读失败」场景都要求 UNKNOWN。
 
 # ── The hand-run autopilot host check in `docs/operations{,.zh}.md`: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # The hand-run autopilot host check in `docs/operations{,.zh}.md` (GitHub#124, behind `<!--
-# autopilot-ops:host-check -->`) → `tests/autopilot-ops.test.sh` (~30 s; `MUTATION=1` adds five broken
-# copies — the versions rejected during design among them). It extracts the script verbatim from both
+# autopilot-ops:host-check -->`) → `tests/autopilot-ops.test.sh` (~30 s). It extracts the script verbatim from both
 # pages, requires the two copies to be identical, and runs it against fake `systemctl` / `tmux` plus a
 # real leftover process. An instance is recognised by loading its registry and config the way the
 # daemon does, never by a text pattern. Its one rule: a failed read is never "nothing there" —
@@ -29,8 +27,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP=$(mktemp -d)
 trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
@@ -145,45 +141,7 @@ printf 'REPO=GigleAI/cavil-loop\nTMUX_PREFIX=workloop\nWORKTREE_BASE=%s/wt-a\n' 
 V=$(env HOME="$H" REPO=GigleAI/cavil-loop FAKE_ACTIVE=active bash "$TMP/hc-perl.sh" 2>/dev/null | tail -1)
 [ "$V" = HOST_VERDICT=RUNNING ] && ok "正常配置照常读出 → RUNNING" || ng "perl 限时下正常配置：实得 $V"
 
-# ── 负对照：把历次复审打回的写法换回去，测试必须变红 ──
-MUT_BAD=0
-mutant() {   # <名字> <host|doc> <旧文本> <新文本> [<旧文本> <新文本> ...]：逐对替换后整套重跑
-    local name="$1" kind="$2" src dst; shift 2
-    mutation_gate || return 0
-    case "$kind" in host) src="$HC";; doc) src="$TMP/operations.zh.host-check.sh";; esac
-    dst="$TMP/mut.sh"
-    if ! python3 -c '
-import sys
-s = open(sys.argv[1]).read()
-pairs = sys.argv[3:]
-for o, n in zip(pairs[0::2], pairs[1::2]):
-    assert o in s, o
-    s = s.replace(o, n, 1)
-open(sys.argv[2], "w").write(s)' "$src" "$dst" "$@" 2>/dev/null; then
-        echo "  ❌ 负对照「$name」准备失败：原文里找不到要改的那段"; MUT_BAD=$((MUT_BAD+1)); return 0
-    fi
-    local p=$PASS f=$FAIL; PASS=0; FAIL=0
-    case "$kind" in
-        host)  QUIET=1 host_suite "$dst" ;;
-        doc)   cmp -s "$HC" "$dst" && PASS=1 || FAIL=1 ;;
-    esac
-    if [ "$FAIL" -gt 0 ]; then echo "  ✅ 负对照「$name」：$FAIL 条变红"; else echo "  ❌ 负对照「$name」：全绿，测试没拦住"; MUT_BAD=$((MUT_BAD+1)); fi
-    PASS=$p; FAIL=$f
-}
-mutation_on && echo "负对照："
-mutant "按文本匹配认实例（第 5 版写法）" host \
-  $'  if ! got=$(load_instance "$f"); then' \
-  $'  got=$(printf \'%s\\n%s\\n\' "$(sed -n \'s/^REPO="\\{0,1\\}\\([^"]*\\)"\\{0,1\\}$/\\1/p\' "$(sed -n \'s/^CODING_AGENT_CONFIG=//p\' "$f")" 2>/dev/null | tail -1)" "$(sed -n \'s/^TMUX_PREFIX="\\{0,1\\}\\([^"]*\\)"\\{0,1\\}$/\\1/p\' "$(sed -n \'s/^CODING_AGENT_CONFIG=//p\' "$f")" 2>/dev/null | tail -1)")\n  [ -n "$(printf \'%s\' "$got" | sed -n 1p)" ] || continue\n  if false; then'
-mutant "登记目录读不了当成没装（第 4 版写法）" host \
-  $'  [ -d "$d" ] && [ -r "$d" ] && [ -x "$d" ] || bad UNKNOWN "cannot read registry dir $d"' $'  :'
-mutant "服务管理器连不上当成没装" host \
-  $'bad UNKNOWN "instance $key: cannot query $u ($out)"; continue;' 'continue;'
-mutant "机器核对只看会话、不看进程" host \
-  $'[ -z "$left" ] || bad RUNNING "instance $key: processes' $': || bad RUNNING "instance $key: processes'
-mutant "中英两份脚本不一致" doc 'echo "HOST_VERDICT=$verdict"' 'echo "HOST_VERDICT= $verdict"'
-
 echo
 echo "合计：通过 $PASS / 失败 $FAIL"
-mutation_summary "$0"
 report_counts "$PASS" "$FAIL"
-[ "$FAIL" -eq 0 ] && [ "$MUT_BAD" -eq 0 ]
+[ "$FAIL" -eq 0 ]

@@ -1,6 +1,6 @@
 // One private temporary folder per test run (GitHub#469).
 //
-// Every client test run (npm test / test:e2e / test:mutation / test:rust / test:tauri, and a bare
+// Every client test run (npm test / test:e2e / test:rust / test:tauri, and a bare
 // `npx vitest` / `npx playwright test`) gets its own folder in the system temp dir and runs with
 // TMPDIR pointing at it, so whatever a test creates with mkdtemp(tmpdir(), …) lands there and goes
 // with the folder. A folder is removed only once nobody uses it any more, and "nobody uses it" is
@@ -8,7 +8,7 @@
 //
 //   - the folder holds a lock file; the run's command is started with that file open and locked
 //     shared on a high descriptor (20) that children inherit, so the command and every process
-//     under it — vitest's workers, the negative-control runner's own sessions, the Rust back end,
+//     under it — vitest's workers, the Rust back end,
 //     bash scripts — hold the lock for as long as they live;
 //   - "is it in use" = open the file anew and try an exclusive lock without waiting: got it → no
 //     one holds it → remove; "would block" → in use, keep; any other answer → cannot tell, keep.

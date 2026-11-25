@@ -11,7 +11,6 @@
 #   2. 对应关系没写反：只有通过才 ✅，其余一律 ❌，每种「不通过 / 交人」结局都点到
 #   3. 两个示例标题的符号和文字一致（✅ 配「通过」、❌ 配「未通过」）
 #   4. 没漏进 worker 模板——worker 的评论不是复审结论
-# 负对照已按 GitHub#234 删去，本文件只跑普通回归。
 
 # ── Review verdict comment headings start with ✅: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Review verdict comment headings start with ✅ (passed) or ❌ (everything else) (GitHub#84) →

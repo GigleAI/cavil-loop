@@ -1782,7 +1782,7 @@ details).
   printed → counted on its own, measured. Nested runs (a test running `tests/run.sh` again) record
   nothing.
 - **Single runs** — test commands recognised in the agent's own session (`bash tests/<x>.test.sh`,
-  `bash test/tauri/mutations.sh`, `npm test` / `npm run test…`, `npx vitest`, `npx playwright test`,
+  `npm test` / `npm run test…`, `npx vitest`, `npx playwright test`,
   `cargo test`; text inside quotes and here-docs does not count), timed from tool call to tool
   result — an estimate of the whole command.
 - **The answer**: a source that cannot be read → `unknown`; anything measured → the union of the
@@ -1942,16 +1942,8 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   `--changed-from`), all (no selection), other; CI attempts of the `Tests` workflow split by the
   selection its summary job printed (full run / only what the change can reach / unknown), and of the
   `Client` workflow; local subtotal, CI subtotal (union of attempts) and total.
-- "Full tests" means the whole suite run with negative controls, which only the nightly
-  `Negative controls` workflow does, on `main`, never per PR: that column is 0 and the report lists
-  that workflow's run times — only runs in which the negative-control step itself ran (judged per step
-  in the shell, autopilot and client jobs; a red step counts as it is). A run that only did its
-  preparation (a manual run off `main`, or a scheduled run that found the same commit already green)
-  or whose jobs failed in a preparation step before the negative-control step started still shows as
-  completed / failed; it is left out and counted as "did not really run". A run whose jobs or steps
-  cannot be read, or whose negative-control step was cancelled or has an unknown state, is left out
-  and counted separately too, and read again next time. The release workflow and the client's full
-  tests are listed separately as "other tests on main", not as full tests.
+- The release workflow and the client's full tests (the weekly run and release tags) belong to `main`,
+  not to a PR: the report lists their run times separately as "tests on main".
 
 </details>
 
@@ -4130,7 +4122,7 @@ One release per iteration. Iterations follow the cavil project board's Iteration
 - **When**: the scheduled trigger in `.github/workflows/release.yml`, **every day** at 00:10 Beijing time (16:10 UTC). Monday's run releases the week that just ended; the other six find it released and stop within seconds — or, when Monday's gate was red, the first daily run after the fix is on main releases that same week, under that week's name and title. GitHub may start scheduled runs minutes to tens of minutes late under load.
 - **Which week**: "the week that just ended" = the latest Sunday D that is over in Beijing time when the run starts (Sunday 23:59 Beijing is still the previous week; from Monday 00:00 it is this one). The plan step works it out once; the gate and the tag use the week, commit and tag it fixed, even across midnight. Only the latest week is caught up: when two or more weeks were missed, the earlier ones get no release of their own and their commits go into the one that is released.
 - **Which commit when main moves during a run**: a run can wait in the queue behind another Release run (only one runs at a time), and the gate takes a while; main often gets new commits meanwhile. The plan step takes main's tip as it is when the plan step runs — not the commit the run was triggered on — and the release step tags exactly the commit the gate tested, however far main has moved since. Only a checkout that is not on main's history at all is refused. Running `scripts/release.sh` by hand still requires the local main to equal `origin/main`.
-- **What the gate runs**: the shell regression suite — the same four `tests/run.sh --ci` shards and exactly-once check as the Tests workflow on every PR — on the one commit the tag will point at. Any red, skipped or missing gate job means no tag and no page. The negative controls are **not** part of it: they run every night on their own (next section but one) and a red one opens an issue instead of holding the release.
+- **What the gate runs**: the shell regression suite — the same four `tests/run.sh --ci` shards and exactly-once check as the Tests workflow on every PR — on the one commit the tag will point at. Any red, skipped or missing gate job means no tag and no page.
 - **What**: tag `release/vD.N`. The Release title carries the Monday–Sunday week the tag's date falls in, e.g. `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`. The plan step (`scripts/release.sh --plan`) decides in order, first match wins:
   1. a `release/v*` tag on main's tip has no Release page → gate that commit, create that tag's page, no new tag
   2. a tag of the week that just ended has no page (the highest such one) → gate **that tag's own commit**, create its page, no new tag
@@ -4180,34 +4172,6 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `RELEASE_FAILURE_REPORT off` while it is off, and nothing of that name once it is on again.
 <!-- release-failure-ops:end -->
-
-</details>
-
-### Negative controls run every night
-
-A negative control breaks the code on purpose and requires the tests to go red — it tests the tests, not the code. All of them (every `tests/*.test.sh` with `MUTATION=1`, autopilot's broken copies over six jobs, the client's `test/mutation` and the real app's set) run in `.github/workflows/negative-controls.yml` and nowhere else:
-
-<details><summary>When and where they run, and what a red run does</summary>
-
-- **When**: every night at 02:10 Beijing time (18:10 UTC), on main's tip. A scheduled run stops at its first job when the last successful run of this workflow was on the same commit; if that cannot be looked up it runs. Actions → Negative controls → Run workflow (on main) runs it by hand, always. A run on any other branch does nothing.
-- **Not on pull requests, not in Tests or Client**: neither workflow has a "negative controls" option, manual runs included. Workers and reviewers do not run them while developing.
-- **Does not hold a release**: the release gate is the regression suite only (see "What the gate runs" above).
-- **A red run opens an issue** the same way a failed Release run does (the same script, the same rules: only create or comment, re-read before writing, never touch an existing issue's labels) — but its own: titled `负对照每晚运行失败（自动报告）`, marker `<!-- cavil-negative-controls-failure -->`, labelled `pending/agent` (`RELEASE_FAILURE_LABEL`). The two kinds never comment on each other's issue. It lists the failed jobs, the shell units that did not go red and the client entries that did not go red.
-
-</details>
-
-<details><summary>Turning the nightly report off and on</summary>
-
-<!-- negative-controls-ops:begin -->
-**Turning the nightly report off** (the runs go on, a red one just opens no issue) and **back on**:
-
-```bash
-gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
-gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
-```
-
-Run only the first line to turn it off, only the second to turn it back on. Check: `gh variable list --repo GigleAI/cavil-loop` shows `NEGATIVE_CONTROLS_REPORT off` while it is off, and nothing of that name once it is on again.
-<!-- negative-controls-ops:end -->
 
 </details>
 

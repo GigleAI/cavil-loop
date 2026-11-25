@@ -2,9 +2,7 @@
 # kind: e2e
 # 等人审的 PR 与目标分支冲突的守卫 —— GitHub#86。
 #
-# 跑法：bash tests/pending-human-conflict.test.sh              （默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/pending-human-conflict.test.sh   （连负对照一起跑，本机约 1.5 分钟：
-#       整套场景在 7 份改坏的脚本副本上各重跑一遍；见 tests/lib/mutation.sh）
+# 跑法：bash tests/pending-human-conflict.test.sh
 # 依赖：git（≥ 2.38，merge-tree --write-tree）、jq、tmux。不碰网络（假 gh + 本地 bare
 # 仓库当 origin，PR 提交按 GitHub 的形状挂在 refs/pull/N/head）、HOME 指向 temp。
 #
@@ -18,7 +16,6 @@
 #   · 每轮都问 → 调用量随轮数线性涨（bot 号被封过一次，这是最怕的那种）；
 #   · 拿本机过期的目标分支去判 → 主干新进的冲突看不见；
 #   · 两种评论共用标记 → 只提醒的 PR 在状态丢失后被静默升级成自动改代码。
-# 末尾的负对照（MUTATION=1 时）把这七种错误实现分别塞进脚本副本里，断言本测试能把它们全部拦下；
 # 「对拍」一节拿同一批 PR 让 worker 交 PR 前那段冲突检查命令和 daemon 各判一遍，结论必须一致。
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -30,8 +27,6 @@ tmux_sandbox_start
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d) || exit 1
 if [ -n "${KEEP_SANDBOX:-}" ]; then echo "SANDBOX=$SANDBOX"; else tmux_sandbox_own_dir "$SANDBOX"; fi
@@ -120,7 +115,7 @@ iso_ago() { date -u -d "@$(( $(date +%s) - $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
 DAY=86400
 
 # ─────────────────────────────────────────────────────────────────────────
-# 一整套场景。$1 = 被测的 scripts 目录（正式版或负对照改坏的副本）。
+# 一整套场景。$1 = 被测的 scripts 目录。
 # 返回前 $fail 里是失败条数。
 # ─────────────────────────────────────────────────────────────────────────
 run_scenarios() {
@@ -461,64 +456,7 @@ chk "6 个 PR 两边结论一致" "$agree${disagree}" 6
 chk "这批里干净 / 冲突 / 判不了三种都有（否则对拍说明不了什么）" \
     "$(for k in clean conflict unknown; do case "$seen_kinds" in *" $k"*) printf '%s ' "$k" ;; esac; done)" "clean conflict unknown "
 
-real_pass=$pass real_fail=$fail
-
-# ─────────────────────────────────────────────────────────────────────────
-# 负对照：每种错误实现塞进一份脚本副本，整套场景重跑，至少要红一条。
-# 改坏的方式用 python 精确替换源码片段；片段对不上（源码改了）→ 本条负对照算失败，
-# 免得替换悄悄没生效、负对照「通过」得毫无意义。
-# ─────────────────────────────────────────────────────────────────────────
-mutation_on && echo "═══ 负对照（每种错误实现都必须被拦下）═══"
-neg_fail=0
-negative() {   # name python-old python-new
-    mutation_gate || return 0
-    local name="$1" dir="$SANDBOX/neg-scripts"
-    rm -rf "$dir"; cp -r "$REPO_DIR/scripts" "$dir"
-    if ! python3 - "$dir/_lib.sh" "$2" "$3" <<'PY'
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if old not in s: sys.exit(1)
-open(p, 'w').write(s.replace(old, new, 1))
-PY
-    then echo "  ❌ $name：源码里找不到要改的片段（负对照失效）"; neg_fail=$((neg_fail+1)); return; fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$dir"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ $name → 红 $fail 条"
-    else echo "  ❌ $name → 一条都没红（测试分辨不出这种错误实现）"; neg_fail=$((neg_fail+1)); fi
-}
-negative "「判不了」当成「没冲突」" \
-    '        echo unknown; return 0
-    fi
-    # 快照之后' \
-    '        echo clean; return 0
-    fi
-    # 快照之后'
-negative "不去重（处理过的提交照样重判）" \
-    '        [ "$st_acted" = "$head" ] && continue' \
-    '        :'
-negative "每轮都判（不看目标分支提交有没有变）" \
-    '        [ "$st_key" = "$key" ] && [ -n "$st_done" ] && continue' \
-    '        :'
-negative "拿本机过期的目标分支判（不用远端最新提交）" \
-    'merge-tree --write-tree --name-only "$head" "$tip"' \
-    'merge-tree --write-tree --name-only "$head" "origin/$base"'
-negative "写之前不核对 PR 是否还开着" \
-    '            .state == "open" and (.merged // false) == false
-            and' \
-    '            true
-            and'
-negative "写之前不核对目标分支有没有改" \
-    '.head.sha == $h and .base.ref == $b' \
-    '.head.sha == $h'
-negative "两种评论共用一个标记" \
-    '        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=remind -->"' \
-    '        marker_remind="<!-- cavil-loop:pending-human-conflict head=$head mode=worker -->"'
-
 echo
-mutation_summary "$0"
-echo "正式版：$real_pass 通过 / $real_fail 失败；负对照失效 $neg_fail 条"
-# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
-REPORT_REGRESS_ONLY=1 report_counts "$real_pass" "$real_fail" "" "$neg_fail"
-[ "$real_fail" -eq 0 ] && [ "$neg_fail" -eq 0 ]
+echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

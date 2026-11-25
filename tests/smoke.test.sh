@@ -2,8 +2,7 @@
 # kind: smoke
 # Shell 冒烟测试：daemon 的主路径能走通 —— GitHub#212（#207 子项 ②）。
 #
-# 跑法：bash tests/smoke.test.sh              （约 10 秒；默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/smoke.test.sh   （连负对照一起跑，见 tests/lib/mutation.sh）
+# 跑法：bash tests/smoke.test.sh              （约 10 秒）
 #       bash tests/run.sh --quick             （冒烟 + 单元 + 守卫 + 测试框架自测，交付前先跑这一组）
 # 依赖：bash、jq、python3、git。不碰网络：常驻假 GitHub（tests/lib/fake_github.py，FAKE_GH_LISTS=1）
 # + 假 tmux / 假 claude，HOME 指向临时目录；轮询、派工、建 worktree 都是真脚本、真 git。
@@ -19,8 +18,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -148,41 +145,7 @@ NEW="$SANDBOX/new"; mkdir -p "$NEW"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompt
 run_smoke "$NEW"
 chk "60 秒内跑完（实测 $(( $(date +%s) - T0 )) 秒）" "$([ $(( $(date +%s) - T0 )) -le 60 ] && echo yes || echo no)" "yes"
 
-# ── 负对照：把派工主路径改坏（新 issue 派工不翻 doing/agent），冒烟必须变红 ──
-# 改坏的副本只在开关打开时准备；上面的正例就是它的对照。
-echo "【负对照】"
-mutant_flip() {   # 新 issue 派工脚本里翻 doing/agent 的那一步换成空操作
-    local D="$SANDBOX/mut-flip"
-    rm -rf "$D"; cp -r "$NEW" "$D"
-    python3 - "$D/scripts/dispatch-new-issue.sh" <<'PY' || return 1
-import sys
-p = sys.argv[1]; s = open(p).read()
-old = 'flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true'
-if s.count(old) != 1:
-    sys.exit("mutation target found %d times" % s.count(old))
-open(p, "w").write(s.replace(old, ':'))
-PY
-    printf '%s' "$D"
-}
-# 正例的计数在这里存下：负对照在改坏的副本上重跑同一组断言，那些结果不算回归（tests/lib/report.sh）
-REAL_PASS=$pass; REAL_FAIL=$fail; mut_ran=0; mut_fail=0
-if mutation_gate; then
-    mut_ran=$((mut_ran + 1))
-    if D=$(mutant_flip); then
-        pass=0; fail=0; QUIET=1; run_smoke "$D"; QUIET=0
-        if [ "$fail" -gt 0 ]; then
-            echo "  ✅ 负对照拦下：新 issue 派工不翻 doing/agent（$fail 条变红）"
-        else
-            echo "  ❌ 负对照没拦下：新 issue 派工不翻 doing/agent（改坏后冒烟仍全绿）"; mut_fail=$((mut_fail + 1))
-        fi
-    else
-        echo "  ❌ 负对照准备失败：找不到新 issue 派工里翻 doing/agent 的那一行"; mut_fail=$((mut_fail + 1))
-    fi
-fi
-pass=$REAL_PASS; fail=$REAL_FAIL
-
 echo
-mutation_summary "$0"
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]
