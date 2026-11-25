@@ -27,7 +27,10 @@
 #   SIGNING_IDENTITY="Developer ID Application: …"      required
 #   GITHUB_TOKEN_FILE=…   fine-grained token, this repository only, Contents: read and write   (round)
 #   UPDATE_KEY_FILE=…     the update key (minisign secret key, what CI had as TAURI_SIGNING_PRIVATE_KEY)  (round)
-#   UPDATE_KEY_PASSWORD_FILE=…   its password, when it has one
+#   UPDATE_KEY_PASSWORD_KEYCHAIN=…   its password: the service name of a generic password in this
+#                         user's login keychain (preferred: not a file any process can read; the
+#                         keychain opens only in the desktop session, where this runs)
+#   UPDATE_KEY_PASSWORD_FILE=…   or its password in a file, when it has one
 #   NOTARY_KEY_FILE=… NOTARY_KEY_ID=… NOTARY_ISSUER=…   App Store Connect API key: all three, or none (= no notarization)
 #   WORK_DIR=…            checkout, logs, state (default ~/.local/share/cavil-mac-release)
 #   DMGBUILD_BIN=…        directory holding dmgbuild, when it is not on PATH
@@ -126,7 +129,11 @@ build_all() {
   if [ "$keymode" = real ]; then
     secret_ok "${UPDATE_KEY_FILE:-}" UPDATE_KEY_FILE
     keyfile="$UPDATE_KEY_FILE"
-    if [ -n "${UPDATE_KEY_PASSWORD_FILE:-}" ]; then secret_ok "$UPDATE_KEY_PASSWORD_FILE" UPDATE_KEY_PASSWORD_FILE; pass="$(cat "$UPDATE_KEY_PASSWORD_FILE")"; fi
+    if [ -n "${UPDATE_KEY_PASSWORD_KEYCHAIN:-}" ]; then
+      pass="$(security find-generic-password -s "$UPDATE_KEY_PASSWORD_KEYCHAIN" -w)" || die "no password '$UPDATE_KEY_PASSWORD_KEYCHAIN' in the login keychain (or it is locked)"
+    elif [ -n "${UPDATE_KEY_PASSWORD_FILE:-}" ]; then
+      secret_ok "$UPDATE_KEY_PASSWORD_FILE" UPDATE_KEY_PASSWORD_FILE; pass="$(cat "$UPDATE_KEY_PASSWORD_FILE")"
+    fi
     pub="$(node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey")"
     [ -n "$pub" ] || die "plugins.updater.pubkey in tauri.conf.json is empty"
   else
