@@ -102,6 +102,10 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
+# 提交署名跟着条目上的人走 GitHub#699 起没写就开（每次派工多读几次 GitHub）；这里比的是它关着的状态，写成空值
+WORKTREE_GIT_USER_FROM_ITEM=""
 LABEL_PENDING_PR="pending/PR"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_DONE="Done"

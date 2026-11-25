@@ -115,7 +115,7 @@ chk "整数项带范围" "$(jq -c '.fields[] | select(.name=="MAX_CONCURRENT_WOR
 # 层级（GitHub#591）：每项的 tier 就是登记表第 9 列，原样交给客户端
 chk "每项都带层级，和登记表第 9 列逐项相同" "$(jq -r '.fields[] | "\(.name) \(.tier // "缺")"' <<<"$G")" \
     "$(grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{n = $1; t = $9; gsub(/[ \t]/, "", n); gsub(/[ \t]/, "", t); print n, t}')"
-chk "三种层级的项数（常用 18 / 组内高级 27 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=27"
+chk "三种层级的项数（常用 18 / 组内高级 29 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=29"
 chk_lacks "令牌的值不在输出里" "$G" "ghp_TESTSECRET0000"
 chk_lacks "命令的值不在输出里" "$G" "npm ci"
 # 名字以 _DIR 结尾的本机目录不进窗口；类型是 repodir 的是例外（GitHub#688）：它只能是项目仓库里的相对目录，
@@ -494,17 +494,18 @@ SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
 CONF
-LIBKEYS="CONCURRENT_WORK_MAX_BYTES WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS POLL_BACKOFF_LADDER POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS"
+LIBKEYS="AUTO_ASSIGN_REQUESTER CONCURRENT_WORK_MAX_BYTES WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT REVIEW_MODEL REVIEW_MAX_ROUNDS REVIEW_DESIGN_PROPOSALS OUTPUT_LANGUAGE COMMENT_FOOTER BLOCKED_RECHECK_SECS BLOCKED_MAX_TRIES POLL_IDLE_PROBE LOG_LEVEL DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER STUCK_WORKER_QUIET_SECS STUCK_WORKER_STEP_GAP_SECS STUCK_WORKER_MAX_RESTARTS AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS AUTOPILOT_OUTSIDER_GUARD AUTOPILOT_OUTSIDER_SCREEN LABEL_PENDING_REQUESTER_BOT REQUESTER_BOT_REPORT_FIRST REQUESTER_BOT_WAKE_ANY_ITEM CI_FAILURE_REPORT_DISPATCH AUTO_RELEASE_MAIN_CHECKOUT SELFHEAL_ONLY_OWN_WORKERS FABLE_WORKER_AGENT FABLE_MODEL LABEL_PENDING_AGENT_FABLE LABEL_PENDING_AGENT_EXTRA LABEL_AGENT_DOING LABEL_PENDING_PR LABEL_DONE AUTOPILOT_MERGE_METHOD AUTOPILOT_CHECKS_TIMEOUT_HOURS USAGE_LIMIT_FALLBACK_SECS HEAVY_TEST_LOCK_WAIT CHECKOUT_STALE_ALERT_COMMITS GREEDY_SCAN_LIMIT PRIORITY_LABELS PRIORITY_SOURCE PROJECT_PRIORITY_FIELD CI_FAILURE_REPORT_BRANCH CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS POLL_BACKOFF_LADDER POLL_FORCE_SYNC_SECS POLL_FAIL_BACKOFF_MAX_SECS POLL_DUE_SLACK_SECS POLL_IDLE_PROBE_MAX_SECS"
 # 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
 #   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
 #   ENABLE_ROUND_LOG             round_log_enabled
+#   WORKTREE_GIT_USER_FROM_ITEM  commit_identity_from_item_on（不写 = 开、空值 = 关，GitHub#699）
 #   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
 #   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
 #   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
 #   GREEDY_SKIP_LABELS           加载时不补值，用到时（greedy_skip_label_list）才读：问它在内置的跳过标签之后多列了哪些
 #   POLL_RUN_LOG_ROUNDS / _SNAPSHOTS / _INFLIGHT / _SLOW_SECS  加载时不补值，轮询记录用到时才补：问 _runlog_setting（用到它们的地方都问它，GitHub#556）
 RUNLOG_KEYS="POLL_RUN_LOG_ROUNDS POLL_RUN_LOG_SNAPSHOTS POLL_RUN_LOG_INFLIGHT POLL_RUN_LOG_SLOW_SECS"
-FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_ROUND_LOG ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS $RUNLOG_KEYS"
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_ROUND_LOG WORKTREE_GIT_USER_FROM_ITEM ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS $RUNLOG_KEYS"
 lib_load() {
     env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
@@ -512,6 +513,7 @@ lib_load() {
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
     if round_log_enabled; then echo ENABLE_ROUND_LOG=true; else echo ENABLE_ROUND_LOG=false; fi
+    if commit_identity_from_item_on; then echo WORKTREE_GIT_USER_FROM_ITEM=true; else echo WORKTREE_GIT_USER_FROM_ITEM=false; fi
     if usage_limit_enabled; then echo ENABLE_USAGE_LIMIT_PAUSE=true; else echo ENABLE_USAGE_LIMIT_PAUSE=false; fi
     if _runlog_enabled; then echo ENABLE_POLL_RUN_LOG=true; else echo ENABLE_POLL_RUN_LOG=false; fi
     echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"
@@ -537,9 +539,9 @@ want="$(for k in $LIBKEYS $FNKEYS; do printf '%s=%s\n' "$k" "$(reg_empty "$k")";
 chk "这 $nkeys 项全写成空值后真实加载公共库：是登记表的「写成空值时的值」" "$loaded" "$want"
 chk "确有空值和不写不同的项（轮询记录：不写 = 开、空值 = 关）" "$(reg_unset ENABLE_POLL_RUN_LOG) $(reg_empty ENABLE_POLL_RUN_LOG)" "true false"
 chk "确有空值和不写不同的项（往返记录，GitHub#669：不写 = 开、空值 = 关；公共库写成空值时判定为关）" "$(reg_unset ENABLE_ROUND_LOG) $(reg_empty ENABLE_ROUND_LOG) $(grep -E '^ENABLE_ROUND_LOG=' <<<"$loaded")" "true false ENABLE_ROUND_LOG=false"
-chk "到达性 · 两个默认开的标签开关（GitHub#551）：没写这一行时是标签名，写成空值时公共库读到空" \
-    "$(for k in LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do printf '%s ' "$(reg_unset "$k")"; done)|$(grep -E '^LABEL_PENDING_(BLOCKED|LATER)=' <<<"$loaded" | tr '\n' ' ')" \
-    "pending/blocked pending/later |LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "
+chk "到达性 · 三个默认开的标签开关（等前置 / 暂缓 GitHub#551，托管 GitHub#691）：没写这一行时是标签名，写成空值时公共库读到空" \
+    "$(for k in LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do printf '%s ' "$(reg_unset "$k")"; done)|$(grep -E '^LABEL_(AUTOPILOT|PENDING_BLOCKED|PENDING_LATER)=' <<<"$loaded" | tr '\n' ' ')" \
+    "autopilot pending/blocked pending/later |LABEL_AUTOPILOT= LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "
 chk "同是标签的「等合并」写成空值仍是默认标签：按项登记、不按类型" "$(grep '^LABEL_PENDING_MERGE=' <<<"$loaded")" "LABEL_PENDING_MERGE=pending/merge"
 chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$(shown_of)" "$loaded"
 # 保存这两种新写法：空值 = 关的开关（轮询记录）、「关」本身是空值的开关（外部内容预筛）

@@ -72,6 +72,9 @@ test('Settings: 常用 first, the 高级 cards folded at the bottom; going to on
   for (const id of ['hand-back-settings', 'tally-settings', 'shortcut-settings', 'remote-settings']) await expect(page.getByTestId(id)).toHaveCount(0);
   // the common cards are there
   for (const id of ['language-settings', 'theme-settings', 'pending-settings', 'daemon-settings']) await expect(page.getByTestId(id)).toBeVisible();
+  // the 本机 daemon card reads its status after the page is drawn and grows when it arrives: let it settle first, so
+  // the jump below is not measured while the page above it is still changing length (GitHub#694)
+  await expect(page.getByTestId('daemon-summary')).not.toHaveAttribute('data-state', 'loading', { timeout: 15_000 });
   // a click on 快捷键 in the contents: the block opens and the card is brought into view
   await nav.locator('a[href="#set-keys"]').click();
   await expect(page.getByTestId('settings-advanced')).toHaveAttribute('data-open', 'true');
@@ -262,7 +265,7 @@ test('Settings: a common card\'s less used option is under its own 「高级」'
   await expect(page.getByTestId('app-kind')).toBeVisible();
 });
 
-test('project settings: opens with the 18 common ones; each group\'s 「高级」 and the 高级设置 block hold the rest, all 81 there; a changed value keeps its fold open', async () => {
+test('project settings: opens with the 18 common ones; each group\'s 「高级」 and the 高级设置 block hold the rest, all 86 there; a changed value keeps its fold open', async () => {
   const page = await openSettings();
   const reg = registry();
   await page.getByTestId('daemon-settings').scrollIntoViewIfNeeded();
@@ -293,7 +296,7 @@ test('project settings: opens with the 18 common ones; each group\'s 「高级�
   // the block at the bottom: the advanced groups, and now every registered setting is on the dialog
   await page.getByTestId('config-adv-toggle').click();
   expect(await names()).toEqual([...reg.keys()].sort());
-  expect(reg.size).toBe(81);
+  expect(reg.size).toBe(86);
   // change one in the block and one under a group's 「高级」: neither fold closes while the change is unsaved
   await page.getByTestId('config-input-POLL_DUE_SLACK_SECS').fill('20');
   await page.getByTestId('config-input-DISPATCH_MAX_RETRIES').fill('5');

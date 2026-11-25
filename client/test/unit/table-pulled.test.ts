@@ -163,7 +163,7 @@ describe('GitHub#368: sub-issues stay under a matched parent', () => {
       expect(r).toContain('class="pulled"');
       expect(r).toContain(`title="${PULLED_TITLE}"`);
     }
-    expect(PULLED_TITLE).toBe('此条目不符合搜索条件；因上层有命中的 issue 而显示');
+    expect(PULLED_TITLE).toBe('此条目不符合筛选条件；因上层有命中的 issue 而显示');
   });
 
   it('only a sub-issue matches: as before, a top-level row; hierarchy off: nothing pulled', () => {
