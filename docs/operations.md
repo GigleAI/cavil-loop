@@ -2555,7 +2555,8 @@ echo "snapshots holding a token after / 清理后带令牌的快照: $(with_toke
 ## Post-merge retrospectives
 
 After a PR is merged, a background queue has a model read the PR's whole discussion, write a report to
-`docs/retrospectives/pr-N.md` in the source project and update the project's counted lessons file,
+`docs/retrospectives/pr-N.md` in the source project (another folder of that repository if you set one,
+below) and update the project's counted lessons file,
 which later dispatch and review prompts carry. Off unless `POST_MERGE_RETROSPECTIVE=true`; set it to
 `false` to pause it (the queue is kept). It needs Python 3, a Claude CLI with safe mode and structured
 output, and push access to the project.
@@ -2566,7 +2567,7 @@ output, and push access to the project.
   merges after it. Closed-unmerged PRs are excluded. Automatic cleanup need not be enabled.
 - The collector reads the associated issues, conversation comments, reviews and inline comments with
   pagination. Claude (`RETROSPECTIVE_MODEL=sonnet`) receives the evidence without tools or MCP access.
-- A fixed publisher commits only `docs/retrospectives/pr-N.md` and
+- A fixed publisher commits only the report (`docs/retrospectives/pr-N.md`, or the folder below) and
   `.agents/skills/cavil-loop/prompts/lessons.md` (plus whatever an optional project command changes,
   below) to the **source project's** `origin/$BASE_BRANCH` (`main` by default), using an isolated
   worktree and fast-forward-only push. Project lessons are loaded from that project's remote ref into
@@ -2577,6 +2578,16 @@ output, and push access to the project.
   reviewed for public suitability. Report evidence remains in the source project and local state
   directory.
 - No existing comments or worker labels are changed.
+- **Report folder** (`RETROSPECTIVE_REPORT_DIR`, also editable in the desktop client's project settings):
+  a folder of the project repository, relative to its root, for projects that publish or export
+  `docs/`. Empty or missing = `docs/retrospectives`. Allowed: letters, digits and `. _ -` between
+  single slashes; no slash at the start or end, no `.` or `..` part, nothing inside `.git`. Any
+  other value stops the retrospective before it reads its queue, with the reason in
+  `retrospective.log`; a folder that reaches outside the repository through a symbolic link fails
+  that PR's job (retried hourly, given up after 3 attempts) before the model is called. A PR counts
+  as done when its report is in the configured folder **or** in `docs/retrospectives`, so moving the
+  reports never retrospects (and pays for) the same PR twice. Reports already written stay where
+  they are; move them by hand if you want them in the new folder.
 
 </details>
 

@@ -1,0 +1,39 @@
+# 「项目仓库里的相对目录」（配置类型 repodir，GitHub#688）的正反例，一行一个：<ok|bad>|<值>。
+# 三处实现同一条规则，都拿这份清单对拍：复盘程序 scripts/post-merge-retrospective.py 的 report_dir_problem
+# （tests/retrospective_report_dir_test.py 跑真实入口）、配置脚本 scripts/project-config.sh 的 repodir
+# （同一个文件跑真实 set）、客户端 client/src/shared/daemon.ts 的 fieldProblem（client/test/unit/repodir.test.ts）。
+# 值里不会有 |；`ok|` 是空值（= 使用方的默认目录）。
+ok|
+ok|docs/retrospectives
+ok|internal/retrospectives
+ok|docs/retro-2026
+ok|a
+ok|.retro
+ok|a/.github/b
+ok|a.git
+ok|x_y/z.w
+ok|...
+ok|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab
+bad|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabc
+bad|/abs
+bad|abs/
+bad|/
+bad|../x
+bad|a/../b
+bad|a/./b
+bad|.
+bad|..
+bad|a//b
+bad|.git
+bad|.GIT
+bad|a/.Git/b
+bad|a/.git
+bad|a b
+bad|a\b
+bad|a:b
+bad|a@b
+bad|a,b
+bad|a+b
+bad|~/x
+bad|中文
+bad|a*b

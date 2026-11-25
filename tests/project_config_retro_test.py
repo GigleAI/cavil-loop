@@ -2,7 +2,7 @@
 runs at all and with which modes (GitHub#554).
 
 scripts/config-fields.txt says what RETROSPECTIVE_MODEL, POST_MERGE_RETROSPECTIVE,
-RETROSPECTIVE_PROMOTION and RETROSPECTIVE_DIRECTORY_LESSONS are when the config has no
+RETROSPECTIVE_PROMOTION, RETROSPECTIVE_DIRECTORY_LESSONS and RETROSPECTIVE_REPORT_DIR are when the config has no
 such line. This runs the real entry, scripts/post-merge-retrospective.sh, on one
 queued PR (the sandbox of tests/retrospective_cutoff_test.py: fake gh, real git,
 a local bare origin) with a `claude` that records its arguments, and compares the
@@ -167,6 +167,27 @@ class RetroRuleLimitSameRule(_Retro):
         self.assertEqual({v: a for v, (a, b) in verdicts.items() if a != b}, {}, verdicts)
         # both kinds really occurred
         self.assertEqual({a for a, _ in verdicts.values()}, {True, False})
+
+
+class RetroReportDir(_Retro):
+    """RETROSPECTIVE_REPORT_DIR (GitHub#688): missing / empty = the registered default, the
+    directory the report really lands in; a written value is the one used. Its own cases
+    are in tests/retrospective_report_dir_test.py."""
+
+    def landed(self, *cfg):
+        self.run_once(*cfg)
+        return [d for d in (registered_default('RETROSPECTIVE_REPORT_DIR'), 'internal/retro')
+                if self.on_origin(f'{d}/pr-50.md') is not None]
+
+    def test_line_missing_is_the_registered_default(self):
+        self.assertEqual(registered_default('RETROSPECTIVE_REPORT_DIR'), 'docs/retrospectives')
+        self.assertEqual(self.landed(), ['docs/retrospectives'])
+
+    def test_empty_value_is_the_default_too(self):
+        self.assertEqual(self.landed('RETROSPECTIVE_REPORT_DIR=""'), ['docs/retrospectives'])
+
+    def test_a_written_value_is_the_one_used(self):
+        self.assertEqual(self.landed('RETROSPECTIVE_REPORT_DIR="internal/retro"'), ['internal/retro'])
 
 
 class RetroSwitch(_Retro):

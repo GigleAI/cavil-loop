@@ -18,6 +18,9 @@ export RETROSPECTIVE_RULE_MAX_CHARS="${RETROSPECTIVE_RULE_MAX_CHARS:-300}"
 # 目录经验总开关（GitHub#168），默认打开：打开时只复盘开关生效后合并的 PR，生效前合并、还在排队的
 # 标成已跳过；关掉时照旧复盘所有 PR、不写目录经验。只认 true / false，其余值在扫描前就报错。
 export RETROSPECTIVE_DIRECTORY_LESSONS="${RETROSPECTIVE_DIRECTORY_LESSONS:-true}"
+# 复盘报告写进项目仓库的哪个目录（GitHub#688），相对仓库根；不写 / 留空 = docs/retrospectives。
+# 只认仓库里的相对目录，其余值在 python 侧读队列之前就报错停下。默认目录里已有的报告照样算复盘过。
+export RETROSPECTIVE_REPORT_DIR="${RETROSPECTIVE_REPORT_DIR:-}"
 # 复盘写完经验文件后、提交前在同一个临时 checkout 里跑的项目命令（GitHub#152），空 = 关闭。
 # 它按运行 daemon 的本机用户权限执行：python 侧不把下面换上的写 token 传给它，但这不是隔离。
 export POST_RETROSPECTIVE_PROJECT_CMD="${POST_RETROSPECTIVE_PROJECT_CMD:-}"

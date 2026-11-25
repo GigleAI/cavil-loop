@@ -2,7 +2,7 @@
 # The settings the desktop client's "项目配置" dialog shows (GitHub#388); read by scripts/project-config.sh.
 #
 # 只有登记在这里的配置项会被读出来给客户端，只有登记成 edit 的能被 project-config.sh set 改。
-# 命令、钩子、令牌、网络地址、目录、项目名这几类**不登记**：窗口里能填它们，就等于窗口有了
+# 命令、钩子、令牌、网络地址、本机目录、项目名这几类**不登记**：窗口里能填它们，就等于窗口有了
 # 在本机跑任意命令 / 读凭据的入口（tests/project-config.test.sh 按名单断言它们不在这里）。
 #
 # 格式（| 分隔，两侧空白忽略；# 开头和空行跳过）：
@@ -30,6 +30,10 @@
 #   enum:a=说明,b=说明   几选一；= 后面是给人看的说明
 #   label          标签名：空 = 这个功能关着（只用于 show）
 #   text           原样显示的文字：标签名、标签列表、分支名、字段名这类不是开关的值（只用于 show）
+#   repodir        项目仓库里的相对目录，可以留空（GitHub#688）：用单个 / 分隔的字母、数字、. _ -，不以 / 开头或结尾，
+#                  没有 . 或 .. 段、不进 .git。它是上面「本机目录不登记」的唯一例外：那条防的是本机路径，这一类只能指向
+#                  仓库里面，使用它的代码（复盘）写之前还会拒绝经过符号链接出仓库的路径。规则三处同一份正反例对拍
+#                  （tests/fixtures/repodir-cases.txt，tests/retrospective-report-dir.test.sh）
 #
 # 「不写这一行时的值」一般也是「写成空值时」的值。两者不同的项写成 `不写时的值;empty=写成空值时的值`
 # （例：ENABLE_POLL_RUN_LOG 不写 = 开、写成空值 = 关，登记成 `true;empty=false`）。
@@ -103,6 +107,7 @@ POST_MERGE_RETROSPECTIVE | 合并后复盘 | bool:true:false | true | edit | 合
 RETROSPECTIVE_PROMOTION | 合并后复盘 | enum:auto=直接升成硬规则,confirm=先放进待确认 | auto | show | 经验攒够次数后 |  | 几选一的模式：决定经验是否不经人确认就升成所有 worker 都要遵守的硬规则 | more
 RETROSPECTIVE_DIRECTORY_LESSONS | 合并后复盘 | bool:true:false | true | edit | 记录只在某个目录生效的经验 | 复盘时把只适用于某个目录的经验单独记下 | | more
 RETROSPECTIVE_RULE_MAX_CHARS | 合并后复盘 | int:0:100000 | 300 | edit | 升档时单条经验的字数上限 | 规则、适用、为什么三栏合计超过它就先留在「观察中」，压到上限内后下次复盘自动补升；0 = 不限 | | more
+RETROSPECTIVE_REPORT_DIR | 合并后复盘 | repodir | docs/retrospectives | edit | 复盘报告存放目录 | 复盘报告写进项目仓库的哪个目录（相对仓库根）；留空 = docs/retrospectives。换目录后，默认目录里已有的报告仍算复盘过 | | more
 CI_FAILURE_REPORT_DISPATCH | CI 失败报告 | bool:true:false | false | edit | CI 失败报告直接派给 agent 修 | 主干测试失败开出的报告 issue 直接打派工标签；没配要盯的工作流时不用 | | advanced
 CI_FAILURE_REPORT_MAX_FIX_ATTEMPTS | CI 失败报告 | int:1: | 2 | edit | 修复失败几次后交人 | 同一份报告的修复 PR 合并后测试仍然失败，满这么多次就交 pending/human；没配要盯的工作流时不用 | | advanced
 CI_FAILURE_REPORT_BRANCH | CI 失败报告 | text | main | show | 盯哪个分支上的测试 | 只看这个分支上的工作流运行 | 分支名要和仓库里的一致，改了之后原来那个分支上的失败不再报告 | advanced

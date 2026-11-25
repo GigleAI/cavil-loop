@@ -26,7 +26,9 @@ DEFAULT_PREAMBLE = '# 项目复盘经验\n\n以下经验仅适用于本项目，
 
 
 class NotReady(Exception):
-    """The project's lessons file is still in the old format: skip without calling the model."""
+    """This job cannot be judged yet — the project's lessons file is still in the old format,
+    or git cannot tell whether the PR already has a report: skip without calling the model,
+    and without counting an attempt, so the job waits as long as it takes (never `failed`)."""
 
 
 def command(args, cwd=None, stdin=None, timeout=120):
@@ -172,6 +174,83 @@ def rule_max_chars():
     return int(value)
 
 
+# ── Where the report goes (GitHub#688) ───────────────────────────────────────
+# RETROSPECTIVE_REPORT_DIR: a directory inside the project's repository, relative to its
+# root; unset / empty = REPORT_DIR_DEFAULT, and then every path, commit and instruction
+# is what it was before the setting existed. The same rule is checked by the settings
+# dialog (`repodir` in scripts/project-config.sh and client/src/shared/daemon.ts); one
+# list of values, tests/fixtures/repodir-cases.txt, runs through all three
+# (tests/retrospective-report-dir.test.sh). A report already in REPORT_DIR_DEFAULT still
+# counts as done after the setting moves the reports elsewhere.
+REPORT_DIR_DEFAULT = 'docs/retrospectives'
+REPORT_DIR_MAX = 200
+REPORT_DIR_SEGMENT = re.compile(r'[A-Za-z0-9._-]+')
+
+
+def report_dir_problem(value):
+    """Why `value` is not a directory inside the repository, or None when it is."""
+    if len(value) > REPORT_DIR_MAX:
+        return f'longer than {REPORT_DIR_MAX} characters'
+    for part in value.split('/'):
+        if not REPORT_DIR_SEGMENT.fullmatch(part):
+            return ('must be a relative path: no leading or trailing /, no //, and only letters, '
+                    'digits, . _ - between the slashes')
+        if part in ('.', '..'):
+            return 'must not contain . or .. as a path part'
+        if part.casefold() == '.git':
+            return 'must not point into .git'
+    return None
+
+
+def report_dir():
+    """The configured report directory. Checked by main() before anything is read or
+    written, like the other settings: a bad value stops the round with its reason."""
+    value = os.environ.get('RETROSPECTIVE_REPORT_DIR', '')
+    if value == '':
+        return REPORT_DIR_DEFAULT
+    problem = report_dir_problem(value)
+    if problem:
+        raise SystemExit(f'RETROSPECTIVE_REPORT_DIR {value!r} is not a directory inside the '
+                         f'repository: it {problem}')
+    return value
+
+
+def report_path(number, folder=None):
+    return f'{folder or report_dir()}/pr-{number}.md'
+
+
+def report_on_ref(project, ref, number):
+    """True / False whether `ref` already has this PR's report, in the configured directory
+    or in the default one; None when git cannot tell (never taken for "no report")."""
+    for folder in dict.fromkeys((report_dir(), REPORT_DIR_DEFAULT)):
+        listed = subprocess.run(['git', 'ls-tree', '--name-only', ref, '--', report_path(number, folder)],
+                                cwd=project, capture_output=True, text=True)
+        if listed.returncode != 0:
+            return None
+        if listed.stdout.strip():
+            return True
+    return False
+
+
+def checked_report_target(checkout, path):
+    """The file the report is written to, refused when a part of its path in the checkout
+    is a symbolic link or not a directory: the report must land inside the repository."""
+    root = checkout.resolve()
+    cur = checkout
+    parts = Path(path).parts
+    for i, part in enumerate(parts):
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(f'report path {path} goes through a symbolic link ({"/".join(parts[:i + 1])}); '
+                             'refusing to write outside the repository')
+        if i < len(parts) - 1 and cur.exists() and not cur.is_dir():
+            raise ValueError(f'report path {path}: {"/".join(parts[:i + 1])} is not a directory')
+    target = checkout / path
+    if not target.resolve().is_relative_to(root):
+        raise ValueError(f'report path {path} resolves outside the repository')
+    return target
+
+
 def promotion_mode():
     """auto: 3 sightings promote straight into 硬规则. confirm: they wait in 待确认 for a human."""
     mode = os.environ.get('RETROSPECTIVE_PROMOTION', 'auto')
@@ -195,12 +274,13 @@ RULE_LIMIT = (' 升档有字数上限：要挪段的条目「规则」「适用�
               '挪段最后由程序按这条规则摆放；报告里说某条转正之前先数一下字数。')
 
 
-def render_instruction(template, mode, directories=False, max_chars=0):
+def render_instruction(template, mode, directories=False, max_chars=0, report_folder=REPORT_DIR_DEFAULT):
     rules = DIRECTORY_RULES.replace('${DIR_MAX_CHARS}', str(lessons_format.MAX_DIR_CHARS)) if directories else ''
     limit = RULE_LIMIT.replace('${RULE_MAX_CHARS}', str(max_chars)) if max_chars else ''
     return (template.replace('${PROMOTION_TARGET}', '硬规则' if mode == 'auto' else '待确认')
             .replace('${RULE_LIMIT}', limit)
-            .replace('${DIRECTORY_LESSONS}', rules))
+            .replace('${DIRECTORY_LESSONS}', rules)
+            .replace('${REPORT_DIR}', report_folder))
 
 
 def _tail(text):
@@ -308,11 +388,15 @@ def review(repo, job, queue, root, *, directories):
         raise ValueError('Project origin does not match source REPO; refusing publication')
     base = os.environ.get('BASE_BRANCH', 'main')
     ref = f'origin/{base}'
-    report_path = f'docs/retrospectives/pr-{number}.md'
-    command(['git', 'fetch', 'origin'], project)
-    # Remote report is the durable completion marker, including crash after push.
-    exists = subprocess.run(['git', 'cat-file', '-e', f'{ref}:{report_path}'], cwd=project,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    report_folder = report_dir()
+    report_file = report_path(number, report_folder)
+    # Remote report is the durable completion marker, including crash after push. The same
+    # check as the directory-lessons classification (remote_report: fetch, resolve the branch,
+    # read the tree); any of them failing is "cannot tell", which waits without using an attempt.
+    exists = remote_report(project, base, number, [])
+    if exists is None:
+        raise NotReady(f'cannot read {ref} (fetch, branch or tree read failed) to see whether '
+                       f'PR #{number} already has a report')
     if exists:
         return
     evidence = collect(repo, number)
@@ -323,6 +407,8 @@ def review(repo, job, queue, root, *, directories):
         try:
             lessons_path = project_lessons_path(checkout)
             lessons_file = checkout / lessons_path
+            # Before the paid model call, like the lessons check below.
+            target = checked_report_target(checkout, report_file)
             # Before the paid model call: an old-format file can't be judged.
             old_lessons = baseline(lessons_file.read_text() if lessons_file.exists() else None)
             templates = {p.name: p.read_text() for p in (root / 'prompts').glob('*.template.md')
@@ -337,7 +423,7 @@ def review(repo, job, queue, root, *, directories):
                 # Not shown at all, put back unchanged, and checked byte for byte.
                 shown, reattach = lessons_format.detach_directory_section(old_lessons)
             instruction = render_instruction((root / 'prompts/retrospective.template.md').read_text(),
-                                             mode, directories, max_chars)
+                                             mode, directories, max_chars, report_folder)
             # The held-over-limit line is the program's own (GitHub#600): never shown.
             shown = lessons_format.strip_held(shown)
             payload = {'evidence': evidence, 'templates': templates, 'lessons_markdown': shown}
@@ -364,7 +450,6 @@ def review(repo, job, queue, root, *, directories):
             if lessons_format.summary_log(placed):
                 print(f'{utcnow()} [{repo}] retrospective PR #{number} '
                       f'{lessons_format.summary_log(placed)}', flush=True)
-            target = checkout / report_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(report.rstrip() + '\n')
             lessons_file.parent.mkdir(parents=True, exist_ok=True)
@@ -372,13 +457,13 @@ def review(repo, job, queue, root, *, directories):
             project_cmd = os.environ.get('POST_RETROSPECTIVE_PROJECT_CMD', '').strip()
             if project_cmd:
                 output = run_project_command(project_cmd, checkout, number=number,
-                                             report_path=report_path, lessons_path=lessons_path)
+                                             report_path=report_file, lessons_path=lessons_path)
                 print(f'{utcnow()} [{repo}] retrospective PR #{number} project command ok'
                       + (f': {output}' if output else ''), flush=True)
                 # Everything it changed or created goes into the same commit, except what
                 # the repository's ignore rules exclude (decided on #152).
                 command(['git', 'add', '-A', '--', '.'], checkout)
-            command(['git', 'add', '--', report_path, lessons_path], checkout)
+            command(['git', 'add', '--', report_file, lessons_path], checkout)
             command(['git', 'commit', '-m', f'docs: learn from {repo}#{number}'], checkout)
             # Push is fast-forward only. Concurrent changes/conflicts remain pending.
             command(['git', 'push', 'origin', f'HEAD:{base}'], checkout)
@@ -552,7 +637,7 @@ def job_merged_at(repo, job):
 
 
 def remote_report(project, base, number, fetched):
-    """True / False whether origin/<base> has this PR's report; None when git can't tell
+    """True / False whether origin/<base> has this PR's report (report_on_ref); None when git can't tell
     (fetch failed, the branch can't be resolved, the tree can't be read)."""
     if not fetched:
         try:
@@ -564,11 +649,7 @@ def remote_report(project, base, number, fetched):
     if subprocess.run(['git', 'rev-parse', '-q', '--verify', f'{ref}^{{commit}}'], cwd=project,
                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
         return None
-    listed = subprocess.run(['git', 'ls-tree', '--name-only', ref, '--', f'docs/retrospectives/pr-{number}.md'],
-                            cwd=project, capture_output=True, text=True)
-    if listed.returncode != 0:
-        return None
-    return bool(listed.stdout.strip())
+    return report_on_ref(project, ref, number)
 
 
 def classify(repo, queue, since, log):
@@ -611,6 +692,7 @@ def classify(repo, queue, since, log):
 def main():
     on = directory_switch()
     rule_max_chars()   # a bad value stops here, before the queue is touched (GitHub#600)
+    report_dir()       # same for the report directory (GitHub#688)
     start = utcnow()
     repo = os.environ['REPO']
     root = Path(os.environ['RETROSPECTIVE_SKILL_ROOT'])

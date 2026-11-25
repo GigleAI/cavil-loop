@@ -926,12 +926,20 @@ PENDING_HUMAN_CONFLICT_MAX_TRIES=10
 # After each new merge, archive the review in the SOURCE PROJECT repository.
 # Requires Claude CLI and permission to push the project's origin/$BASE_BRANCH.
 # First run starts at now; one background review at a time, hourly retries.
-# Project reports: docs/retrospectives/pr-N.md
+# Project reports: $RETROSPECTIVE_REPORT_DIR/pr-N.md (docs/retrospectives by default)
 # Project lessons: .agents/skills/cavil-loop/prompts/lessons.md
 # Never publishes project evidence or generated text to the public skill repo.
 # Public workflow improvements require a separate de-identification review.
 POST_MERGE_RETROSPECTIVE=true
 RETROSPECTIVE_MODEL="sonnet"
+# Where in the project repository the reports go, relative to its root (GitHub#688).
+# Empty or missing = docs/retrospectives. Letters, digits, . _ - between single
+# slashes; no leading or trailing slash, no . or .. parts, nothing inside .git. Any
+# other value stops the retrospective before it reads its queue, with the reason in
+# retrospective.log; a path through a symbolic link fails that PR's job. A report
+# already in docs/retrospectives still counts as done after the reports move here,
+# so changing this never retrospects (and pays for) the same PR twice.
+RETROSPECTIVE_REPORT_DIR="docs/retrospectives"
 # Project lessons are a counted error book: a rule seen in 3 different PRs is
 # promoted, and every self-review / cross review checks the promoted rules one
 # by one. auto    = promoted straight into the 硬规则 (hard rules) section

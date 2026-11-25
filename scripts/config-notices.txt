@@ -89,6 +89,7 @@ RETROSPECTIVE_MODEL | quiet | 不写这一行时的行为和模板里的值相�
 RETROSPECTIVE_PROMOTION | quiet | 不写这一行时的行为和模板里的值相同
 RETROSPECTIVE_RULE_MAX_CHARS | quiet | 不写这一行时的行为和模板里的值相同
 RETROSPECTIVE_DIRECTORY_LESSONS | quiet | 不写这一行时的行为和模板里的值相同
+RETROSPECTIVE_REPORT_DIR | quiet | 不写这一行时的行为和模板里的值相同
 POST_RETROSPECTIVE_PROJECT_CMD | quiet | 不写这一行时的行为和模板里的值相同
 CLEANUP_HOOK | quiet | 不写这一行时的行为和模板里的值相同
 PREVIEW_EXEC | quiet | 不写这一行时的行为和模板里的值相同

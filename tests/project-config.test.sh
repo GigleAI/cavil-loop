@@ -115,10 +115,13 @@ chk "整数项带范围" "$(jq -c '.fields[] | select(.name=="MAX_CONCURRENT_WOR
 # 层级（GitHub#591）：每项的 tier 就是登记表第 9 列，原样交给客户端
 chk "每项都带层级，和登记表第 9 列逐项相同" "$(jq -r '.fields[] | "\(.name) \(.tier // "缺")"' <<<"$G")" \
     "$(grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{n = $1; t = $9; gsub(/[ \t]/, "", n); gsub(/[ \t]/, "", t); print n, t}')"
-chk "三种层级的项数（常用 18 / 组内高级 28 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=28"
+chk "三种层级的项数（常用 18 / 组内高级 29 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=29"
 chk_lacks "令牌的值不在输出里" "$G" "ghp_TESTSECRET0000"
 chk_lacks "命令的值不在输出里" "$G" "npm ci"
-chk "命令 / 钩子 / 令牌不是输出的字段" "$(jq -c '[.fields[].name] | map(select(test("CMD|HOOK|TOKEN|EXEC|URL|ROOT|_DIR$|^REPO$|PREFIX")))' <<<"$G")" '[]'
+# 名字以 _DIR 结尾的本机目录不进窗口；类型是 repodir 的是例外（GitHub#688）：它只能是项目仓库里的相对目录，
+# 下一条断言它确实按这个类型校验
+chk "命令 / 钩子 / 令牌不是输出的字段" "$(jq -c '[.fields[] | select(.type != "repodir") | .name] | map(select(test("CMD|HOOK|TOKEN|EXEC|URL|ROOT|_DIR$|^REPO$|PREFIX")))' <<<"$G")" '[]'
+chk "名字带 _DIR 的字段只有仓库内相对目录类型（GitHub#688）" "$(jq -c '[.fields[] | select(.name | test("_DIR$")) | "\(.name):\(.type)"]' <<<"$G")" '["RETROSPECTIVE_REPORT_DIR:repodir"]'
 # 环境里的同名变量不能冒充「配置里设了」
 G2="$(env -i HOME="$H" PATH="$SYS_PATH" DISPATCH_MAX_RETRIES=9 bash "$PC" get widget)"
 chk "调用方环境里的同名变量不算数" "$(field "$G2" DISPATCH_MAX_RETRIES)" '["3",false,true]'
@@ -803,8 +806,10 @@ chk "配置里手写的取余数是 0（会除以零）时改偏移：不让存"
 chk "不碰这三项的保存不做这项检查（配置里已经越界也照常存别的）" "$(pv_combo 'PREVIEW_PORT_BASE=65535' '{"PREVIEW_READY_TIMEOUT":"30"}')" "RESULT=saved changed silent"
 # 唯一的例外 PREVIEW_PORT_BASE：名字以 _BASE 结尾，却是预览端口的起始号（一个整数），不是目录（GitHub#556）
 chk "名字像目录的例外只有预览端口起始号，且它登记成整数" "$(col 3 PREVIEW_PORT_BASE)" "int:0:65535"
+# 另一个例外 RETROSPECTIVE_REPORT_DIR（GitHub#688）：名字以 _DIR 结尾，却只能是项目仓库里的相对目录，不是本机路径
+chk "名字像目录的另一个例外是复盘报告目录，且它登记成仓库内相对目录" "$(col 3 RETROSPECTIVE_REPORT_DIR)" "repodir"
 chk "禁止的类别不在登记表里（命令、钩子、令牌、地址、目录、项目名）" \
-    "$(grep -vx PREVIEW_PORT_BASE <<<"$names" | grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' | tr '\n' ' ')" ""
+    "$(grep -vx -e PREVIEW_PORT_BASE -e RETROSPECTIVE_REPORT_DIR <<<"$names" | grep -E '(_CMD|_HOOK|TOKEN|_EXEC|_URL|_ROOT|_DIR|_BASE|_PREFIX|_FLAGS|_ENV|^REPO|WEBHOOK|_KEY)$' | tr '\n' ' ')" ""
 chk "只显示的那六项确实登记成 show" "$(for k in DISPATCH_MODE LABEL_PENDING_REVIEW LABEL_AUTOPILOT AUTOPILOT_HUMAN_PATHS_EXEMPT_TESTS LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do col 5 "$k"; done | tr '\n' ' ')" "show show show show show show "
 G="$(run get min)"
 chk "get 把只显示行的原因放进 reason" "$(jq -r '.fields[] | select(.name == "LABEL_PENDING_MERGE") | .reason' <<<"$G")" "$(col 8 LABEL_PENDING_MERGE)"
