@@ -4945,9 +4945,11 @@ it will be dispatched — so tidy the labels on the page first.
 
 ### Dispatch fails every round for the same item
 
-A failed dispatch changes nothing, so the next poll picks the same item up again — up to
+A failed dispatch leaves the item as it was (labels included), so the next poll picks the same item up again — up to
 `DISPATCH_MAX_RETRIES` (default 3) times in a row, after which the daemon strips the trigger labels and hands the
-item to `pending/human`. The reason is in `poll.log`:
+item to `pending/human`. Two outcomes do not count as a failure and write nothing: the daemon could not tell whether
+the task reached the worker (the item keeps `doing/agent`; a vanished session is re-queued as usual), or someone
+changed the item while it was being dispatched (closed it, removed the trigger label, pushed to the PR). The reason is in `poll.log`:
 
 <details><summary>Command</summary>
 

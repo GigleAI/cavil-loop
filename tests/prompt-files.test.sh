@@ -39,9 +39,12 @@ yes_() { local n="$1"; shift; if "$@"; then chk "$n" yes yes; else chk "$n" no y
 no_()  { local n="$1"; shift; if "$@"; then chk "$n" yes no; else chk "$n" no no; fi; }
 
 # 假 gh：标题、PR 信息给固定答案，翻标签记一行；假 tmux：new-session 记一行，会话一律「不在」
+export FAKE_ITEM_LABELS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fake_item_labels.sh"
 cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_LOG:?}/gh.log"
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+[ -z "${FAKE_ITEM_LABELS_LIB:-}" ] || FAKE_ITEM_DIR="${FAKE_ITEM_DIR:-$FAKE_LOG/items}" . "$FAKE_ITEM_LABELS_LIB" "$@"
 case "$*" in
     *"/labels"*) echo '[]' ;;
     *"--jq .title"*|*title*) echo "测试标题" ;;
@@ -100,6 +103,7 @@ CONF
 }
 run_in() {   # <根> <脚本> <参数…>
     local root="$1" s="$2"; shift 2
+    rm -rf "$W/log/items"   # 每次派工前条目都挂着 pending/agent（GitHub#700：派工先认领）
     (cd "$W/project" && env FAKE_LOG="$W/log" CODING_AGENT_CONFIG="$W/config" PATH="$SANDBOX/bin:$PATH" \
         timeout 120 bash "$root/scripts/$s" "$@") > "$W/log/$s.out" 2>&1
 }

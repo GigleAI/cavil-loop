@@ -169,9 +169,12 @@ chk "提示词文件不存在：返回失败" "$rc" 1
 
 # ── 4. 真 dispatch-pr-comment.sh ──
 # 假 gh：标题、PR 信息给固定答案，每次调用记一行；假 tmux：new-session 记一行，会话一律「不在」
+export FAKE_ITEM_LABELS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fake_item_labels.sh"
 cat > "$SANDBOX/bin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_LOG:?}/gh.log"
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+[ -z "${FAKE_ITEM_LABELS_LIB:-}" ] || FAKE_ITEM_DIR="${FAKE_ITEM_DIR:-$FAKE_LOG/items}" . "$FAKE_ITEM_LABELS_LIB" "$@"
 case "$*" in
     *"/labels"*) echo '[]' ;;
     *"--jq .title"*|*title*) echo "测试标题" ;;

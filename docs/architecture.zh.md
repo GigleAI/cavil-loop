@@ -193,7 +193,7 @@ greedy 下的闭环靠 worker 自己收口：派工时翻 `doing/agent`（被挡
 几轮撞车、重复派工、同一条评论派两次，分别由一把锁、派工时立刻翻 label、每个条目的评论游标挡住：
 
 - **flock**：`agent-poll.sh` 用 `$STATE_DIR/poll.lock` 防多个 systemd tick 撞车
-- **派工立刻翻 label**：daemon 发现 `pending/agent` → dispatch → **第一件事翻成 `doing/agent`**。下一 tick daemon 看到的是 `doing/agent`，不在 `pending/agent` 扫描范围内，不会重复触发
+- **派工立刻翻 label**：daemon 发现 `pending/agent` → dispatch → **第一件事翻成 `doing/agent`**，并在把任务交给 worker 之前读回确认，worker 一开工就能看到 `doing/agent`。任务交出之后，这一轮 daemon 不再写这条的流程 label。下一 tick daemon 看到的是 `doing/agent`，不在 `pending/agent` 扫描范围内，不会重复触发
 - **doing/agent 也是 UI 信号**：你在 GitHub 上一眼能区分「agent 在干」（doing/agent）和「agent 干完等你」（pending/human），无需 attach tmux 才能知道
 - **state.json**：记录每个 PR「上次见过的最大 comment ID」。同一条评论永远不会被两次派工
 - **active worker 计数**：通过 tmux session 命名约定数活的 worker；超过 `MAX_CONCURRENT_WORKERS` 时新任务排队等下一轮

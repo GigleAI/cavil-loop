@@ -198,7 +198,7 @@ and redispatch → `pending/human` (see
 Overlapping ticks, repeated dispatch and duplicate comments are ruled out by a lock, an immediate label flip and a per-item comment cursor:
 
 - **flock**: `agent-poll.sh` uses `$STATE_DIR/poll.lock` to prevent simultaneous systemd ticks from colliding
-- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `doing/agent`**. Next tick the daemon sees `doing/agent`, which isn't in the `pending/agent` scan set, so no re-dispatch
+- **Label flip is immediate on dispatch**: daemon sees `pending/agent` → dispatches → **first thing it does is flip to `doing/agent`**, and it reads the item back before handing the task over, so the worker always finds `doing/agent` in place when it starts. Once the task is handed over the daemon writes no more flow labels for that round. Next tick the daemon sees `doing/agent`, which isn't in the `pending/agent` scan set, so no re-dispatch
 - **`doing/agent` is also a UI signal**: at a glance on GitHub you can tell "agent is working" (doing/agent) from "agent finished, waiting on you" (pending/human) — no need to attach tmux to know
 - **state.json**: records the highest comment ID seen per PR, so the same comment is never dispatched twice
 - **Active worker counting**: counts live workers via the tmux session naming convention; new tasks queue up when `MAX_CONCURRENT_WORKERS` is reached

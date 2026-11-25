@@ -609,7 +609,7 @@ run_off() {   # <根> <输出目录> <多出来的配置行...>
     gh_state "$(merge "$(self_items)" "$(other_items)")" "$(merge "$(self_labels)" "$(other_labels)")"
     rm -rf "$out"; mkdir -p "$out"
     for k in new cmt pr sub; do dispatch "$root" "$k"; [ -s "$OUT" ] && cp "$OUT" "$out/$k.md"; done
-    cp "$CALLS" "$out/calls.log"
+    compat_merge_calls < "$CALLS" > "$out/calls.log"   # 派工换标签那一段见 compat_claim_calls
 }
 if ! compat_skip "开关关着时四个入口的提示词和 GitHub 调用与改动前" "$OLD" "$NEW" scripts prompts; then
     run_off "$OLD" "$SANDBOX/off-old"

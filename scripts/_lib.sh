@@ -518,11 +518,10 @@ dispatch_claim_reexport() {
     [ -n "$DISPATCH_PHASE" ] || return 0
     export DISPATCH_CLAIM_PHASE="$DISPATCH_PHASE" DISPATCH_CLAIM_PRE="$DISPATCH_PRE_DOC" DISPATCH_CLAIM_POST="$DISPATCH_CLAIM_DOC"
 }
-# 派工脚本收到的期望（轮询主程序传入；人在终端直接跑时没有：有触发标签算 label，否则 free）
+# 派工脚本收到的期望（轮询主程序传入；人在终端直接跑时没有来源：按「本次触发标签还在」核对，
+# 触发标签没传就是配置的默认派工标签——和派工脚本自己用的 LABEL_PENDING_AGENT 同一个值）
 dispatch_env_precheck() {   # <编号>
-    local src="${DISPATCH_CLAIM_SOURCE:-}"
-    [ -n "$src" ] || { [ -n "${DISPATCH_PENDING_AGENT_LABEL:-}" ] && src=label || src=free; }
-    dispatch_precheck "$1" "$src" "${DISPATCH_PENDING_AGENT_LABEL:-}" \
+    dispatch_precheck "$1" "${DISPATCH_CLAIM_SOURCE:-label}" "${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT}" \
         "${DISPATCH_PR_BASE:-}" "${DISPATCH_PR_HEAD:-}" "${DISPATCH_PR_SOURCE:-}"
 }
 

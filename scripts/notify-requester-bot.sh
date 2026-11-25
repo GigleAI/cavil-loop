@@ -25,7 +25,7 @@
 
 # ── External requester bot: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # External requester bot (GitHub#95 / #97: the waiting label, `scripts/notify-requester-bot.sh` (+ the
-# early-name forwarder `notify-relay.sh`), `prompts/requester-bot-handoff.md`, `flip_to_doing`, the
+# early-name forwarder `notify-relay.sh`), `prompts/requester-bot-handoff.md`, `dispatch_claim`, the
 # greedy skip list / self-heal skip, the webhook call (GitHub#100), the daemon's merge / close notice,
 # old `RELAY_*` config names) → `tests/requester-bot.test.sh` (~4 min; a fake webhook on 127.0.0.1 records every request; one timeout case really waits the
 # default 10 s, the others shorten it with `REQUESTER_BOT_WEBHOOK_TIMEOUT` or answer after 2 s,
@@ -35,7 +35,7 @@
 # README rows and `docs/requester-bot*.md` may name a concrete bot (the generated retrospective
 # records under `docs/retrospectives/` are history and are excluded). The handoff rules are appended
 # by `compose_prompt_template`, never written into the built-in templates — projects that replace a
-# whole template would miss them. Every dispatch path flips to `doing/agent` through `flip_to_doing`,
+# whole template would miss them. Every dispatch path flips to `doing/agent` through `dispatch_claim`,
 # so the waiting label is removed in one place. "Is this a bot-filed request" and "call the webhook"
 # live once in `_lib.sh` (`requester_bot_item_origin` / `requester_bot_webhook_notify`), shared by the
 # wake-up script and the merge / close notice — don't copy them. The wake-up script calls the webhook
