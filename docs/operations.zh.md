@@ -5,7 +5,7 @@
 `setup.sh` 之后运维要用到的全在这里：`cavil-loop.config` 里的配置、每个可选功能（做什么、默认开不开、怎么开关）、跑 daemon 的命令、故障排查。每节开头先给结论；规则、边界情况和逐步命令在折叠块里，需要时点开。一个项目怎么接入自己的提示词和命令，见[编排](orchestration.zh.md)。
 
 - **先配这些**：[配置（`cavil-loop.config`）](#配置cavil-loopconfig)
-- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签（可选，默认关闭）](#托管标签可选默认关闭) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
+- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签：`autopilot`](#托管标签autopilot) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
 - **运行 daemon**：[文件结构](#文件结构) · [按 OS 选调度器](#按-os-选调度器) · [多 project 共存](#多-project-共存) · [用脚本安装、查状态、断开](#用脚本安装查状态断开) · [用脚本读 / 改一个项目的常用配置](#用脚本读--改一个项目的常用配置) · [给流程标签改名](#给流程标签改名) · [远程入口：让另一台电脑上的客户端看这台机器的 daemon](#远程入口让另一台电脑上的客户端看这台机器的-daemon) · [升级、迁移、回退与开发模式](#升级迁移回退与开发模式) · [改名前的安装](#改名前的安装) · [手动 cron 兜底](#手动-cron-兜底) · [升级到 webhook（即时触发）](#升级到-webhook即时触发) · [自定义 worker（不是 Claude Code）](#自定义-worker不是-claude-code) · [发版节奏](#发版节奏)
 - **出问题时**：[故障排查](#故障排查)
 
@@ -643,12 +643,12 @@ daemon 和读项目 prompt 文件一样从 `origin/<base>` 读它，结果分三
 
 </details>
 
-## 托管标签（可选，**默认关闭**）
+## 托管标签：`autopilot`
 
 托管让维护者给某个 issue 打一个标签，就把它从方案、代码、复审到合并整个交出去：每一步由独立复审把关，固定条件都满足时
-daemon 自动合并。默认关闭：配 `LABEL_AUTOPILOT`（例如 `autopilot`），同时开着它必需的复审关卡 `LABEL_PENDING_REVIEW`
-即开启；把 `LABEL_AUTOPILOT` 留空即关闭（见[怎么整体关闭托管](#怎么整体关闭托管)）。没打标签的 issue 不受影响；从没开过
-托管的项目，`LABEL_AUTOPILOT` 留空时一切照旧。
+daemon 自动合并。默认开启：配置里没有 `LABEL_AUTOPILOT` 这一行 = 用 `autopilot`；要同时开着它必需的复审关卡
+`LABEL_PENDING_REVIEW` 才生效。写成 `LABEL_AUTOPILOT=""` 即关闭（见[怎么整体关闭托管](#怎么整体关闭托管)）。没打标签的
+issue 不受影响；从没用过托管的项目，写成空值时一切照旧。
 
 <details><summary>流程图</summary>
 
@@ -1254,7 +1254,7 @@ echo "HOST_VERDICT=$verdict"
 
 ### 怎么整体关闭托管
 
-在配置里把 `LABEL_AUTOPILOT` 留空（`LABEL_AUTOPILOT=""`）或删掉那一行就行，不用停定时任务、不用跑别的。下一轮起不再自动合并，
+在配置里写 `LABEL_AUTOPILOT=""` 就行，不用停定时任务、不用跑别的。删掉那一行不算关：没写这一行 = 开。下一轮起不再自动合并，
 本机等合并的 PR 交给人。⚠️ issue 上残留的托管标签在关着时不起作用，但**以后再打开托管，留着它的 issue 会立刻重新进入托管**，
 不想这样就摘掉。
 

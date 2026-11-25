@@ -1720,6 +1720,8 @@ LABEL_PENDING_HUMAN="pending/human"
 # 等前置 / 暂缓 GitHub#551 起没写就开；这里比的是它们关着的状态，写成空值
 LABEL_PENDING_BLOCKED=""
 LABEL_PENDING_LATER=""
+# 托管 GitHub#691 起没写就开；这里比的是它关着的状态，同样写成空值
+LABEL_AUTOPILOT=""
 # 往返记录 GitHub#669 起没写就开；同样写成空值
 ENABLE_ROUND_LOG=""
 LABEL_AGENT_DOING="doing/agent"
@@ -1753,6 +1755,57 @@ CONF
     fi
     chk "到达性 · 关闭时的轮询确实读了 issue / PR 列表" \
         "$(grep -c "repos/example/ap/pulls -f state=open" "$W/new/gh/calls.log")" 2
+}
+
+# GitHub#691：配置里没写 LABEL_AUTOPILOT 这一行 = 开（${LABEL_AUTOPILOT-autopilot}）。同一组条目、同一份脚本，
+# 没写这一行和写了 LABEL_AUTOPILOT="autopilot" 两轮轮询的 GitHub 调用、state.json 逐条相同，而且托管确实动了
+default_on_mode() {
+    local W="$SANDBOX/default-on" v out
+    for v in explicit missing; do
+        out="$W/$v"; rm -rf "$out"; mkdir -p "$out/state" "$out/wt" "$out/gh"
+        git init -q "$out/project" 2>/dev/null
+        export FAKE_GH_DIR="$out/gh" FAKE_GH_REPO="example/ap"
+        cat > "$out/conf" <<CONF
+REPO="example/ap"
+PROJECT_ROOT="$out/project"
+WORKTREE_BASE="$out/wt"
+STATE_DIR="$out/state"
+TMUX_PREFIX="apdef"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+LABEL_PENDING_BLOCKED=""
+LABEL_PENDING_LATER=""
+ENABLE_ROUND_LOG=""
+LABEL_AGENT_DOING="doing/agent"
+LABEL_PENDING_REVIEW="pending/review"
+POST_MERGE_RETROSPECTIVE=false
+POLL_BACKOFF_LADDER=""
+PRICE_AUTO_FETCH=0
+MAX_CONCURRENT_WORKERS=0
+PATH="$SANDBOX/bin:\$PATH"
+CONF
+        [ "$v" = explicit ] && printf 'LABEL_AUTOPILOT="autopilot"\n' >> "$out/conf"
+        echo '{"5":{"kind":"issue","state":"open","title":"t","body":"x","user":{"login":"maint"}},
+               "6":{"kind":"issue","state":"open","title":"t","body":"x","user":{"login":"maint"}},
+               "7":{"kind":"issue","state":"open","title":"t","body":"x","user":{"login":"maint"}},
+               "8":{"kind":"pr","state":"open","merged":false,"title":"t","body":"Closes #7","user":{"login":"loop-bot"},
+                    "head":{"sha":"'"$H1"'","ref":"feature/issue-7","repo":{"full_name":"example/ap"}},"base":{"ref":"main"},
+                    "mergeable":true,"mergeable_state":"clean"}}' > "$out/gh/items.json"
+        echo '{"5":["autopilot"],"6":["autopilot","pending/agent"],"7":["autopilot","pending/PR"],"8":["pending/merge","pending/review","autopilot"]}' > "$out/gh/labels.json"
+        echo '{"5":[{"event":"labeled","label":{"name":"autopilot"},"actor":{"login":"maint","type":"User"}}]}' > "$out/gh/events.json"
+        for f in comments checks files; do echo '{}' > "$out/gh/$f.json"; done
+        echo '{"maint":"admin"}' > "$out/gh/perms.json"; echo loop-bot > "$out/gh/me"
+        env CODING_AGENT_CONFIG="$out/conf" bash "$REPO_DIR/scripts/agent-poll.sh" >/dev/null 2>&1
+        env CODING_AGENT_CONFIG="$out/conf" bash "$REPO_DIR/scripts/agent-poll.sh" >/dev/null 2>&1
+    done
+    chk "没写托管那一行：两轮轮询的 GitHub 调用和写了 autopilot 的逐条一致" \
+        "$(diff <(sed "s|$W/missing|W|g" "$W/missing/gh/calls.log") <(sed "s|$W/explicit|W|g" "$W/explicit/gh/calls.log") >/dev/null && echo same || echo diff)" same
+    chk "没写托管那一行：state.json 和写了 autopilot 的逐字节一致" \
+        "$(cmp -s <(jq -S . "$W/missing/state/state.json") <(jq -S . "$W/explicit/state/state.json") && echo same || echo diff)" same
+    chk "到达性 · 没写托管那一行时托管确实动了：查了 #5 的授权记录、state.json 有托管记录" \
+        "$(grep -c 'issues/5/events' "$W/missing/gh/calls.log" | awk '{print ($1 > 0)}') $(jq -r 'has("autopilot")' "$W/missing/state/state.json")" "1 true"
 }
 
 # 拼提示词：走 dispatch 脚本真正用的那个拼装函数。$1 = scripts+prompts 根，$2 = 模板名，其余是环境变量
@@ -1789,7 +1842,8 @@ prompts_check() {
     # 旧脚本那边的 prompts/ 已换成当前的，所以两边只差 scripts/
     if compat_skip "四份提示词与改动前" "$SANDBOX/old" "$root" scripts prompts; then names=""; fi
     for name in $names; do
-        for env_set in "LABEL_PENDING_REVIEW=pending/review" "LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=autopilot" \
+        # 托管 GitHub#691 起没写就开：第一组「关着」写成空值（compose 的配置里不写这一行，留给环境变量决定）
+        for env_set in "LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=" "LABEL_PENDING_REVIEW=pending/review LABEL_AUTOPILOT=autopilot" \
                        "LABEL_PENDING_REVIEW= LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_ISSUE=7" \
                        "LABEL_PENDING_REVIEW= LABEL_AUTOPILOT=autopilot DISPATCH_AUTOPILOT=1 DISPATCH_AUTOPILOT_PR=8"; do
             # shellcheck disable=SC2086
@@ -1878,6 +1932,7 @@ RS_ALL=0; run_scenarios "$REPO_DIR/scripts"; RS_ALL=1
 if part_on 1; then
 section "【8】功能关闭：和改动前逐字节一致"
 off_mode
+default_on_mode
 prompts_check "$REPO_DIR"
 fi
 REAL_PASS=$pass; REAL_FAIL=$fail

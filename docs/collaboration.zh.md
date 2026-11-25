@@ -164,7 +164,7 @@ monorepo 里有 `frontend/`（React）和 `backend/`（Go），就跑两个 cavi
 
 ## 托管：一条 issue 从头交到尾
 
-配了 `LABEL_AUTOPILOT`（默认关，要求开着复审关卡）后，维护者可以把单个 issue——或者已经开好的 PR——整个交出去：方案和代码只过复审，daemon 按固定条件自己合并 PR。它是「模式标签」，和上面的分工方式并存；细节和合并条件见 [operations](operations.zh.md#托管标签可选默认关闭)。
+`LABEL_AUTOPILOT` 开着时（默认开，要求开着复审关卡），维护者可以把单个 issue——或者已经开好的 PR——整个交出去：方案和代码只过复审，daemon 按固定条件自己合并 PR。它是「模式标签」，和上面的分工方式并存；细节和合并条件见 [operations](operations.zh.md#托管标签autopilot)。
 
 ## 实操注意点
 

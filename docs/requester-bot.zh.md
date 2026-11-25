@@ -341,7 +341,7 @@ REQUESTER_BOT_WAKE_ANY_ITEM=true     # 默认 false
 | 代码复审通过（`REQUESTER_BOT_REPORT_FIRST=false`） | 交维护者合并 | `pending/merge` → daemon 合并 |
 | 合并后 | daemon 发合并结果评论 | 同左 |
 
-认可之后又有新提交（比如维护者在 PR 上提了修改），旧认可作废，要重新复审、重新汇报。daemon 不判断评论内容：「认可的是哪个提交」由复审按[交接规则的证据规则](#grokbot-那边要照做的约定)核对，daemon 合并前的检查一条不少。这些规则由派工提示词里「外部需求机器人提的需求 + 托管」一段交给 worker 和复审，只在两个功能都开、条目是托管条目时出现。见 [operations](operations.zh.md#托管标签可选默认关闭)。
+认可之后又有新提交（比如维护者在 PR 上提了修改），旧认可作废，要重新复审、重新汇报。daemon 不判断评论内容：「认可的是哪个提交」由复审按[交接规则的证据规则](#grokbot-那边要照做的约定)核对，daemon 合并前的检查一条不少。这些规则由派工提示词里「外部需求机器人提的需求 + 托管」一段交给 worker 和复审，只在两个功能都开、条目是托管条目时出现。见 [operations](operations.zh.md#托管标签autopilot)。
 
 </details>
 

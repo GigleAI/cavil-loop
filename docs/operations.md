@@ -5,7 +5,7 @@
 Everything an operator needs after `setup.sh`: the settings in `cavil-loop.config`, each optional feature (what it does, whether it is on by default, how to switch it), the commands for running the daemon, and troubleshooting. Each section starts with the short answer; open the folded blocks for rules, edge cases and step-by-step commands. How a project plugs in its own prompts and commands is in [Orchestration](orchestration.md).
 
 - **Set up first**: [Configuration (`cavil-loop.config`)](#configuration-cavil-loopconfig)
-- **Features, one per section**: [Queue order when the pool is full](#queue-order-when-the-pool-is-full) · [Model-selecting trigger labels](#model-selecting-trigger-labels) · [Waiting on another item: `pending/blocked`](#waiting-on-another-item-pendingblocked) · [Parked for later: `pending/later`](#parked-for-later-pendinglater) · [Auto-add issues / PRs to GitHub Projects (optional, off by default)](#auto-add-issues--prs-to-github-projects-optional-off-by-default) · [Optional cross-review gate (off by default)](#optional-cross-review-gate-off-by-default) · [Autopilot label (optional, off by default)](#autopilot-label-optional-off-by-default) · [External requester bot (optional, off by default)](#external-requester-bot-optional-off-by-default) · [Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`)](#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log) · [Comment usage footer](#comment-usage-footer) · [Codex token value estimates](#codex-token-value-estimates) · [Automatic price gap fill](#automatic-price-gap-fill) · [Agent hit its usage limit: pause that agent, hand the interrupted item to a human](#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human) · [Heavy tests: one at a time (optional, off by default)](#heavy-tests-one-at-a-time-optional-off-by-default) · [Report a failed test workflow on the base branch (off by default)](#report-a-failed-test-workflow-on-the-base-branch-off-by-default) · [GitHub token redaction](#github-token-redaction) · [Post-merge retrospectives](#post-merge-retrospectives) · [On-demand preview (socket activation)](#on-demand-preview-socket-activation) · [Public entry for comment images: images and videos only](#public-entry-for-comment-images-images-and-videos-only) · [Prompt templates](#prompt-templates) · [Cleanup hook (`CLEANUP_HOOK`)](#cleanup-hook-cleanup_hook)
+- **Features, one per section**: [Queue order when the pool is full](#queue-order-when-the-pool-is-full) · [Model-selecting trigger labels](#model-selecting-trigger-labels) · [Waiting on another item: `pending/blocked`](#waiting-on-another-item-pendingblocked) · [Parked for later: `pending/later`](#parked-for-later-pendinglater) · [Auto-add issues / PRs to GitHub Projects (optional, off by default)](#auto-add-issues--prs-to-github-projects-optional-off-by-default) · [Optional cross-review gate (off by default)](#optional-cross-review-gate-off-by-default) · [Autopilot label: `autopilot`](#autopilot-label-autopilot) · [External requester bot (optional, off by default)](#external-requester-bot-optional-off-by-default) · [Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`)](#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log) · [Comment usage footer](#comment-usage-footer) · [Codex token value estimates](#codex-token-value-estimates) · [Automatic price gap fill](#automatic-price-gap-fill) · [Agent hit its usage limit: pause that agent, hand the interrupted item to a human](#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human) · [Heavy tests: one at a time (optional, off by default)](#heavy-tests-one-at-a-time-optional-off-by-default) · [Report a failed test workflow on the base branch (off by default)](#report-a-failed-test-workflow-on-the-base-branch-off-by-default) · [GitHub token redaction](#github-token-redaction) · [Post-merge retrospectives](#post-merge-retrospectives) · [On-demand preview (socket activation)](#on-demand-preview-socket-activation) · [Public entry for comment images: images and videos only](#public-entry-for-comment-images-images-and-videos-only) · [Prompt templates](#prompt-templates) · [Cleanup hook (`CLEANUP_HOOK`)](#cleanup-hook-cleanup_hook)
 - **Running the daemon**: [File layout](#file-layout) · [Scheduler by OS](#scheduler-by-os) · [Running multiple projects](#running-multiple-projects) · [Scripted install, status and disconnect](#scripted-install-status-and-disconnect) · [Edit a project's settings from a script](#edit-a-projects-settings-from-a-script) · [Rename a flow label](#rename-a-flow-label) · [Remote access: let the client on another computer see this machine's daemon](#remote-access-let-the-client-on-another-computer-see-this-machines-daemon) · [Upgrading, migration, rollback, and development mode](#upgrading-migration-rollback-and-development-mode) · [Installations from before the rename](#installations-from-before-the-rename) · [Manual cron fallback](#manual-cron-fallback) · [Upgrading to webhooks (instant trigger)](#upgrading-to-webhooks-instant-trigger) · [Custom worker (not Claude Code)](#custom-worker-not-claude-code) · [Release cadence](#release-cadence)
 - **When something goes wrong**: [Troubleshooting](#troubleshooting)
 
@@ -753,13 +753,13 @@ its test-evidence rules; its `review.extra.md` keeps the comment-writing rules.
 
 </details>
 
-## Autopilot label (optional, **off by default**)
+## Autopilot label: `autopilot`
 
 With autopilot a maintainer hands one issue over end to end — design, code, review and merge — by putting a label on it;
-an independent review checks each step and the daemon merges once fixed conditions hold. It is off by default: turn it on
-by setting `LABEL_AUTOPILOT` (e.g. `autopilot`) together with the review gate `LABEL_PENDING_REVIEW`, which it requires;
-turn it off by leaving `LABEL_AUTOPILOT` empty (see [Turning autopilot off](#turning-autopilot-off)). Issues without the
-label are not affected, and with `LABEL_AUTOPILOT` empty nothing changes for a project that never turned it on.
+an independent review checks each step and the daemon merges once fixed conditions hold. On by default: a config without
+the `LABEL_AUTOPILOT` line uses `autopilot`; it only takes effect together with the review gate `LABEL_PENDING_REVIEW`,
+which it requires. `LABEL_AUTOPILOT=""` turns it off (see [Turning autopilot off](#turning-autopilot-off)). Issues
+without the label are not affected, and with `LABEL_AUTOPILOT=""` nothing changes for a project that never used it.
 
 <details><summary>Flow</summary>
 
@@ -1483,8 +1483,8 @@ echo "HOST_VERDICT=$verdict"
 
 ### Turning autopilot off
 
-Leave `LABEL_AUTOPILOT` empty in the config (`LABEL_AUTOPILOT=""`) or delete the line — no timer to stop, nothing else to
-run. From the next round nothing is auto-merged, and PRs this machine had waiting on the merge label are handed to a human.
+Write `LABEL_AUTOPILOT=""` in the config — no timer to stop, nothing else to run. Deleting the line does not turn it off:
+a missing line means on. From the next round nothing is auto-merged, and PRs this machine had waiting on the merge label are handed to a human.
 ⚠️ Autopilot labels left on issues do nothing while the switch is off, but **once autopilot is turned on again every issue
 still carrying it is back on autopilot** — remove them if that is not what you want.
 
