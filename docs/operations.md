@@ -1497,7 +1497,7 @@ still carrying it is back on autopilot** — remove them if that is not what you
 - queued and running work is not cleared — it finishes the normal way and ends with a human; completed merges stay.
 
 Only PRs this machine had on autopilot are touched (recorded under `autopilot.prs` in `state.json`), so a same-named label
-used elsewhere is left alone and a project that never turned autopilot on makes no extra GitHub call.
+used elsewhere is left alone and a project that never used autopilot makes no extra GitHub call.
 
 </details>
 

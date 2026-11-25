@@ -1265,7 +1265,7 @@ echo "HOST_VERDICT=$verdict"
   跑完的复审若又翻出等合并，下一轮照样收；
 - 排队中、正在跑的活不清空，照普通流程走完、交人；已完成的合并不撤回。
 
-只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没开过托管的项目一个
+只认本机托管过的 PR（`state.json` 的 `autopilot.prs` 有记录）：别的项目恰好也有同名标签不受影响，从没用过托管的项目一个
 GitHub 调用都不多。
 
 </details>

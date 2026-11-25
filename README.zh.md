@@ -174,7 +174,7 @@ Worker 用的是你本来就付月费的 `claude` CLI（或其他 coding CLI）�
 
 - ❌ **不是云端服务**：跑在你自己的电脑 / NAS。机器关机就停
 - ❌ **不替代代码 review**：AI 会改代码 + 自动推送，review 仍是你的事。建议主分支保护 + required reviewer
-- ❌ **不会自作主张 merge**：merge / 关 PR 是你的事——唯一例外是你明确给某个 issue 打了托管标签（默认关闭，逐条授权）
+- ❌ **不会自作主张 merge**：merge / 关 PR 是你的事——唯一例外是你明确给某个 issue 打了托管标签（逐条亲手授权）
 
 ---
 

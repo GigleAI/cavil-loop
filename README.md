@@ -174,7 +174,7 @@ What counts as actionable, queue order, several repos on one board, the prompt, 
 
 - ❌ **Not a cloud service**: runs on your laptop / NAS. Machine off = it stops
 - ❌ **Doesn't replace code review**: the AI changes code and auto-pushes, review is still your job. Protect main + require reviewers
-- ❌ **Doesn't auto-merge on its own**: merging / closing PRs is your call — the only exception is an issue you explicitly put on autopilot (off by default, opt in per issue)
+- ❌ **Doesn't auto-merge on its own**: merging / closing PRs is your call — the only exception is an issue you explicitly put on autopilot (each issue opted in by hand)
 
 ---
 
