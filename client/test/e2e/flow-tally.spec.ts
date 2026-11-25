@@ -475,8 +475,9 @@ test('GitHub#514: Settings → 顶栏计数 shows a live preview — the bar\'s 
   await expect.poll(() => page.evaluate(async () => ((await (window as any).cavil.get()).state.sync.sources as { ok: boolean }[]).map((s) => s.ok)), { timeout: 20_000 }).toEqual([true, true]);
   await page.locator('[data-testid="layout"] button[data-value="board"]').click();
   await expect(page.getByTestId('tally')).toHaveCount(5);
-  // and keeps room to spare: a count one digit longer must not wrap it (measured: 46 px spare now; 6 px with the
-  // numbers' old spacing, which wrapped as soon as "等人处理" reached two digits)
+  // and keeps room to spare: a count one digit longer must not wrap it (measured: 46 px spare then; 6 px with the
+  // numbers' old spacing, which wrapped as soon as "等人处理" reached two digits). GitHub#689 added 「只看我的」 to the
+  // bar as a text-only button: 52 px spare measured with it (Chromium, 2026-11-25)
   const room = await page.locator('.vbar').evaluate((v) => {
     const cs = getComputedStyle(v);
     const kids = [...v.children];

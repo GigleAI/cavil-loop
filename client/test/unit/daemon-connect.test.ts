@@ -86,7 +86,7 @@ describe('the dialog\'s facts', () => {
     const i = await b.call('daemonConnectInfo', { repo: REPO });
     expect(i.result).toBe('ok');
     expect(i.agents[0]).toBe('claude');
-    expect([...i.agents].sort()).toEqual(['claude', 'codex', 'cursor', 'opencode']);
+    expect([...i.agents].sort()).toEqual(['claude', 'codex', 'cursor', 'opencode', 'pi']); // pi: scripts/drivers/pi.sh (#683)
     expect(i.candidates).toEqual([mine]);
     expect(i.connected).toEqual([]);
     expect(i.clone_parent).toBe(join(w.home, 'github'));

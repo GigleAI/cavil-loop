@@ -11,6 +11,7 @@ import type { BlockedLabels, EntryState, NumberSettled, Pick as BlockedPick, Ref
 import type { SendAction } from './sends';
 import type { RenameAnswer, RenameArgs, RenameCmd, StoppedMachine } from './labelRename';
 import type { HandBackSlot } from './repoLabels';
+import type { MineFilter } from './uiPrefs';
 import type { ConfigRead, ConfigSave, ConnectInfo, ConnectPoll, DaemonResult, DaemonStatus, DaemonUpdate, DirCheck, Precheck2 } from './daemon';
 import type { HostAction, HostResult, HostStatus, RemoteList, RemoteRead, RemoteResult, TailnetList } from './remote';
 import type { LangSetting, Said } from './i18n';
@@ -202,6 +203,8 @@ export interface CavilApi {
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
   /** fold / unfold one board swimlane, by repository (GitHub#297) */
   setLaneFold(lane: string, folded: boolean): Promise<void>;
+  /** GitHub#689: change 「只看我的」 (the switch and / or its two boxes); unticking the last box is refused */
+  setMineFilter(patch: Partial<MineFilter>): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;
   /** GitHub#487: change one shortcut's key, or (`spec` null) put it back to its defaults; refused when the table would have a conflict */
