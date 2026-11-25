@@ -785,7 +785,11 @@ has "!cancelled()" "$(grep '^if' "$TMP/rf-static")" "not on a cancelled run"
 has "contains(needs.*.result, 'failure')" "$(grep '^if' "$TMP/rf-static")" "on any failed job, whatever the trigger"
 lacks "event_name" "$(grep '^if' "$TMP/rf-static")" "no trigger is excluded"
 check "only this job gets issue write + run read" "$(grep '^perms' "$TMP/rf-static")" "perms ['actions=read', 'contents=read', 'issues=write']"
-check "no other job gets its own permissions" "$(grep '^others' "$TMP/rf-static")" "others []"
+# The one exception is the job that calls client.yml: GitHub refuses to start the whole run when a
+# called workflow's jobs ask for more than the calling job grants (client.yml's nightly report job asks
+# for issues: write + actions: read; that job only runs on the nightly schedule, never in a call).
+# tests/workflow-call-permissions.test.sh checks the grant covers what the called jobs ask for.
+check "no other job gets its own permissions, except the client.yml call" "$(grep '^others' "$TMP/rf-static")" "others ['client']"
 has "script True" "$(cat "$TMP/rf-static")" "runs the report script"
 check "the display name the script leaves out of its job table" "$(grep '^name' "$TMP/rf-static")" "name report failure"
 
