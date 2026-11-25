@@ -2,8 +2,7 @@
 # kind: e2e
 # 守护程序把本仓库 issue / PR 自动加进 Project 的守卫 —— GitHub#116。
 #
-# 跑法：bash tests/project-auto-add.test.sh              （默认不跑负对照，约 1 分钟）
-#       MUTATION=1 bash tests/project-auto-add.test.sh   （连 16 项负对照一起跑；见 tests/lib/mutation.sh）
+# 跑法：bash tests/project-auto-add.test.sh              （约 1 分钟）
 #       ONLY=s_basic bash tests/project-auto-add.test.sh  （只跑一组场景，排查用）
 # 依赖：jq、python3。不碰网络：假 gh（tests/fixtures/project-auto-add-fake-gh.py）是带状态的最小
 # GitHub——多个 Project、每个 Project 谁能读谁能写、条目分页、按段 / 按页的故障注入——每次调用
@@ -20,15 +19,12 @@
 #   · 读身份看不见 Project 还去写 → 每个条目都显得「不在里面」，每轮全量写一遍；
 #   · 一个 Project 读失败拖住另一个 → 新加的看板读不全时，老看板也停止同步；
 #   · 新加看板触发的全量读取让老看板也顺手补老条目 → 人从老看板里拿掉的卡片被塞回去。
-# 末尾的负对照（MUTATION=1）把这 16 种错误分别塞进脚本副本，断言对应场景变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 FAKE="$TEST_DIR/fixtures/project-auto-add-fake-gh.py"
 
 unset CODING_AGENT_RELEASE_ROOT CLAUDE_PLUGIN_ROOT CAVIL_DEPLOY_ROOT CAVIL_DEPLOY_CONF \
@@ -50,7 +46,6 @@ chk() {
     if [ "$2" = "$3" ]; then [ "$QUIET" = 1 ] || echo "  ✅ $1"; pass=$((pass+1))
     else [ "$QUIET" = 1 ] || echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
 }
-PREP_FAILED="$SANDBOX/prep-failed"; : > "$PREP_FAILED"
 
 # ── 被测脚本副本：派工脚本换成桩（记一行），其余原样 ──
 make_copy() {   # <目标目录>
@@ -152,7 +147,7 @@ seed_done() {   # <key> <pid> <enabled 几秒前> <last_sync 几秒前>
 }
 
 # ═════════════════════════════════════════════════════════════════════════
-# 场景：每个函数一组，负对照拿同一个函数在改坏的副本上重跑
+# 场景：每个函数一组
 # ═════════════════════════════════════════════════════════════════════════
 
 s_disabled() {
@@ -497,77 +492,7 @@ ALL_SCENARIOS=(s_disabled s_basic s_paging s_tokens s_write_denied s_read_fail s
                s_read_isolation s_item_projects s_read_blind s_case)
 for s in "${ONLY:-${ALL_SCENARIOS[@]}}"; do "$s"; done
 
-# ═════════════════════════════════════════════════════════════════════════
-echo "── 负对照：改坏一处，对应场景必须变红 ──"
-# ═════════════════════════════════════════════════════════════════════════
-MUT_RAN=0
-mutate() {   # <名> <场景> <文件> <原文> <改成>
-    local name="$1" scen="$2" file="$3" old="$4" new="$5"
-    mutation_gate || return 0
-    local D="$SANDBOX/mut-$name"
-    make_copy "$D"
-    if ! python3 - "$D/scripts/$file" "$old" "$new" <<'PY'
-import sys
-p, old, new = sys.argv[1:]
-s = open(p).read()
-if old not in s:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
-PY
-    then
-        echo "  ❌ 负对照「$name」准备失败：$file 里找不到要改的原文"; echo "$name" >> "$PREP_FAILED"; return 0
-    fi
-    local p0="$pass" f0="$fail"
-    SCRIPTS="$D"; QUIET=1
-    "$scen"
-    SCRIPTS="$SCRIPTS_REAL"; QUIET=0
-    local red=$((fail - f0))
-    pass="$p0"; fail="$f0"; MUT_RAN=$((MUT_RAN + 1))
-    chk "负对照「$name」→ $scen 变红（$red 条）" "$([ "$red" -gt 0 ] && echo red || echo green)" red
-}
-PAA=project-auto-add.sh
-mutate "去掉已在里面就跳过" s_basic "$PAA" \
-    '| select((.projects | index($p)) == null)]' ']'
-mutate "去掉留空就关闭" s_disabled _lib.sh \
-    "[ -n \"\$(printf '%s' \"\${AUTO_ADD_PROJECTS:-}\" | tr -d ' ,\\t\\n')\" ] || return 0" ':'
-mutate "只读第一页" s_paging "$PAA" \
-    'if [ "$nxt" != true ]; then' 'if true; then'
-mutate "写操作改用读令牌" s_tokens "$PAA" \
-    'r=$(gh_write api graphql -f p=' 'r=$(project_gh_graphql -f p='
-mutate "候选只认开着的" s_candidates "$PAA" \
-    '(.state == "OPEN" or .createdAt > $en)' '(.state == "OPEN")'
-mutate "去掉开启前已关闭的不加" s_candidates "$PAA" \
-    '(.state == "OPEN" or .createdAt > $en)' 'true'
-mutate "已同步完的 Project 顺手补别人多读到的老条目" s_add_second "$PAA" \
-    '($ini == "1" and .state == "OPEN")' '(.state == "OPEN")'
-mutate "失败也推进同步时间" s_isolation_write "$PAA" \
-    'if [ "$read_ok" = 1 ] && [ -z "$write_err" ] && [ "$unknown_n" = 0 ]; then' 'if true; then'
-mutate "首次也只扫最近时间窗口" s_first_enable "$PAA" \
-    '[ "${INITIAL[$k]}" = 1 ] && need_open=1' ':'
-mutate "首次全量失败也写已完成" s_initial_retry "$PAA" \
-    'paa_warn_once "$k" "${why}，同步时间不推进，下一轮重试"' \
-    'paa_set ".projects[\$k].initial_done = true" --arg k "$k"; paa_warn_once "$k" "${why}，同步时间不推进，下一轮重试"'
-mutate "开启时间改成每次重试的当前时间" s_restart "$PAA" \
-    '[ -n "$(paa_get "$k" enabled_at)" ] || paa_set' 'paa_set'
-mutate "读身份看不见 Project 仍去写" s_read_blind "$PAA" \
-    'paa_warn_once "$k" "${WHY[$k]:-读取失败}，本轮不写"; continue' ':'
-mutate "任意读失败就让所有 Project 都不推进" s_read_isolation "$PAA" \
-    'covered ri "${CUT[$k]}" && covered rp "${CUT[$k]}" || read_ok=0' \
-    '[ "${SEG_FAIL[ri]}${SEG_FAIL[rp]}${SEG_FAIL[oi]}${SEG_FAIL[op]}" = 0000 ] && covered ri "${CUT[$k]}" && covered rp "${CUT[$k]}" || read_ok=0'
-
-mutate "配置里的组织名不归一大小写" s_case "$PAA" \
-    '        t=$(paa_canon "$t")
-' ''
-mutate "已有状态的键不归一大小写" s_case "$PAA" \
-    '| group_by(.key | ascii_downcase)
-        | map({key: (.[0].key | ascii_downcase),' '| group_by(.key)
-        | map({key: .[0].key,'
-mutate "同一个看板的不同写法不去重" s_case "$PAA" \
-    'if [ -n "${PID_OWNER[$pid]:-}" ]; then' 'if false; then'
-
-if [ -s "$PREP_FAILED" ]; then fail=$((fail + $(wc -l < "$PREP_FAILED"))); fi
 echo
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

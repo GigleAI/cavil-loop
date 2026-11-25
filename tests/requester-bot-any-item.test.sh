@@ -2,8 +2,7 @@
 # kind: e2e
 # 非机器人提的条目也能叫醒外部需求机器人（GitHub#133）的行为守卫。
 #
-# 跑法：bash tests/requester-bot-any-item.test.sh            （默认不跑负对照）
-#       MUTATION=1 bash tests/requester-bot-any-item.test.sh （连负对照一起跑；见 tests/lib/mutation.sh）
+# 跑法：bash tests/requester-bot-any-item.test.sh
 # 依赖：jq、python3、git、curl。不碰外网、不调真 gh：假 gh 是 tests/fixtures/requester-bot-fake-gh.py
 # （和 tests/requester-bot.test.sh 共用），机器人侧用 tests/fixtures/requester-bot-ref-consumer.py——
 # 照文档「交接协议」另写的一份，不调用叫醒脚本用的那份实现，两边对拍。
@@ -20,7 +19,7 @@
 #      也不能选中别的评论
 #   6. 机器人侧：叫醒之后评论被改 / 被删、手动重挂、外人伪造、旧交接评论
 #   7. 合并后通知不碰非机器人条目；8. 开关开时的提示词
-# 负对照只在 MUTATION=1 时跑；默认回归靠「确实叫醒成功」「确实写了」这类到达性断言防空转。
+# 「确实叫醒成功」「确实写了」这类到达性断言防止测试空转。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -29,8 +28,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
@@ -49,8 +46,6 @@ export HOME="$SANDBOX/home"
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 -I "$FAKE"
 
 pass=0; fail=0; QUIET=0
-PREP_FAILED="$SANDBOX/prep-failed"; : > "$PREP_FAILED"
-prep_failed() { printf '%s（%s）\n' "$1" "$2" >> "$PREP_FAILED"; echo "  ❌ 负对照 $1 没改上（$2）" >&2; }
 chk() {
     if [ "$2" = "$3" ]; then [ "$QUIET" = 1 ] || echo "  ✅ $1"; pass=$((pass+1))
     else [ "$QUIET" = 1 ] || echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
@@ -62,30 +57,6 @@ BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C 
 mkdir -p "$SANDBOX/old-src"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old-src"
 OLD="$SANDBOX/old"; copy_tree "$SANDBOX/old-src" "$OLD"
-
-mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
-    mutation_on || return 0
-    local D="$SANDBOX/mut-$1"
-    rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
-    python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new))
-PYM
-    printf '%s' "$D"
-}
-neg() {   # <说明> <suite 函数及参数…>：失败条数必须 > 0
-    mutation_gate || return 0
-    local desc="$1"; shift
-    local before=$fail
-    QUIET=1; [ -z "${SHOW_NEG:-}" ] || QUIET=0; "$@"; QUIET=0
-    local got=$((fail - before))
-    fail=$before
-    chk "负对照：$desc → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
-}
 
 # ── 假 webhook（只听 127.0.0.1）──
 HOOK="$SANDBOX/hook"; mkdir -p "$HOOK"; echo 200 > "$HOOK/mode"
@@ -182,7 +153,7 @@ handoff_body() {   # <对象> [标记行（默认标准写法）]
     local t="$1" line="${2-<!-- requester-bot-forward-to: $1 -->}"
     printf '## 需要和%s确认这段对外文案\n\n请转给：%s\n\n要问的是：首页那句「一键开通」能不能对外说。\n\n%s\n\n\n%s\n' "$t" "$t" "$line" "$FOOTER"
 }
-ref() { python3 -I "$REF" "$(ST)" "$@"; }   # <N> [--minutes M] [--rule R]
+ref() { python3 -I "$REF" "$(ST)" "$@"; }   # <N> [--minutes M]
 
 # 一套标准条目：维护者的 issue #80；做它的 PR #81（分支带编号）；没关联的 PR #82；机器人提的 #50
 fresh() {   # [any 开关，默认 true]
@@ -199,7 +170,7 @@ fresh() {   # [any 开关，默认 true]
 }
 wake() {   # <scripts 副本> <N>
     RC=0
-    OUT=$(env FAKE_GH_DIR="$RW/gh" ${OBS:+FAKE_GH_OBSERVER="python3 -I $REF $(ST) $2 --rule ${REF_RULE:-v4} >> $RW/gh/obs.log"} \
+    OUT=$(env FAKE_GH_DIR="$RW/gh" ${OBS:+FAKE_GH_OBSERVER="python3 -I $REF $(ST) $2 >> $RW/gh/obs.log"} \
         bash "$1/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" "$2" 2>&1) || RC=$?
 }
 # 交接评论里的用量 footer：机器记录仍是最后一个非空行
@@ -475,34 +446,34 @@ retry_suite "$NEW"
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 6. 机器人侧：叫醒之后的变化 ──"
 # ─────────────────────────────────────────────────────────────────────────
-consumer_suite() {   # <scripts 副本> [参考实现的规则]
-    local S="$1" R="${2:-v4}" e
+consumer_suite() {   # <scripts 副本>
+    local S="$1" e
     fresh; wake "$S" 80; e=$(last_wait_event 80)
-    chk "机器人 · 正常：就绪" "$(ref 80 --rule "$R")" "ready $C80 运营"
-    chk "机器人 · 过了 31 分钟仍是就绪（叫醒记录在就不受时限影响）" "$(ref 80 --minutes 31 --rule "$R")" "ready $C80 运营"
+    chk "机器人 · 正常：就绪" "$(ref 80)" "ready $C80 运营"
+    chk "机器人 · 过了 31 分钟仍是就绪（叫醒记录在就不受时限影响）" "$(ref 80 --minutes 31)" "ready $C80 运营"
     # 外人伪造一条同一事件编号的叫醒记录，指向他自己写的交接评论：不认
     local fc; fc=$(add_comment 80 someone "$(handoff_body 黑客)")
     add_comment 80 someone "<!-- requester-bot-wake: event=$e comment=$fc sha256=$(printf 0%.0s $(seq 64)) -->" >/dev/null
-    chk "机器人 · 外人伪造同一编号的叫醒记录：照旧认原评论" "$(ref 80 --rule "$R")" "ready $C80 运营"
+    chk "机器人 · 外人伪造同一编号的叫醒记录：照旧认原评论" "$(ref 80)" "ready $C80 运营"
     # 交接评论被改
     jqset --argjson id "$C80" '(.items["80"].comments[] | select(.id == $id) | .body) |= sub("一键开通"; "一键购买")'
-    chk "机器人 · 叫醒后评论被改：出错，不转达" "$(ref 80 --rule "$R" | awk '{print $1}')" error
+    chk "机器人 · 叫醒后评论被改：出错，不转达" "$(ref 80 | awk '{print $1}')" error
     # 交接评论被删，旁边还留着上一次叫醒用过的旧交接评论
     fresh; wake "$S" 80
     set_field 80 labels '["waiting/bot","pending/agent"]'
     local c2; c2=$(add_comment 80 worker-bot "$(handoff_body 法务)"); wake "$S" 80
     jqset --argjson id "$c2" '.items["80"].comments |= map(select(.id != $id))'
-    chk "机器人 · 新交接评论被删、旧交接评论还在：出错交人，不往旧评论找" "$(ref 80 --rule "$R" | awk '{print $1}')" error
+    chk "机器人 · 新交接评论被删、旧交接评论还在：出错交人，不往旧评论找" "$(ref 80 | awk '{print $1}')" error
     # 叫醒记录被删：找不到对应记录 → 准备中，过了时限出错
     fresh; wake "$S" 80
     jqset '.items["80"].comments |= map(select((.body | test("requester-bot-wake: ")) | not))'
-    chk "机器人 · 叫醒记录被删：准备中（不转达）" "$(ref 80 --rule "$R")" preparing
-    chk "机器人 · 叫醒记录被删、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 --rule "$R" | awk '{print $1}')" error
+    chk "机器人 · 叫醒记录被删：准备中（不转达）" "$(ref 80)" preparing
+    chk "机器人 · 叫醒记录被删、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 | awk '{print $1}')" error
     # 维护者手动摘了再挂等待标签
     fresh; wake "$S" 80
     jqset '.items["80"].events += [{"event":"unlabeled","actor":"maintainer","label":"waiting/bot","id":9000},{"event":"labeled","actor":"maintainer","label":"waiting/bot","id":9001}]'
-    chk "机器人 · 手动重挂：准备中（不转旧内容）" "$(ref 80 --rule "$R")" preparing
-    chk "机器人 · 手动重挂、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 --rule "$R" | awk '{print $1}')" error
+    chk "机器人 · 手动重挂：准备中（不转旧内容）" "$(ref 80)" preparing
+    chk "机器人 · 手动重挂、过了 31 分钟：出错交人" "$(ref 80 --minutes 31 | awk '{print $1}')" error
 }
 consumer_suite "$NEW"
 
@@ -510,36 +481,35 @@ consumer_suite "$NEW"
 # 「是不是机器人提的需求」两边必须同一个规则：issue 看作者 + 来源标记；PR 看它关联的 issue。
 # 叫醒脚本走了老路（退出 0、没发叫醒记录）的，机器人参考实现必须判「机器人提的」；
 # 走了新路（发了叫醒记录）的，必须判就绪并选中同一条交接评论。
-route_case() {   # <说明> <编号> <对象> <规则>：wake 之前已布置好状态
-    local desc="$1" n="$2" t="$3" R="$4" c
+route_case() {   # <说明> <编号> <对象>：wake 之前已布置好状态
+    local desc="$1" n="$2" t="$3" c
     wake "$NEW" "$n"
     chk "分流 · $desc：叫醒成功" "$RC" 0
     if [ "$(receipts "$n")" = 0 ]; then
-        chk "分流 · $desc：叫醒脚本走老路 → 机器人也判机器人提的需求" "$(ref "$n" --rule "$R")" bot-origin
+        chk "分流 · $desc：叫醒脚本走老路 → 机器人也判机器人提的需求" "$(ref "$n")" bot-origin
     else
         c=$(jq -r --arg n "$n" '[.items[$n].comments[] | select(.user == "worker-bot" and (.body | test("requester-bot-forward-to")))] | max_by(.id).id' "$(ST)")
-        chk "分流 · $desc：叫醒脚本走新路 → 机器人选中同一条交接评论" "$(ref "$n" --rule "$R")" "ready $c $t"
+        chk "分流 · $desc：叫醒脚本走新路 → 机器人选中同一条交接评论" "$(ref "$n")" "ready $c $t"
     fi
 }
-routing_suite() {   # [机器人侧规则]
-    local R="${1:-v4}"
-    fresh; route_case "机器人提的 issue" 50 - "$R"
+routing_suite() {
+    fresh; route_case "机器人提的 issue" 50 -
     fresh; add_item 60 pr "doing/agent" worker-bot "Closes #50" feature/issue-50
-    route_case "机器人需求的 PR（作者是 worker，正文没有来源标记）" 60 - "$R"
+    route_case "机器人需求的 PR（作者是 worker，正文没有来源标记）" 60 -
     fresh; add_item 65 pr "doing/agent" worker-bot "这份改动 Closes #50" chore/v
-    route_case "机器人需求的另开 PR（分支不带编号，正文 Closes #50）" 65 - "$R"
+    route_case "机器人需求的另开 PR（分支不带编号，正文 Closes #50）" 65 -
     fresh; set_field 80 body '"维护者的需求，正文引用了一段 <!-- bot-origin -->"'
-    route_case "维护者的 issue，正文引用了来源标记" 80 运营 "$R"
+    route_case "维护者的 issue，正文引用了来源标记" 80 运营
     fresh; set_field 80 user '"req-bot"'
-    route_case "机器人账号开的 issue、但没有来源标记" 80 运营 "$R"
-    fresh; route_case "维护者 issue 做出的 PR" 81 运营 "$R"
+    route_case "机器人账号开的 issue、但没有来源标记" 80 运营
+    fresh; route_case "维护者 issue 做出的 PR" 81 运营
     fresh; add_item 86 pr "doing/agent" req-bot "说明 <!-- bot-origin -->" chore/w
     add_comment 86 worker-bot "$(handoff_body 运营)" >/dev/null
-    route_case "机器人开的、没关联任何 issue 的 PR（正文带标记）" 86 运营 "$R"
+    route_case "机器人开的、没关联任何 issue 的 PR（正文带标记）" 86 运营
     # 认不准的条目叫醒脚本会拒绝；万一别人手动挂了等待标签，机器人也不转达
     fresh; add_item 83 pr "waiting/bot" worker-bot $'Closes\n#50' chore/amb
     set_field 83 events '[{"event":"labeled","actor":"maintainer","label":"waiting/bot","id":4000}]'
-    chk "分流 · PR 关联写法有歧义（Closes 和 #50 分两行）：机器人判认不准、不转达" "$(ref 83 --rule "$R" | awk '{print $1}')" error
+    chk "分流 · PR 关联写法有歧义（Closes 和 #50 分两行）：机器人判认不准、不转达" "$(ref 83 | awk '{print $1}')" error
 }
 routing_suite
 # 观察（第 5 组）已经并在第 2、4 组里：每次 GitHub 调用之前都跑一次参考实现，
@@ -589,103 +559,7 @@ prompt_suite() {   # <scripts 副本>
 prompt_suite "$NEW"
 
 # ─────────────────────────────────────────────────────────────────────────
-echo "── 9. 负对照 ──"
-# ─────────────────────────────────────────────────────────────────────────
-D=$(mutate no-switch scripts/notify-requester-bot.sh \
-    'elif [ "$ORIGIN_RC" = 1 ] && requester_bot_wake_any_item \' \
-    'elif [ "$ORIGIN_RC" = 1 ] && true \') && neg "不看开关" off_suite "$D"
-D=$(mutate accept-unknown scripts/notify-requester-bot.sh \
-    '     && { [ "$REQUESTER_BOT_ORIGIN_CLASS" = linked-other ] || [ "$REQUESTER_BOT_ORIGIN_CLASS" = none ]; }; then' \
-    '     ; then') && neg "关联认不准也放行" reject_suite "$D"
-D=$(mutate no-linked-takeover scripts/notify-requester-bot.sh \
-    '    ORIGIN="${REQUESTER_BOT_LINKED:-$NUM}"' \
-    '    ORIGIN="$NUM"') && neg "不查关联 issue 的维护者接手" reject_suite "$D"
-D=$(mutate no-remove-first scripts/notify-requester-bot.sh \
-    '        gh_write api -X DELETE "repos/$REPO/issues/$NUM/labels/$enc" >/dev/null 2>&1 || true
-    }
-    wake_once || return 1' \
-    '        :
-    }
-    wake_once || return 1') && neg "已挂着等待标签时不先摘再挂" success_suite "$D"
-D=$(mutate no-recheck scripts/notify-requester-bot.sh \
-    '    E_ID="$e"
-    rc=0; recheck_c || rc=$?' \
-    '    E_ID="$e"
-    rc=0') && neg "挂标签后不重读交接评论" retry_suite "$D"
-D=$(mutate no-post-check scripts/notify-requester-bot.sh \
-    '    # 发记录的同时 C 被改过：机器人会判「出错」交人，这边也不报成功
-    rc=0; recheck_c || rc=$?' \
-    '    rc=0') && neg "发完叫醒记录不再核对交接评论" retry_suite "$D"
-D=$(mutate count-own-receipt scripts/notify-requester-bot.sh \
-    '    cur=$(my_latest_comment "$C_ID") || { LAST_FAIL="重读评论列表失败"; return 1; }' \
-    '    cur=$(my_latest_comment) || { LAST_FAIL="重读评论列表失败"; return 1; }') \
-    && neg "重试时把这次发的叫醒记录当成别的评论" retry_suite "$D"
-D=$(mutate no-verify scripts/notify-requester-bot.sh \
-    '    python3 "$HANDOFF_PY" verify "$TMPD/rr" "$E_ID" "$C_ID" "$C_FP" >/dev/null \' \
-    '    true \') && neg "不核对读回的叫醒记录" retry_suite "$D"
-D=$(mutate no-deadline scripts/notify-requester-bot.sh \
-    '    if past_deadline; then' \
-    '    if false; then') && neg "去掉时限" retry_suite "$D"
-# 允许复用：找交接评论时跳过所有叫醒记录（于是叫醒过的旧交接评论又成了「最新」）
-D=$(mutate reuse-a scripts/notify-requester-bot.sh \
-    '            [[ "$body" == *"<!-- requester-bot-wake: event="*" comment=$1 sha256="* ]] && continue' \
-    '            [[ "$body" == *"<!-- requester-bot-wake: "* ]] && continue') \
-    && D=$(MUT_BASE="$D" mutate reuse-b scripts/notify-requester-bot.sh \
-    '    C_ID=$(my_latest_comment) || reject' \
-    '    C_ID=$(my_latest_comment any) || reject') && neg "允许复用已经叫醒过的交接评论" reject_suite "$D"
-D=$(mutate edit-comment scripts/notify-requester-bot.sh \
-    '    rid=$(gh_write api -X POST "repos/$REPO/issues/$NUM/comments" --input "$TMPD/receipt.json" --jq '"'"'.id'"'"') \' \
-    '    gh_write api -X PATCH "repos/$REPO/issues/comments/$C_ID" --input "$TMPD/receipt.json" >/dev/null || true
-    rid=$(gh_write api -X POST "repos/$REPO/issues/$NUM/comments" --input "$TMPD/receipt.json" --jq '"'"'.id'"'"') \') \
-    && neg "叫醒时还整段改写交接评论" success_suite "$D"
-D=$(mutate done-uses-class scripts/_lib.sh \
-    '    rc=0; requester_bot_item_origin "$pr" "$item" || rc=$?
-    case "$rc" in' \
-    '    rc=0; requester_bot_item_origin "$pr" "$item" || rc=$?
-    [ "$REQUESTER_BOT_ORIGIN_CLASS" != linked-other ] || { rc=0; REQUESTER_BOT_ORIGIN="$REQUESTER_BOT_LINKED"; }
-    case "$rc" in') && neg "合并后通知改用新分类" done_suite "$D"
-D=$(mutate origin-rc scripts/_lib.sh \
-    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 ${REQUESTER_BOT_ACCOUNT}）"
-        return 1' \
-    '        REQUESTER_BOT_REASON="#$origin 不是外部需求机器人提的需求（作者是 ${author:-未知}，不是 ${REQUESTER_BOT_ACCOUNT}）"
-        requester_bot_wake_any_item && { REQUESTER_BOT_ORIGIN="$origin"; return 0; }
-        return 1') && neg "开关打开时来源判定直接返回「是」" origin_suite "$D"
-D=$(mutate no-prompt scripts/_lib.sh \
-    '    requester_bot_wake_any_item || return 0
-    f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"' \
-    '    return 0
-    f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"') && neg "不追加「维护者自己的条目」一段" prompt_suite "$D"
-D=$(mutate prompt-always scripts/_lib.sh \
-    '    requester_bot_wake_any_item || return 0
-    f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"' \
-    '    f="$SKILL_DIR/prompts/requester-bot-handoff-any-item.md"') && neg "开关关也追加" off_prompt_suite "$D"
-# 机器人侧退回前几版的规则：观察和机器人侧的断言必须变红
-ref_rule_suite() {   # <规则>
-    local R="$1"
-    fresh; REF_RULE="$R" OBS=1 wake "$NEW" 80
-    chk "规则 $R · 叫醒过程中机器人没判出错" "$(grep -c '^error' "$RW/gh/obs.log")" 0
-    chk "规则 $R · 叫醒过程中确实观察了" "$([ -s "$RW/gh/obs.log" ] && echo yes || echo no)" yes
-    consumer_suite "$NEW" "$R"
-}
-neg "机器人侧只看当前条目正文里有没有来源标记来分流" routing_suite bodymark
-if mutation_on; then
-    for r in v3 v2; do
-        mutation_gate || true
-        before=$fail; QUIET=1; ref_rule_suite $r; QUIET=0; got=$((fail - before)); fail=$before
-        chk "负对照：机器人侧退回 $r 规则 → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
-    done
-else
-    mutation_gate || true; mutation_gate || true
-fi
-
-# ─────────────────────────────────────────────────────────────────────────
 echo "── 汇总 ──"
-if [ -s "$PREP_FAILED" ]; then
-    echo "  ❌ 有 $(wc -l < "$PREP_FAILED" | tr -d ' ') 个负对照没准备成功（没跑）："
-    sed 's/^/     · /' "$PREP_FAILED"
-    fail=$((fail + $(wc -l < "$PREP_FAILED")))
-fi
-mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

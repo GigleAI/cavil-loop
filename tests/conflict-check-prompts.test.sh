@@ -13,7 +13,6 @@
 #      且排在翻 label 之前
 #   2. 把成品里的定义块原样拿出来，在真实 git worktree 里跑 `cavil_step conflict-check 7`：无冲突 /
 #      有冲突 / 只落后 / 取不到分支 / 本地没推的提交，各自判对，而且不动工作区、不产生提交
-# （原来的第 3 组负对照已按 GitHub#234 删去。）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

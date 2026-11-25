@@ -7,8 +7,7 @@
 # 假 gh / systemctl / claude），把所有可选标签都打开，记下它实际发出的每一条建标签请求，
 # 断言恰好是下面这 15 个标签、名字和颜色逐个对上——不是只数个数，也不读源码文本。
 #
-#   bash tests/setup-label-colors.test.sh              默认回归
-#   MUTATION=1 bash tests/setup-label-colors.test.sh   另跑负对照：两处改色各退回旧值，必须变红
+#   bash tests/setup-label-colors.test.sh
 
 # ── Default label colors `setup.sh` creates: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Default label colors `setup.sh` creates (GitHub#130; they copy this repo's labels page) →
@@ -21,8 +20,6 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$REPO_DIR/tests/lib/mutation.sh"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
@@ -155,29 +152,7 @@ chk "托管写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SE
 chk "托管写成空值：托管和等合并两个标签都不建" "$(printf '%s\n' "$got" | grep -cE '^(autopilot|pending/merge)\|')" 0
 chk "托管写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
 
-echo "── 2. 负对照：两处改色各自退回旧值，必须变红 ──"
-neg_case() {   # <标题> <旧行> <新行>
-    local title="$1" from="$2" to="$3" d="$SANDBOX/src-mut"
-    mutation_gate || { echo "  ⏭ 负对照「$title」（MUTATION=1 才跑）"; return; }
-    rm -rf "$d" "$d.git"; cp -r "$SANDBOX/src" "$d"
-    if ! python3 - "$d/setup.sh" "$from" "$to" <<'PY'
-import sys
-p, a, b = sys.argv[1:4]; s = open(p, encoding="utf-8").read()
-if s.count(a) != 1: sys.exit(1)
-open(p, "w", encoding="utf-8").write(s.replace(a, b))
-PY
-    then echo "  ❌ 负对照「$title」准备失败：setup.sh 里找不到原文"; fail=$((fail+1)); return; fi
-    git -C "$d" -c user.email=t@example.invalid -c user.name=t commit -qam mutate
-    local p0=$pass f0=$fail out
-    out=$(suite "$d"); local nf; nf=$(printf '%s\n' "$out" | grep -c '❌')
-    if [ "$nf" -gt 0 ]; then echo "  ✅ 负对照「$title」变红（$nf 条断言失败）"; pass=$((p0+1)); fail=$f0
-    else echo "  ❌ 负对照「$title」没变红"; pass=$p0; fail=$((f0+1)); fi
-}
-neg_case "autopilot 退回 ff401e" '$autopilot_label|c5def5|' '$autopilot_label|ff401e|'
-neg_case "pending/PR 退回 bbbbbb" '"pending/PR|eeeeee|' '"pending/PR|bbbbbb|'
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

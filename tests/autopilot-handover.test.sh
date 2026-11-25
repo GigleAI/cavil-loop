@@ -6,7 +6,7 @@
 # 跑法：bash tests/autopilot-handover.test.sh   （三段：【1】–【3】、【4】–【7】、【7b】–【10】，GitHub#495）
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py）+ 假 tmux，HOME 指向
 # 临时目录。每一轮都**真的**起 agent-poll.sh 子进程；「写了什么、停在哪」都从假 GitHub 的调用记录和状态里读，
-# 不读源码。不带负对照（GitHub#234 起不新增）。
+# 不读源码。
 #
 # 交人要连发几个独立请求（发说明 → 加 pending/human → 摘 pending/merge）。这块错了的方向都不报错：
 #   · 两次写入之间不重读 → 维护者刚关掉 / 刚接手 / 刚重新排队的 PR 又被按旧结论写一遍

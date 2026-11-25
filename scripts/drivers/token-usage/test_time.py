@@ -3,9 +3,7 @@
 # ── The footer's test time: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # The footer's test time (GitHub#244: `scripts/drivers/token-usage/test-time.sh` / `test_time.py`, the
 # run id and run record in `tests/run.sh`) → `tests/footer-test-time.test.sh` (~20 s; real
-# `tests/run.sh` in a real git worktree, real `comment-footer.sh`; `MUTATION=1` adds seventeen broken
-# copies, the rejected design versions and the code-review round-1 and round-2 versions among them, ~5
-# min). A session command is linked to a run record only by the id printed in that command's own
+# `tests/run.sh` in a real git worktree, real `comment-footer.sh`). A session command is linked to a run record only by the id printed in that command's own
 # output (codex: its item in the `exec` cell output plus later polls of its `session_id`) — never by
 # start time, directory, or another command's output; Claude and codex feed one set of rules, and the
 # test checks both give the same answer on one scenario; "belongs to this round" is one condition (the
@@ -65,7 +63,7 @@ EXIT_CODE = re.compile(r'^Exit code (-?\d+)', re.M)
 SKIP_WORDS = {"env", "time", "nice", "command", "exec", "nohup"}
 SHELL_KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "("}
 # 不跑测试的整套入口模式：这几种不生成运行编号，也不是测试运行
-SUITE_NON_RUN = {"--list", "--verify", "--verify=", "--tally", "-h", "--help"}
+SUITE_NON_RUN = {"--list", "--verify", "--verify=", "-h", "--help"}
 
 
 def runs_log_path(env):
@@ -164,7 +162,7 @@ def classify_segment(seg):
         if any(a in SUITE_NON_RUN or a.startswith("--verify=") for a in rest):
             return "suite-meta"
         return "suite"
-    if base.endswith(".test.sh") or (base == "mutations.sh" and "tauri" in head):
+    if base.endswith(".test.sh"):
         return "adhoc"
     if base == "npm":
         k = 0

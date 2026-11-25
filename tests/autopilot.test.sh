@@ -2,10 +2,7 @@
 # kind: e2e
 # 托管标签：方案只过复审、复审与测试通过后 daemon 自动合并 —— GitHub#114。
 #
-# 跑法：bash tests/autopilot.test.sh              （默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/autopilot.test.sh   （连负对照一起跑：整套场景在每份改坏的脚本副本上
-#       各重跑一遍，见 tests/lib/mutation.sh）
-#       MUTATION=1 AUTOPILOT_MUT_SHARD=K/N …      （只跑第 K 份负对照；开 N 个进程并行，见【10】）
+# 跑法：bash tests/autopilot.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：假 GitHub（tests/lib/fake_github.py，有状态：标签、
 # 标签记录、评论、合并接口）+ 假 tmux，HOME 指向临时目录。每一轮都**真的**起 agent-poll.sh 子进程，
 # 假 GitHub 把每一次调用记下来，「合没合、翻了什么标签、说了什么」都从调用和状态里读，不读源码。
@@ -20,8 +17,7 @@
 #
 # 拆成 3 段（GitHub#211）：tests/run.sh 用 TEST_PART=K/3 把每段当一个调度单位并行跑；直接跑本文件
 # 不带 TEST_PART 时三段全跑。段 1 =【1】–【7c】+【12k】+【8】【9】，段 2 =【12】系列（【12k】除外），
-# 段 3 =【13】【14】【11】；
-# 负对照按出现顺序轮流分给三段（每份负对照仍把整套场景跑一遍）。
+# 段 3 =【13】【14】【11】。
 # parts: 3
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -31,8 +27,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/parts.sh
 source "$TEST_DIR/lib/parts.sh"
 # shellcheck source=lib/compat.sh
@@ -85,9 +79,8 @@ REQ_ON=('LABEL_PENDING_REQUESTER_BOT="pending/req"' 'REQUESTER_BOT_ACCOUNT="req-
 # ─────────────────────────────────────────────────────────────────────────
 # 一整套轮询场景。$1 = 被测的 scripts 目录。
 # ─────────────────────────────────────────────────────────────────────────
-# 正式版只跑本段的场景（rs_part）；负对照（RS_ALL=1）不论哪段都跑整套
-RS_ALL=1
-rs_part() { [ "$RS_ALL" = 1 ] || part_on "$1"; }
+# 只跑本段的场景
+rs_part() { part_on "$1"; }
 run_scenarios() {
     local SCRIPTS="$1" W="$SANDBOX/run"
     export FAKE_GH_REPO="example/ap"
@@ -1928,323 +1921,16 @@ CONF
 }
 
 echo "=== 正式版 ==="
-RS_ALL=0; run_scenarios "$REPO_DIR/scripts"; RS_ALL=1
+run_scenarios "$REPO_DIR/scripts"
 if part_on 1; then
 section "【8】功能关闭：和改动前逐字节一致"
 off_mode
 default_on_mode
 prompts_check "$REPO_DIR"
 fi
-REAL_PASS=$pass; REAL_FAIL=$fail
-
-# ─────────────────────────────────────────────────────────────────────────
-# 【10】负对照（MUTATION=1）：把脚本副本逐个改坏一处，整套场景必须有检查变红
-# ─────────────────────────────────────────────────────────────────────────
-section "【10】负对照（改坏一处，至少一条检查必须变红）"
-mut_fail=0; mut_ran=0
-# 负对照很慢（每份都把整套场景重跑一遍，约 2.5 分钟，共 60 多份）。AUTOPILOT_MUT_SHARD=K/N 只跑第 K 份
-# （按顺序轮流分），各自独立的沙盘，可以开 N 个进程并行跑；不设 = 全跑。只影响跑哪几份，不改任何判断。
-MUT_IDX=0
-# AUTOPILOT_MUT_ONLY=名字1,名字2 只跑点名的几份（改到某几处时复跑对应负对照用）；和 SHARD 可以一起用
-mut_in_shard() {   # [名字]
-    MUT_IDX=$((MUT_IDX + 1))
-    if [ -n "${AUTOPILOT_MUT_ONLY:-}" ]; then
-        case ",$AUTOPILOT_MUT_ONLY," in *",${1:-},"*) ;; *) return 1 ;; esac
-    fi
-    [ -n "${AUTOPILOT_MUT_SHARD:-}" ] || return 0
-    local k="${AUTOPILOT_MUT_SHARD%/*}" n="${AUTOPILOT_MUT_SHARD#*/}"
-    [ $(( (MUT_IDX - 1) % n + 1 )) -eq "$k" ]
-}
-mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后> [<原文> <替换后> …]：每对原文都必须找得到
-    local name="$1" file="$2" M="$SANDBOX/mut-$1"
-    shift 2
-    part_take || return 0
-    mutation_gate || return 0
-    mut_in_shard "$name" || return 0
-    mut_ran=$((mut_ran + 1))
-    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/scripts/$file" "$@" <<'PY'
-import sys
-p, pairs = sys.argv[1], sys.argv[2:]
-s = open(p).read()
-for old, new in zip(pairs[0::2], pairs[1::2]):
-    if s.count(old) < 1:
-        sys.exit(1)
-    s = s.replace(old, new, 1)
-open(p, "w").write(s)
-PY
-    then
-        echo "  ❌ 负对照 $name：要改的原文找不到（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M/scripts"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then
-        echo "  ✅ 负对照 $name：$fail 条检查变红"
-    else
-        echo "  ❌ 负对照 $name：改坏后整套检查仍全绿（测试分不出这个错误实现）"; mut_fail=$((mut_fail + 1))
-    fi
-}
-# 合并前那次重判用 AP_SECOND=1 标出来，「只在第二次跳过某一项」的负对照靠它
-SECOND_OLD='    autopilot_permit "$sf" "$pr"
-    if [ "$AP_V" != ok ]'
-SECOND_NEW='    AP_SECOND=1 autopilot_permit "$sf" "$pr"
-    if [ "$AP_V" != ok ]'
-mutate2() {   # <名字> <原文> <替换后>：只在合并前的第二次判定里改坏
-    mutate "$1" _lib.sh "$SECOND_OLD" "$SECOND_NEW" "$2" "$3"
-}
-
-# ── 判定本身（两次判定都受影响）──
-mutate binding-no-body _lib.sh 'if [ "$by_line" != "$n" ]; then' 'if false; then'
-mutate binding-no-fork _lib.sh 'if [ -z "$repo" ] || [ "$(requester_bot_lc "$repo")" != "$(requester_bot_lc "$REPO")" ]; then' 'if false; then'
-mutate auth-loop-actor _lib.sh 'if [ "$(requester_bot_lc "$actor")" = "$(requester_bot_lc "$me")" ]; then' 'if false; then'
-mutate auth-no-perm _outsider.sh '            admin|write) return 0 ;;' '            *) return 0 ;;'
-mutate auth-last-event _lib.sh '        true:labeled|false:unlabeled|false:) ;;' '        true:labeled|true:unlabeled|false:unlabeled|false:) ;;'
-mutate auth-unknown-ok _lib.sh '    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    autopilot_place_read "$num" "$ij" "issue #$num" || { AUTOPILOT_ACTOR=x; return 0; }'
-mutate evidence-failed _lib.sh 'select(.h == $h and (.f | tonumber) == 0 and (.p | tonumber) > 0)' 'select(.h == $h)'
-mutate dot-github _lib.sh 'any(startswith(".github/"))' 'any(startswith(".nothing/"))'
-mutate gnu-date _lib.sh "at=\$(jq -nr 'now - 120 | floor | strftime(\"%Y-%m-%dT%H:%M:%SZ\")' 2>/dev/null) || at=\"\"" 'at=$(date -u -d "@$(( $(date +%s) - 120 ))" +%Y-%m-%dT%H:%M:%SZ)'
-# ── 许可函数里的每一项判断（两次都跳过）──
-mutate permit-auth _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0'
-mutate permit-issue-halt _lib.sh "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        AP_V=human" '    if false; then
-        AP_V=human'
-mutate permit-reviewed-head _lib.sh 'if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || ' 'if '
-mutate permit-review-base _lib.sh '[ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || ' ''
-mutate permit-evidence _lib.sh '    rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?' '    rc=0'
-mutate permit-checks _lib.sh '        fail) AP_V=worker;' '        fail) ;; failx) AP_V=worker;'
-mutate permit-conflict _lib.sh '        conflict) AP_V=worker;' '        conflictx) AP_V=worker;'
-# ── 合并前的第二次判定：整个不做 / 只在第二次跳过某一项 ──
-mutate reread-none _lib.sh "$SECOND_OLD" '    :
-    if [ "$AP_V" != ok ]'
-mutate2 reread-pr-halt '[ -n "${AP_HANDOVER_MINE:-}" ] || { AP_V=halt_pr; return 0; }' '[ -n "${AP_HANDOVER_MINE:-}${AP_SECOND:-}" ] || { AP_V=halt_pr; return 0; }'
-mutate2 reread-issue-halt "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        AP_V=human" "    if [ -z \"\${AP_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        AP_V=human"
-mutate2 reread-auth '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?'
-# 第二次判定时新推送 / 改投有两道拦截：复审记录对不上、两次判定的身份对不上。单拆一道另一道仍会拦住
-# （本来就是双保险，不是测试漏洞），所以这项把两道一起拆掉，必须变红
-mutate reread-identity _lib.sh "$SECOND_OLD" "$SECOND_NEW" \
-    'if [ -z "$AP_RH" ] || [ "$AP_RH" != "$AP_HEAD" ] || [ -z "$AP_RB" ] || [ "$AP_RB" != "$AP_BASE" ] || [ -z "$AP_RAT" ]; then' \
-    'if [ -z "$AP_RH" ] || { [ -z "${AP_SECOND:-}" ] && { [ "$AP_RH" != "$AP_HEAD" ] || [ "$AP_RB" != "$AP_BASE" ]; }; } || [ -z "$AP_RB" ] || [ -z "$AP_RAT" ]; then' \
-    ' || [ "$AP_HEAD" != "$head" ] || [ "$AP_BASE" != "$base" ] \' ' \'
-mutate2 reread-files '    case "$(autopilot_files_verdict "$pr")" in' '    case "$([ -n "${AP_SECOND:-}" ] && echo ok || autopilot_files_verdict "$pr")" in'
-mutate2 reread-evidence '    rc=0; autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?' '    rc=0; [ -n "${AP_SECOND:-}" ] || autopilot_review_evidence "$pr" "$AP_HEAD" "$AP_RAT" || rc=$?'
-mutate2 reread-checks '        fail) AP_V=worker;' '        fail) [ -n "${AP_SECOND:-}" ] && { AP_V=ok; return 0; }; AP_V=worker;'
-mutate2 reread-checks-pending '        pending) AP_V=wait_checks;' '        pending) [ -n "${AP_SECOND:-}" ] && { AP_V=ok; return 0; }; AP_V=wait_checks;'
-mutate reread-new-checks _lib.sh ' \
-       || [ "$AP_REF" != "$ref" ] || { [ "$checks" = none ] && [ "$AP_CHECKS" != none ]; }; then' ' \
-       || [ "$AP_REF" != "$ref" ]; then'
-mutate2 reread-conflict '    case "$(autopilot_conflict_verdict "$pj")" in' '    case "$([ -n "${AP_SECOND:-}" ] && echo ok || autopilot_conflict_verdict "$pj")" in'
-# ── 派工 / 收队处 ──
-mutate dispatch-site _lib.sh '    case "$rc" in
-        0) AUTOPILOT_ISSUE="$n"; return 0 ;;' '    rc=0
-    case "$rc" in
-        0) AUTOPILOT_ISSUE="$n"; return 0 ;;'
-mutate collect-site agent-poll.sh '        rc=0; autopilot_authorization "$num" "$ij" || rc=$?
-        case "$rc" in' '        rc=0
-        case "$rc" in'
-# ── 托管关掉之后的收尾（GitHub#124）──
-mutate off-sweep-not-called agent-poll.sh 'autopilot_off_sweep "$STATE_FILE" || true' ':'
-mutate off-sweep-any-pr _lib.sh '| .[][] | select($prs[(.number | tostring)] != null)' '| .[][]'
-# GitHub#382 起收尾的每次写入都对着带基准的待办核对，下面几条指向的原文跟着换成新代码里的同一处：
-# 现读拦住（PR 已合并就不动）＝ 新待办的判定「开着、挂着等合并标签」
-mutate off-sweep-no-reread _lib.sh "            printf '%s' \"\$AF_FP\" | jq -e --arg M \"\$m\" '.pr.open and (.pr.labels | index(\$M) != null)' >/dev/null 2>&1 || continue" '            :'
-mutate off-sweep-no-intent _lib.sh ' or ($prs[(.number | tostring)] | has("off_handover"))' ''
-# 待写的那一步不在动 GitHub 之前记下：写成之后确认读失败，下一轮就认不出那次是自己写的，说明永远补不上
-mutate off-sweep-intent-late _lib.sh "    autopilot_state_set \"\$sf\" '.prs[\$p].off_handover.pending = {op: \$o, label: \$l}' --arg p \"\$pr\" --arg o \"\$op\" --arg l \"\$label\" \\
-        || { log \"托管已关：PR #\$pr 记不下待写的那一步，本轮不动\"; return 1; }" '    :'
-mutate off-sweep-no-dedupe _lib.sh "        if ! printf '%s' \"\$cmts\" | jq -e --arg T \"\$marker\" 'any(.[][]?; (.body // \"\") | contains(\$T))' >/dev/null 2>&1; then" '        if true; then'
-# 摘等合并标签有没有摘掉完全不核对（摘的结果、摘完的确认、发说明前的最终状态三处一起去掉）
-mutate off-sweep-no-verify _lib.sh '        autopilot_label_delete "$pr" "$label" || return 1' '        autopilot_label_delete "$pr" "$label" || true' \
-    '    if ! autopilot_fingerprint "$pr" || ! autopilot_fp_is_own_write "$(printf '"'"'%s'"'"' "$exp" | jq -cS .)" "$op" "$label"; then' '    if false; then' \
-    "            '.pr.open and (.pr.labels | index(\$M) == null) and (.pr.labels | index(\$H) != null)' >/dev/null 2>&1 || continue" "            '.pr.open' >/dev/null 2>&1 || continue"
-mutate remember-review agent-poll.sh '            autopilot_remember_review "$STATE_FILE" "$2"' '            :'
-# ── PR 上的托管标签（GitHub#128）──
-# 两处合起来的授权判据
-mutate pr-no-stopline _lib.sh 'elif all($u[]; . < $t) then "after" else "before" end' 'elif true then "after" else "before" end'
-mutate pr-stops-ignored _lib.sh 'unl: map(select(.value.event == "unlabeled")' 'unl: map(select(false)'
-mutate pr-no-actor-check _lib.sh '        rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.p.lab.actor'"'"')"' '        rc=0; [ "$kind" = pr ] || autopilot_actor_check "$(printf '"'"'%s'"'"' "$here" | jq -r '"'"'.p.lab.actor'"'"')"'
-mutate pr-stale-auth-ok _lib.sh '            *:before) ;;' '            *:before) [ "$rc" = 0 ] && { ok_kind="$kind"; ok_num="$cnum"; ok_place="$here"; ok_actor="$AUTOPILOT_ACTOR"; } ;;'
-mutate pr-no-time-ok _lib.sh 'elif $t == null or $t == "" or any($u[]; . == null or . == "") then "unknown"' 'elif false then "unknown"'
-# 三个调用点各自接到两处判据（单独拆掉一处只看 issue）
-mutate pr-site-permit _lib.sh '    rc=0; autopilot_authorization "$AP_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; autopilot_authorization "$AP_N" "$ij" || rc=$?'
-mutate pr-site-dispatch _lib.sh '        autopilot_authorization "$n" "$ij" "$num" "$pj" || rc=$?' '        autopilot_authorization "$n" "$ij" || rc=$?'
-mutate pr-site-takeover _lib.sh '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; autopilot_authorization "$AT_N" "$ij" || rc=$?'
-# 接手
-mutate takeover-not-called agent-poll.sh 'autopilot_takeover_tick "$STATE_FILE" || true' ':'
-mutate takeover-in-flow _lib.sh '    if autopilot_labels_in_flow "$rest"; then AT_V=skip; return 0; fi' '    :'
-mutate takeover-human-order _lib.sh '                AT_V=skip; AT_WHY=human-later' '                AT_V=take; return 0'
-mutate takeover-issue-halt _lib.sh "        AT_V=skip; return 0
-    fi
-    rc=0; autopilot_authorization \"\$AT_N\"" "        :
-    fi
-    rc=0; autopilot_authorization \"\$AT_N\""
-mutate takeover-once _lib.sh '    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
-    autopilot_takeover_permit "$pr"' '    :'
-mutate takeover-identity _lib.sh '    if [ "$AT_V" != take ] || [ "$AT_N" != "$n" ] || [ "$AT_HEAD" != "$head" ] || [ "$AT_BASE" != "$base" ] \
-       || [ "$AT_REF" != "$ref" ] || [ "$AT_REPO" != "$repo" ] || [ "$AT_MODE" != "$mode" ]; then' '    if [ "$AT_V" != take ] && [ "$AT_V" != deny ]; then'
-# 写前那次重判只看 PR、不看 issue 一侧（复审第 1 轮指出的错误做法）
-TAKE2_OLD='    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
-    autopilot_takeover_permit "$pr"'
-TAKE2_NEW='    # 写之前：同一个判定用现读的数据原样再跑一遍，结论和身份都没变才写
-    AT_SECOND=1 autopilot_takeover_permit "$pr"'
-mutate takeover-reread-pr-only _lib.sh "$TAKE2_OLD" "$TAKE2_NEW" \
-    "    if printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        AT_V=skip; return 0" "    if [ -z \"\${AT_SECOND:-}\" ] && printf '%s' \"\$ij\" | jq -e --arg H \"\$LABEL_PENDING_HUMAN\" 'any(.labels[]?; .name == \$H)' >/dev/null 2>&1; then
-        AT_V=skip; return 0" \
-    '    rc=0; autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?' '    rc=0; [ -n "${AT_SECOND:-}" ] || autopilot_authorization "$AT_N" "$ij" "$pr" "$pj" || rc=$?'
-mutate takeover-cache-pr-only _lib.sh '        key="$AUTOPILOT_JUDGE_REV|$upd|$n|$iupd"' '        key="$AUTOPILOT_JUDGE_REV|$upd"'
-mutate takeover-no-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        nothing) ;;'
-mutate takeover-issue-only-candidate _lib.sh 'select(any(.labels[]?; .name == $L or .name == $H) or' 'select(any(.labels[]?; .name == $L) or'
-mutate takeover-coexist _lib.sh "'[.labels[]?.name | select(. != \$L and . != \$H)] | join(\",\")')" "'[.labels[]?.name | select(. != \$L and . != \$H and false)] | join(\",\")')"
-mutate takeover-unknown-no-count _lib.sh '        *) autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0 ;;' '        *) return 0 ;;'
-mutate takeover-unknown-no-done _lib.sh '    if [ "$k" = done ] || [ "$k" = cancelled ]; then' '    if [ "$k" = cancelled ]; then'
-mutate takeover-unknown-done-early _lib.sh '    autopilot_state_set "$sf" '"'"'.takeover_handoff[$p].labeled = true'"'"' --arg p "$pr" || return 0' '    autopilot_state_set "$sf" '"'"'del(.takeover_handoff[$p]) | .takeover_unknown[$p] = "done"'"'"' --arg p "$pr"; return 0'
-mutate unk-second-not-counted _lib.sh '    if [ "$AT_V" = unknown ]; then autopilot_takeover_unknown "$sf" "$pr" "$AT_REASON" "$key"; return 0; fi' '    :'
-mutate unk-reset-on-first-take _lib.sh '    case "$AT_V" in skip|deny) autopilot_takeover_reset "$sf" "$pr" ;; esac' '    case "$AT_V" in skip|deny|take) autopilot_takeover_reset "$sf" "$pr" ;; esac'
-mutate handoff-not-first _lib.sh '        if [ -n "$(autopilot_state_get "$sf" '"'"'.takeover_handoff[$p]'"'"' --arg p "$num")" ]; then' '        if false; then'
-mutate handoff-no-rejudge _lib.sh '    autopilot_takeover_permit "$pr"
-    local cont=""' '    autopilot_takeover_permit "$pr"; AT_V=unknown
-    local cont=""'
-mutate handoff-skip-not-dropped _lib.sh '                drop="现在判得出结论了（不接手）"' '                :'
-mutate handoff-take-not-dropped _lib.sh '        *) drop="现在判得出结论了（${AT_V}）" ;;' '        *) : ;;'
-mutate handoff-human-not-mine _lib.sh '               && [ "$(requester_bot_lc "$AT_HUMAN_BY")" = "$(requester_bot_lc "$me")" ]; then' '               ; then'
-# 记下的 issue 编号、分支、来源三项一起核对（分支必须和 issue 编号对应，所以单拆一项另两项仍会拦住，这里整段拆掉）
-mutate handoff-no-identity _lib.sh '            drop="PR 的 issue / 分支 / 来源和交人决定时不一样了"' '            :'
-mutate handoff-no-dedupe _lib.sh "    if ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\"" "    if true || ! printf '%s' \"\$cmts\" | jq -e --arg T \"<!-- cavil-loop:autopilot-takeover-unknown pr=\$pr -->\""
-mutate handoff-relabel _lib.sh '    if [ "$labeled" != true ]; then
-        labels=' '    if true; then
-        labels=' '            *",$LABEL_PENDING_HUMAN,"*) ;;
-            *) run_gh "label 翻转 (托管接手判不了' '            *",$LABEL_PENDING_HUMAN,nomatch"*) ;;
-            *) run_gh "label 翻转 (托管接手判不了'
-mutate takeover-unknown-no-reset _lib.sh '        || autopilot_state_set "$1" '"'"'del(.takeover_unknown[$p])'"'"' --arg p "$2" || true' '        || true'
-mutate handoff-cont-no-identity _lib.sh '        if { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \' '        if false && { [ -n "$n" ] && [ "$AT_N" != "$n" ]; } || false && { [ -n "$ref" ] && [ "$AT_REF" != "$ref" ]; } \'
-mutate handoff-no-label-present _lib.sh '        elif [ "$labeled" = true ] && ! printf' '        elif false && ! printf'
-mutate handoff-cancelled-redo _lib.sh '    if [ "$k" = done ] || [ "$k" = cancelled ]; then' '    if [ "$k" = done ]; then'
-mutate auth-cands-first-only _lib.sh '        done <<< "$AUTOPILOT_AUTH_CANDS"' '        done <<< "$(printf '"'"'%s'"'"' "$AUTOPILOT_AUTH_CANDS" | head -1)"'
-mutate auth-cands-unknown-ok _lib.sh '        [ "$when" = after ] || [ -z "$any_unknown" ] || when=unknown' '        :'
-# ── 没绑 issue 的 PR（GitHub#142）──
-mutate po-closes-ok _lib.sh 'if [ -z "$by_line" ] && [ -z "$by_whole" ]; then
-        AUTOPILOT_PR_KIND=pr' 'if true; then
-        AUTOPILOT_PR_KIND=pr'
-mutate po-current-body-only _lib.sh '    rc=0; autopilot_body_at "$pr" "$t" "$pj" || rc=$?' '    rc=0; AUTOPILOT_BODY_CANDS=$(printf '"'"'%s'"'"' "$pj" | jq -c '"'"'[.body // ""]'"'"')'
-mutate po-oldest-version _lib.sh '| sort_by(.editedAt) | .[-1:])' '| sort_by(.editedAt) | .[:1])'
-mutate po-same-second-one _lib.sh '([$e[] | select(.editedAt == $t)] + ' '(['
-mutate po-deleted-ok _lib.sh 'elif any($c[]; .deletedAt != null or (.diff | type) != "string") then {err: "deleted"}' 'elif false then {err: "deleted"}'
-mutate po-unknown-ok _lib.sh '        *) return 2 ;;
-    esac
-    nb=' '        *) AUTOPILOT_BODY_CANDS=$(printf '"'"'%s'"'"' "$pj" | jq -c '"'"'[.body // ""]'"'"') ;;
-    esac
-    nb='
-mutate po-page-gap-ok _lib.sh '[ -n "$after" ] || { AUTOPILOT_REASON="PR #$pr 正文的修改历史分页读不全"; return 2; }' '[ -n "$after" ] || break'
-mutate po-fork-ok _lib.sh '        AUTOPILOT_REASON="PR 不是从本仓库的分支开的（来源：${repo:-未知}）"; return 0
-    fi
-    body=' '        :
-    fi
-    body='
-mutate po-actor-skip _lib.sh '    rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.actor'"'"')" "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.atype'"'"')" || rc=$?
-    [ "$rc" = 0 ] || return "$rc"
-    actor=' '    rc=0; autopilot_actor_check "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.actor'"'"')" "$(printf '"'"'%s'"'"' "$pp" | jq -r '"'"'.lab.atype'"'"')" || rc=0; AUTOPILOT_ACTOR=x
-    actor='
-mutate po-qualified-closes _lib.sh '    by_line=$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line any)
-    by_whole=$(printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole any)' '    by_line=$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_closes line)
-    by_whole=$(printf '"'"'%s'"'"' "$body" | autopilot_body_closes whole)'
-mutate po-closes-no-url _lib.sh '|https?://(www\.)?github\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/issues/[0-9]+)'"'" ')'"'" \
-    '|https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/[0-9]+)'"'" ')'"'"
-mutate po-closes-other-repo-local _lib.sh '| select(.o == $me) | .n) end;' '| .n) end;'
-mutate po-initial-same-second-deny _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               then {err: "none"}'
-mutate po-initial-no-created-check _lib.sh '               and ($created == "" or $first != $created or $first != $t) then {err: "none"}' '               and ($first != $t) then {err: "none"}'
-# GitHub#162：把「外部需求机器人提的需求不托管」逐处放回去，都必须变红（issue 上按作者、功能开启时按来源、没绑 issue 的 PR）
-mutate req-deny-issue-author _lib.sh '    local ip pp
-    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    local ip pp
-    if [ -n "${REQUESTER_BOT_ACCOUNT:-}" ] && [ "$(printf '"'"'%s'"'"' "$ij" | jq -r '"'"'.user.login'"'"')" = "$REQUESTER_BOT_ACCOUNT" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
-    autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
-mutate req-deny-issue-origin _lib.sh '    local ip pp
-    autopilot_place_read "$num" "$ij" "issue #$num" || return 2' '    local ip pp
-    if requester_bot_enabled && requester_bot_item_origin "$num" "$ij"; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
-    autopilot_place_read "$num" "$ij" "issue #$num" || return 2'
-mutate req-deny-pr-only _lib.sh '    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
-    if [ -n "$AUTOPILOT_PR_COPY" ]; then' '    if [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.user.login'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ] || printf '"'"'%s'"'"' "$pj" | jq -e '"'"'.body | test("#58")'"'"' >/dev/null || [ "$(printf '"'"'%s'"'"' "$pj" | jq -r '"'"'.head.ref'"'"')" = "${REQUESTER_BOT_ACCOUNT:-none}" ]; then AUTOPILOT_DENY=requester-bot; AUTOPILOT_REASON=x; return 1; fi
-    autopilot_place_read "$pr" "$pj" "PR #$pr" || return 2
-    autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
-    if [ -n "$AUTOPILOT_PR_COPY" ]; then'
-mutate po-dispatch-site _lib.sh '                    0) AUTOPILOT_PR="$num"; return 0 ;;' '                    0) return 1 ;;'
-mutate po-merge-note-issue _lib.sh '    if [ "$kind" = pr ]; then n="$pr"; where="本 PR 上"' '    if false; then n="$pr"; where="本 PR 上"'
-mutate po-no-label-body-notice _lib.sh '        actor-*|binding|closed|label-body) ;;' '        actor-*|binding|closed) ;;'
-mutate po-section-inactive _lib.sh ' || [[ "${DISPATCH_AUTOPILOT_PR:-}" =~ ^[0-9]+$ ]]; }' '; }'
-mutate po-worker-issue-file _lib.sh '    elif [ -n "$pr_only" ]; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"' '    elif false; then f="$SKILL_DIR/prompts/autopilot-worker-pr.md"'
-mutate po-dispatch-no-pr agent-poll.sh ' DISPATCH_AUTOPILOT_PR="$AP_PR"' ''
-# ── PR 上补托管标签（GitHub#190）：补、收回两条路径各自的写前重判与每个身份字段，副本不授权，合并前要求标签 ──
-MIR_CMP='    if [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; then'
-mutate mirror-add-no-second _lib.sh "$MIR_CMP" '    if [ "$v" = remove ] && { [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; }; then'
-mutate mirror-rm-no-second _lib.sh "$MIR_CMP" '    if [ "$v" = add ] && { [ "$AM_V" != "$v" ] || [ "$AM_ID" != "$id" ]; }; then'
-MIR_ID='    AM_ID="$state|'
-mutate mirror-add-head _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || head=x; AM_ID="$state|'
-mutate mirror-add-base _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || base=x; AM_ID="$state|'
-mutate mirror-add-auth _lib.sh "$MIR_ID" '    [ "$AM_V" != add ] || AUTOPILOT_AUTH_IDX=x; AM_ID="$state|'
-mutate mirror-rm-head _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || head=x; AM_ID="$state|'
-mutate mirror-rm-base _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || base=x; AM_ID="$state|'
-mutate mirror-rm-ph _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ph=x; AM_ID="$state|'
-mutate mirror-rm-ih _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || ih=x; AM_ID="$state|'
-mutate mirror-rm-istate _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || istate=x; AM_ID="$state|'
-mutate mirror-rm-copy _lib.sh "$MIR_ID" '    [ "$AM_V" != remove ] || copy=x; AM_ID="$state|'
-mutate mirror-rm-one-evidence _lib.sh '        if [ -n "$AUTOPILOT_PR_COPY_READ" ] && [ "$AUTOPILOT_PR_COPY" != "$copy" ]; then' '        if false; then'
-mutate mirror-rm-maint _lib.sh '        if [ -z "$AUTOPILOT_PLACE_COPY" ]; then AM_V=none; return 0; fi' '        :'
-mutate mirror-rm-unknown _lib.sh '            1) ;;
-            *) AM_REASON="$AUTOPILOT_REASON"; return 0 ;;
-        esac
-        # 授权判定自己又读了' '            *) ;;
-        esac
-        # 授权判定自己又读了'
-mutate mirror-cache-unknown _lib.sh '        *) log "托管：PR #$pr 要不要补 / 收回托管标签判不了' '        *) autopilot_state_set "$sf" '"'"'.mirror[$p] = $k'"'"' --arg p "$pr" --arg k "$key"; log "托管：PR #$pr 要不要补 / 收回托管标签判不了'
-mutate mirror-add-plain-gh _lib.sh '            gh_write api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"' '            gh api -X POST "repos/$REPO/issues/$pr/labels" -f "labels[]=$LABEL_AUTOPILOT"'
-mutate mirror-rm-plain-gh _lib.sh '    if out=$(gh_write api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then' '    if out=$(gh api -X DELETE "repos/$REPO/issues/$pr/labels/$enc" 2>&1); then'
-mutate copy-auth-no-strip _lib.sh '    autopilot_place_strip_copy "PR #$pr" || return 2
-    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY="$AUTOPILOT_PLACE_COPY"; AUTOPILOT_PR_COPY_READ=1
-    # 两处' '    pp="$AUTOPILOT_PLACE"; AUTOPILOT_PR_EVENTS="$AUTOPILOT_PLACE_EVENTS"; AUTOPILOT_PR_COPY=""; AUTOPILOT_PR_COPY_READ=1
-    # 两处'
-mutate copy-pr-only-no-strip _lib.sh '    if [ -n "$AUTOPILOT_PR_COPY" ]; then
-        AUTOPILOT_DENY=no-label' '    if false; then
-        AUTOPILOT_DENY=no-label'
-mutate copy-takeover-guard _lib.sh '    if [ "$AT_MODE" = none ] && [ -n "$AUTOPILOT_PR_COPY" ]; then AT_V=skip; return 0; fi' ''
-mutate merge-needs-pr-label _lib.sh '    if [ "$AP_KIND" = issue ] && ! autopilot_has_label "$pj"; then' '    if false; then'
-mutate mirror-tick-off agent-poll.sh 'autopilot_mirror_tick "$STATE_FILE" || true' ':'
-# 旧实现对照（复审第 2 轮要求）：上一版 a420448 的 _lib.sh 整份换进来，必须有检查变红
-mutate_old() {   # <名字> <提交>
-    local name="$1" rev="$2" M="$SANDBOX/mut-$1"
-    part_take || return 0
-    mutation_gate || return 0
-    mut_in_shard "$name" || return 0
-    mut_ran=$((mut_ran + 1))
-    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! git -C "$REPO_DIR" show "$rev:scripts/_lib.sh" > "$M/scripts/_lib.sh" 2>/dev/null; then
-        echo "  ❌ 负对照 $name：取不到 $rev 的旧实现（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M/scripts"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照 $name：$fail 条检查变红"
-    else echo "  ❌ 负对照 $name：旧实现整套检查仍全绿"; mut_fail=$((mut_fail + 1)); fi
-}
-mutate_old old-a420448 a4204481429c54cd1803ca8d68aab27fecc9f71d
-# 上一轮复审（PR #132 第 2 轮）打回的那一版：交人待办丢失、写前那次判不了不计数、交人前不核对 PR 状态
-mutate_old prev-083fc09 083fc09b80972778d3efb47da4788d87e6fca881
-# 复审第 3 / 4 轮打回的那一版：交人待办不重判，压掉新授权、改绑后照写
-mutate_old prev-046867f 046867f24326de38f1cc373ce067ab5ca485b085
-# 复审第 5 轮打回的那一版：标签已加、只欠说明时不核对身份和 pending/human 还在不在
-mutate_old prev-58e19a2 58e19a224f64909f18cacbbacae3e1fe692e3d34
-# 同秒授权被遮住的那一版
-mutate_old prev-bee1a66 bee1a66b99fee7c3a47079612b0e8fc9a189a455
-pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
-mutation_summary "$0"
 compat_summary
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "正式版：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

@@ -5,7 +5,7 @@
 # 人这一轮的原话（引用在前、标题在后）、issue 侧也带「本轮问题与回答」、复审检查这几项版式、
 # 复审交人前收拢未答问题并按完整骨架写、先向外部需求机器人汇报时交维护者合并前附合并说明。
 #
-# 跑法：bash tests/reply-layout-prompts.test.sh（MUTATION=1 连负对照一起跑）
+# 跑法：bash tests/reply-layout-prompts.test.sh
 # 依赖：无。用仓库自带的真实模板，走 daemon 真正拼 prompt 的 compose_prompt_template；
 # 占位符的替换起真实派工脚本（假 gh / 假 tmux）读它写出的 prompt。
 #
@@ -13,7 +13,7 @@
 # worker 模板加复审模板、「引用块之后第一行是标题」四份交人评论第 1 条），只改其中一处不会报错，
 # 只会让那一个环节照旧发出没图、没引用的评论。所以按「规矩 × 入口」矩阵逐格断言：该在的在、
 # 不该在的不在、多份副本逐字一致、旧的互相冲突的说法（「第一个看得见的行是标题」「没有图就不
-# 生成」）一处都不剩；负对照按格子做——只删一个入口的那一份，其余入口原样，要求那一格变红。
+# 生成」）一处都不剩。
 
 # ── Reply layout: mock-ups, quoting, review hand-off skeleton: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Reply layout: mock-ups, quoting, review hand-off skeleton (GitHub#238: "界面改动配设计稿、选择题配样例图" in the
@@ -26,7 +26,7 @@
 # block, the issue-side "交人评论必须带上人工问题的最终回答" whose rule bullets match the PR-side copy byte for byte,
 # review step 2L and the full hand-off skeleton, and `prompts/requester-bot-merge-note.md` appended by
 # `requester_bot_handoff_section` only with report-first on) → `tests/reply-layout-prompts.test.sh`
-# (~12 s; `MUTATION=1` adds 24 broken copies, each removing one entry point's copy only). It asserts a
+# (~12 s). It asserts a
 # rule × entry-point matrix — present where it belongs, absent elsewhere, copies identical, no old
 # conflicting phrase left ("first visible line is the title", "no images, don't generate") — renders
 # the image-host placeholder `${REVIEW_ASSET_BASE_URL}` through the real dispatch scripts (set /
@@ -44,8 +44,6 @@ unset CODING_AGENT_RELEASE_ROOT
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/prompt-files.sh
 source "$TEST_DIR/lib/prompt-files.sh"
 
@@ -76,9 +74,7 @@ ok()  { echo "  ✅ $1"; pass=$((pass+1)); }
 bad() { echo "  ❌ $1"; fail=$((fail+1)); }
 
 EXTRA_REL=".agents/skills/cavil-loop/prompts/review.extra.md"
-SANDBOXES=0
 make_sandbox() {
-    SANDBOXES=$((SANDBOXES + 1))
     rm -rf "$TMP/skill" "$TMP/project"
     mkdir -p "$TMP/skill" "$TMP/project/.agents/skills/cavil-loop"
     cp -r "$REPO_DIR/prompts" "$TMP/skill/prompts"
@@ -449,112 +445,7 @@ for kind in new-issue issue-comment pr-comment review; do
     done
 done
 
-# ── 负对照：每个格子单独删一份，其余入口原样 ──
-expect_red() {   # <说明> <期望出现的报错片段>
-    out=$(check_prompts)
-    if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
-    else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
-}
-drop_section() {   # <文件> <标题>：删掉这一节（到下一个 ## 之前）
-    awk -v h="$2" '$0==h{skip=1; next} skip&&/^## /{skip=0} !skip' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
-}
-mutation_on && echo "── 负对照 ──"
-neg_sandbox() { mutation_gate || return 1; make_sandbox; }
-SANDBOXES_BEFORE_NEG=$SANDBOXES
-P="$TMP/skill/prompts"
-
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    drop_section "$P/$name.template.md" "$MOCK_H"
-    expect_red "$name 少了配图规矩" "$name: 没有配样例图规矩"
-done
-if neg_sandbox; then
-    sed -i '/^- \*\*配了出图地址却出不了图\*\*/s/这不是豁免。/可以改用文字描述。/' "$P/pr-comment.template.md"
-    expect_red "pr-comment 把出不了图改回豁免" "pr-comment: 配图规矩把出不了图当成豁免"
-fi
-for name in issue-comment pr-comment review; do
-    neg_sandbox || continue
-    drop_section "$P/$name.template.md" "$QUOTE_H"
-    expect_red "$name 少了引用规矩" "$name: 没有引用规矩"
-done
-if neg_sandbox; then
-    sed -i 's/引用块放在评论最前面，`##` 标题紧跟其后/`##` 标题放在最前面，引用块紧跟其后/' "$P/issue-comment.template.md"
-    expect_red "issue-comment 引用改回标题在前" "issue-comment: 引用规矩没写引用在前、标题在后"
-fi
-for name in new-issue issue-comment pr-comment; do
-    neg_sandbox || continue
-    sed -i 's/^1\. \*\*引用块之后第一行是 `##` 标题\*\*/1. **开头一行 `##` 标题**/' "$P/$name.template.md"
-    expect_red "$name 第 1 条退回「开头一行是标题」" "$name: 交人评论第 1 条没改成引用块之后是标题"
-done
-if neg_sandbox; then
-    sed -i 's/^1\. \*\*引用块之后第一行是 `##` 标题\*\*/1. **开头一行 `##` 标题**/' "$TMP/project/$EXTRA_REL"
-    expect_red "复审增量第 1 条退回「开头一行是标题」" "review: 交人评论第 1 条没改成引用块之后是标题"
-fi
-if neg_sandbox; then
-    sed -i 's/机器标记和引用块（如有，见「回复人时先引用人这一轮说的话」）之后的第一行是 `##` 标题/评论第一个看得见的行是 `##` 标题/' "$P/review.template.md"
-    expect_red "复审第 3 步退回「第一个看得见的行」" "review-noextra: 还留着旧说法「评论第一个看得见的行是 \`##\` 标题」"
-fi
-if neg_sandbox; then
-    drop_section "$P/issue-comment.template.md" "$QA_H"
-    expect_red "issue-comment 少了本轮问题与回答" "issue-comment: 没有本轮问题与回答"
-fi
-if neg_sandbox; then
-    sed -i '/^## 交人评论必须带上人工问题的最终回答/,/^## /{s/链接不能代替答案。/链接可以代替答案。/}' "$P/issue-comment.template.md"
-    expect_red "issue-comment 本轮问答的规则条目改了一句" "issue-comment: 本轮问答的规则条目和 pr-comment 不一致"
-fi
-if neg_sandbox; then
-    drop_section "$P/pr-comment.template.md" "$QA_H"
-    expect_red "pr-comment 少了本轮问题与回答（issue 侧原样）" "pr-comment: 没有本轮问题与回答"
-fi
-if neg_sandbox; then
-    sed -i '/^2L\. \*\*worker 交人评论的版式/d' "$P/review.template.md"
-    expect_red "复审少了版式检查" "review: 没有版式检查那一步"
-fi
-if neg_sandbox; then
-    sed -i '/^2L\. /s/③ 过程叙述（试了哪些写法、怎么一步步推导的、版本之间改了什么）留在折叠区外。//' "$P/review.template.md"
-    expect_red "复审版式检查漏了过程叙述" "review: 版式检查漏了过程叙述外露"
-fi
-if neg_sandbox; then
-    drop_section "$P/review.template.md" "$HAND_H"
-    expect_red "复审少了交人骨架" "review: 没有交人骨架"
-fi
-if neg_sandbox; then
-    sed -i 's/人\*\*直接在 agent 的评论里勾选\*\*/人在新评论里回答/' "$P/review.template.md"
-    expect_red "复审收拢未答问题漏了直接勾选" "review: 收拢未答问题漏了直接勾选"
-fi
-if neg_sandbox; then
-    sed -i '/^5\. 本轮问题与回答：/d' "$P/review.template.md"
-    expect_red "复审骨架少了一项" "review: 骨架缺「5. 本轮问题与回答」"
-fi
-if neg_sandbox; then
-    printf '\n交人时若已有相关设计图就复用；没有图就不生成。\n' >> "$P/review.template.md"
-    expect_red "复审又写回不分阶段的「没有图就不生成」" "review: 还留着旧说法「没有图就不生成」"
-fi
-if neg_sandbox; then
-    sed -i 's/^- 这条只管交付后的交人评论：前文没有相关图片时，不为满足这条规则额外生成设计图；[^。]*。/- 前文没有相关图片时，不为满足这条规则额外生成设计图。/' "$P/pr-comment.template.md"
-    expect_red "pr-comment 交付后设计图那段退回不限定" "pr-comment: 交付后设计图那段没限定范围"
-fi
-# 合并说明：去掉渲染、或不先汇报也渲染
-expect_red_bot() {   # <说明> <期望出现的报错片段>
-    out=$(check_bot "$TMP/skill")
-    if grep -qF -- "$2" <<<"$out"; then ok "负对照：$1 → 被拦下"
-    else bad "负对照：$1 → 没被拦下（输出：${out:-空}）"; fi
-}
-if neg_sandbox; then
-    rm -f "$P/requester-bot-merge-note.md"
-    expect_red_bot "合并说明文件没装上" "bot: 先汇报时没有合并说明"
-fi
-
 echo
-neg_sandboxes=$((SANDBOXES - SANDBOXES_BEFORE_NEG))
-if mutation_on; then
-    if [ "$neg_sandboxes" -gt 0 ]; then ok "开关打开：负对照区建了 $neg_sandboxes 个沙盘"
-    else bad "开关打开：负对照区一个沙盘都没建（负对照没真跑）"; fi
-else
-    if [ "$neg_sandboxes" -eq 0 ]; then ok "默认模式：负对照区一个沙盘都没建、没改模板"
-    else bad "默认模式：负对照区仍建了 $neg_sandboxes 个沙盘（开关放在准备之后）"; fi
-fi
-mutation_summary "$0"
 echo "结果：$pass 通过 / $fail 失败"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

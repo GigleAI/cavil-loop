@@ -17,8 +17,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 TMP="$(mktemp -d)"
 cleanup() { chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"; }
@@ -326,18 +324,6 @@ done
 chk "轮询不认的会话（预览服、前缀相近的别的项目），迁移也不因它而等" "$diffs" ""
 : > "$TMUXF"
 
-# 轮询这一侧的负对照：把 list_worker_sessions 的结尾锚点去掉，同一批会话名上它的答案必须变——
-# 说明夹具分得出两种写法，上面「两边答案一致」那条在轮询一侧改动时也会变红。
-if mutation_gate; then     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-MUT="$TMP/mutlib"; mkdir -p "$MUT"; cp -r "$REPO_DIR/scripts" "$MUT/"
-sed -i '/^list_worker_sessions()/,/^}/s/\[0-9\]+\\\$/[0-9]+/' "$MUT/scripts/_lib.sh"
-chk "负对照改到了轮询一侧的匹配" "$(sed -n '/^list_worker_sessions()/,/^}/p' "$MUT/scripts/_lib.sh" | grep -c '\[0-9\]+\\\$')" "0"
-changed=0
-for n in "${names[@]}"; do [ "$(lib_says "$n")" = "$(lib_says "$n" "$MUT")" ] || changed=$((changed+1)); done
-chk "负对照：轮询一侧去掉结尾锚点后，夹具里有会话名的答案变了" "$([ "$changed" -ge 1 ] && echo yes)" "yes"
-fi
-: > "$TMUXF"
-
 # ─────────────────────────────────────────────────────────────────────────────
 poll_entry() {   # <key>：以 <key> 的旧环境文件（或已迁好的新环境文件）起一轮真实的轮询入口
     local k="$1"
@@ -499,22 +485,8 @@ mig14() {   # <迁移脚本所在目录>：在全新 HOME 里迁一个空闲的�
 }
 want14="yes|/.agents/skills/cavil-loop/systemd/cavil-loop-poll@.timer|/.agents/skills/cavil-loop/systemd/cavil-loop-poll@.timer"
 chk "新任务已启用，两条链接都指向稳定入口（不是 releases/r1/）" "$(mig14 "$REPO_DIR/scripts")" "$want14"
-if mutation_gate; then
-    M14="$TMP/mut14"; mkdir -p "$M14"; cp "$REPO_DIR"/scripts/*.sh "$M14/"
-    if OLD='CAVIL_SYSTEMD_USER_DIR="$SYS_DIR" bash "$SCRIPT_DIR/repair-unit-links.sh"' python3 -c '
-import os,sys
-p=sys.argv[1]; s=open(p).read(); o=os.environ["OLD"]
-if s.count(o)!=1: sys.exit(1)
-open(p,"w").write(s.replace(o,"true"))' "$M14/migrate-legacy.sh"; then
-        got=$(mig14 "$M14")
-        chk "负对照：迁移不调用修复 → 链接留在发布目录里" "$([ "$got" != "$want14" ] && case "$got" in *releases/r1/*) echo caught ;; esac)" "caught"
-    else
-        chk "负对照准备：迁移脚本里的修复调用原文还在" "missing" "present"
-    fi
-fi
 
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -25,9 +25,7 @@ const LEGACY_REV = '1dc8219';
 /** Export the client sources of `rev` into a temp dir (CI checks out full history for this). */
 function exportRev(rev: string): string {
   const out = tempDir();
-  // inside a negative-control sandbox (not a git checkout) the runner points at the real repository
-  const repo = process.env.CLIENT_MUT_REPO ?? root;
-  const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: repo, encoding: 'utf8' }).trim();
+  const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: root, encoding: 'utf8' }).trim();
   const tar = execFileSync('git', ['archive', '--format=tar', rev, 'client/src', 'client/test/drivers'], { cwd: top, maxBuffer: 64 << 20 });
   const r = spawnSync('tar', ['-x', '-C', out], { input: tar });
   if (r.status !== 0) throw new Error(`tar failed: ${r.stderr}`);
@@ -41,8 +39,7 @@ beforeAll(async () => {
   const old = exportRev(ELECTRON_REV);
   electronDriver = join(tempDir(), 'signout-crash-electron.mjs');
   await build({ entryPoints: [join(old, 'test/drivers/signout-crash.ts')], outfile: electronDriver, bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'silent' });
-  const repo = process.env.CLIENT_MUT_REPO ?? root;
-  const oldController = execFileSync('git', ['show', `${LEGACY_REV}:client/src/main/controller.ts`], { cwd: repo, encoding: 'utf8' });
+  const oldController = execFileSync('git', ['show', `${LEGACY_REV}:client/src/main/controller.ts`], { cwd: root, encoding: 'utf8' });
   legacyDriver = join(tempDir(), 'signout-crash-legacy.mjs');
   const controllerPath = join(old, 'src/main/controller.ts');
   await build({

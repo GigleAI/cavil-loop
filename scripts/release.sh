@@ -44,7 +44,7 @@
 # Releases (the per-iteration scheduled run, `scripts/release.sh`, `.github/workflows/release.yml`) →
 # `tests/release-auto.test.sh` (the workflow steps are read out of the yml and actually run). Since
 # GitHub#195 the run is plan → release gate → release, and since GitHub#416 the gate is the shell
-# regression suite (the same shards and exactly-once check as `Tests`), not the negative controls: the
+# regression suite (the same shards and exactly-once check as `Tests`): the
 # plan step fixes one commit, the gate tests it, and the cut step tags exactly that commit even if
 # `main` moved on meanwhile. Since GitHub#309 the schedule is daily and the plan step is `release.sh
 # --plan`: it fixes the week that just ended (Beijing Monday–Sunday), the tested commit, the tag name
@@ -56,8 +56,7 @@
 # the gate pass" is checked twice from the `needs` context — in `gate-summary` (every gate job) and
 # again as the release job's first step — so a gate job dropped from `needs` fails, never skips. The
 # test runs the plan / summary / release-check / cut steps out of the yml with each gate job's result
-# injected (failed, skipped, cancelled, missing, gate-only → zero tags, zero pages); `MUTATION=1`
-# reruns the whole file against seven broken copies of the yml. The client's release rides on the
+# injected (failed, skipped, cancelled, missing, gate-only → zero tags, zero pages). The client's release rides on the
 # week's release (GitHub#576: jobs `client-plan` → `client`, which calls `client.yml` through
 # `workflow_call`; versions in `client/scripts/release-version.mjs`): only runs whose plan action is
 # `new` / `page`, only when `client/` changed since the highest `client/vX.Y.Z` tag that has a Release
@@ -95,18 +94,8 @@
 # across-nights case runs the plan with a read-only view — drafts are not listed — and
 # `dev-release.mjs` with a write view against one stateful fake,
 # `client/test/unit/fake-gh-releases.ts`). The Windows real update check
-# (`client/scripts/windows-update-check.sh`) only runs on the Windows CI machine. The nightly
-# negative-controls workflow (`.github/workflows/negative-controls.yml`) is tested in the same file:
-# its plan step (main only; a scheduled run skips only a commit whose last run was green, and a lookup
-# that fails means "run"), its jobs' own steps run against stand-ins for the test runners (they really
-# start the shell shards, autopilot's parts and both client sets with `MUTATION=1`), its summary, and
-# — for `tests.yml` and `client.yml` — that no input, job or step turns negative controls on there;
-# the release kind of the failure report is diffed against the merge-base script. Its client job and
-# `client.yml` share one setup, `.github/actions/client-setup` (Playwright's WebKit is installed
-# there, before the first UI baseline). That job starts from a clean checkout, so each consumer
-# prepares what it reads: `client/test/tauri/mutations.sh` builds the window (`dist/`) and the app's
-# icons before its first entry, only with the switch on → `tests/client-tauri-mutation-prep.test.sh`
-# (~1 s; the real script with a fake `node`, nothing is built or broken) A failed run's report
+# (`client/scripts/windows-update-check.sh`) only runs on the Windows CI machine. The release
+# kind of the failure report is diffed against the merge-base script. A failed run's report
 # (GitHub#285: the `report failure` job, `scripts/release_failure_report.py`) is tested in the same
 # file against a stateful fake GitHub (`tests/fixtures/release-failure-fake-gh.py`) over several runs
 # on one repo: it only ever creates (with the dispatch label in the one create request) or comments,

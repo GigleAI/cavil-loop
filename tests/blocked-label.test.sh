@@ -2,8 +2,7 @@
 # kind: e2e
 # 等前置标签：前置完成后自动接着干 —— GitHub#157。
 #
-# 跑法：bash tests/blocked-label.test.sh              （默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/blocked-label.test.sh   （连负对照一起跑，见 tests/lib/mutation.sh）
+# 跑法：bash tests/blocked-label.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：假 GitHub（tests/lib/fake_github.py，有状态：标签、
 # 标签记录、评论、「Blocked by」关系）+ 假 tmux，HOME 指向临时目录。每一轮都**真的**起
 # agent-poll.sh 子进程；提示词走真实的派工脚本（dispatch-new-issue.sh / dispatch-issue-comment.sh）。
@@ -22,8 +21,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 # shellcheck source=lib/prompt-files.sh
@@ -862,76 +859,8 @@ run_prompt_checks "$SANDBOX/new"
 echo "── 轮询 ──"
 run_poll_scenarios "$SANDBOX/new"
 
-# ─────────────────────────────────────────────────────────────────────────
-# 【12】负对照：沙盘副本逐个改坏，对应那组检查必须变红
-# ─────────────────────────────────────────────────────────────────────────
-echo "── 负对照 ──"
-MUT_BAD=0
-mutant() {   # <名字> <文件> <原文> <改成> <跑哪组：prompt 或 run_poll_scenarios 的组名>
-    mutation_gate || return 0
-    local name="$1" file="$2" from="$3" to="$4" groups="$5" M="$SANDBOX/mut"
-    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/$file" "$from" "$to" <<'PY'
-import sys
-p, a, b = sys.argv[1:4]
-s = open(p).read()
-if s.count(a) < 1: sys.exit(1)
-open(p, "w").write(s.replace(a, b, 1))
-PY
-    then echo "  ❌ 负对照「$name」准备失败：原文找不到"; MUT_BAD=$((MUT_BAD + 1)); return 0; fi
-    local p0=$pass f0=$fail
-    QUIET=1
-    if [ "$groups" = prompt ]; then run_prompt_checks "$M"; else run_poll_scenarios "$M" "$groups"; fi
-    QUIET=0
-    local nf=$((fail - f0))
-    pass=$p0; fail=$f0
-    if [ "$nf" -gt 0 ]; then echo "  ✅ 负对照「$name」：$nf 条检查变红"; pass=$((pass + 1))
-    else echo "  ❌ 负对照「$name」：改坏了却全绿"; fail=$((fail + 1)); fi
-}
-mutant "issue 关成「不做」也算完成" scripts/_lib.sh 'elif .state_reason == "completed" then "completed"' 'elif .state == "closed" then "completed"' failed
-mutant "读不到前置当成已完成" scripts/_lib.sh '                _bfail "读不到前置 $name"; return 2' '                o=completed' wait
-mutant "写前不重判" scripts/_lib.sh 'if [ "$rc" != 0 ] || [ "$d2" != "$d1" ]; then' 'if false; then' race
-mutant "标记不核对作者" scripts/_lib.sh '| select(((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' '| select(true or ((.user.login // "") | ascii_downcase) == ($me | ascii_downcase)' trust
-mutant "旧标记也认" scripts/_lib.sh '| select($since == "" or (.created_at // "") > $since) ]' '| select(true) ]' trust
-mutant "同一秒的旧登记也认（回到 >=）" scripts/_lib.sh '| select($since == "" or (.created_at // "") > $since) ]' '| select($since == "" or (.created_at // "") >= $since) ]' trust
-mutant "交人步骤不写摘 pending/human" scripts/_lib.sh '2. **解除人工等待**：摘掉本条的 `%s` 标签\n3.' '2. **解除人工等待**：%s\n3.' recover
-mutant "不看人叫停" scripts/_lib.sh '    if stop=$(blocked_stop_reason "$labels_csv"); then
-        jq -cn' '    if false; then
-        jq -cn' race
-mutant "等待期间不封顶轮询" scripts/agent-poll.sh 'if [ "${BLOCKED_WAITING:-0}" = 1 ]; then pace_cap="$BLOCKED_RECHECK_SECS"; fi' ':' pace
-mutant "评论不记进度（重试时重复评论）" scripts/_lib.sh "            rec=\$(printf '%s' \"\$rec\" | jq -c '.commented = true')" "            rec=\$(printf '%s' \"\$rec\" | jq -c '.commented = false')" retry
-mutant "self-heal 不跳过等前置" scripts/agent-poll.sh '    if labels_have_blocked "$labels_csv"; then
-        SELFHEAL_BLOCKED' '    if false; then
-        SELFHEAL_BLOCKED' flow
-mutant "greedy 不挡等前置" scripts/_lib.sh '        "${LABEL_PENDING_BLOCKED:-}" \
-        "${LABEL_PENDING_LATER:-}"' '        "${LABEL_PENDING_LATER:-}"' flow
-mutant "派工不摘等前置标签" scripts/_lib.sh '[ -z "$LABEL_PENDING_BLOCKED" ] || BLOCKED_DISPATCH_CLEAR=("$LABEL_PENDING_BLOCKED")' ':' flow
-mutant "功能关着也写状态" scripts/_lib.sh '    BLOCKED_WAITING=0; BLOCKED_ACTED=0
-    blocked_enabled || return 0' '    BLOCKED_WAITING=0; BLOCKED_ACTED=0
-    blocked_state_set "$sf" ".blocked_resume = (.blocked_resume // {})" || true
-    blocked_enabled || return 0' off
-mutant "拼装时不加等前置规则" scripts/_lib.sh '        if blocked_enabled; then
-            printf' '        if false; then
-            printf' prompt
-mutant "子项不追加覆盖段" scripts/dispatch-new-issue.sh 'if blocked_enabled; then printf' 'if false; then printf' prompt
-mutant "功能关着也加规则" scripts/_lib.sh '        if blocked_enabled; then
-            printf' '        if true; then
-            printf' prompt
-# 别的仓库的前置（GitHub#243）：每条新规则各一份
-mutant "标记丢掉仓库名（退回只认 #数字）" scripts/_lib.sh '{r: ((.[0] // "") | ascii_downcase' '{r: (("") | ascii_downcase' cross
-mutant "侧栏别的仓库的条目丢掉" scripts/_lib.sh 'set: (($a.set + $b) | unique' 'set: (($a.set + ($b | map(select(.r == "")))) | unique' cross
-mutant "读前置时丢掉仓库名、改查本仓库" scripts/_lib.sh 'gh api "repos/${pr:-$REPO}/issues/$p"' 'gh api "repos/$REPO/issues/$p"' cross
-mutant "别的仓库读到 404 当成已完成" scripts/_lib.sh '                o=unreadable' '                o=completed' cross
-mutant "限流的 403 当成无权读、交人" scripts/_lib.sh "&& ! printf '%s' \"\$pj\" | grep -qiE 'rate limit|abuse'; then" '; then' cross
-mutant "读不到不算失败收场" scripts/_lib.sh '. == "missing" or . == "unreadable" or . == "forbidden" or' '. == "missing" or' cross
-mutant "本仓库全名不归成 #N" scripts/_lib.sh '| if . == $self then "" else . end), n: (.[1] | tonumber)}' '), n: (.[1] | tonumber)}' cross
-mutant "读不到时不写权限说明" scripts/_lib.sh '[ -z "$access" ] ||' 'true ||' cross
-mutant "不看互通名单" scripts/_lib.sh '| select(.r != "" and (.r as $o | $T | index($o) | not))' '| select(false)' cross
-
 echo
 echo "通过 $pass，失败 $fail"
-[ "$MUT_BAD" = 0 ] || echo "负对照准备失败 $MUT_BAD 项"
-mutation_summary "$0"
 compat_summary
 report_counts "$pass" "$fail"
-[ "$fail" = 0 ] && [ "$MUT_BAD" = 0 ]
+[ "$fail" = 0 ]

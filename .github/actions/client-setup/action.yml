@@ -1,10 +1,8 @@
 name: Client test environment
 description: >
   Everything the client's suites need on a Linux runner — Node, Rust, the system WebKit, tauri-driver,
-  npm ci and Playwright's own WebKit — shared by client.yml (the tests on every PR) and release.yml
-  (the weekly release gate's client negative controls, GitHub#195), so both start from the same setup.
-  Playwright's browser is installed here, before anything that can open the UI: the negative-control
-  runner starts a UI baseline first.
+  npm ci and Playwright's own WebKit — used by client.yml's jobs, so they all start from the same setup.
+  Playwright's browser is installed here, before anything that can open the UI.
 # Both inputs default to the full setup; only client.yml's quick-test jobs turn parts off (GitHub#495).
 inputs:
   ui:

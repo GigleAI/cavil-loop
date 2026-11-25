@@ -11,7 +11,7 @@
 # 不在被测代码里留测试开关。
 #
 # 用例全绿；其中「开关关掉」一例另和改动前的固定提交 954a294 对拍：GitHub 调用、模型输入、
-# 推上去的经验和报告逐字节相同。（原来的负对照已按 GitHub#234 删去。）
+# 推上去的经验和报告逐字节相同。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

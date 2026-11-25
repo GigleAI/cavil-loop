@@ -39,7 +39,7 @@
 # Auto-adding the repo's issues / PRs to GitHub Projects (GitHub#116: `AUTO_ADD_PROJECTS`,
 # `scripts/project-auto-add.sh`, `project_auto_add_tick`, `$STATE_DIR/project-auto-add.json`) →
 # `tests/project-auto-add.test.sh` (~1 min by default, real `agent-poll.sh` against a stateful fake
-# GitHub; ~2.5 min with `MUTATION=1`, sixteen broken copies). Each project is judged only on the reads
+# GitHub). Each project is judged only on the reads
 # *it* needs — a failure on a page another project needs must not hold it back — and its candidates
 # stay within its own range (a synced board does not pick up old items just because a new board
 # triggered a full scan). Reads go through `project_gh_graphql`, the add through `gh_write`; a project

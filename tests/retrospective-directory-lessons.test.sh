@@ -106,7 +106,7 @@ project_lessons() {
 MD
 }
 
-# 每组断言：给一次拼装结果打分，返回失败条数（负对照用它判断「变红」）
+# 每组断言：给一次拼装结果打分，返回失败条数
 judge_compose() {   # <合成文件>
     local out="$1" n=0
     grep -q '^HARD-RULE\|规则：HARD-RULE' "$out" || n=$((n+1))

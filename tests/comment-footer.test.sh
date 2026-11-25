@@ -15,7 +15,6 @@
 #   【4】周报读法：footer 末行是机器记录；去掉机器记录后从可见部分读出的时长 / token / 金额
 #        与机器记录一致；旧格式评论照旧能读
 #   【5】四份模板拼装后的 footer 段：走生产拼装函数，把成品里的命令原样跑一遍
-#   （原来的【6】负对照已按 GitHub#234 删去）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
