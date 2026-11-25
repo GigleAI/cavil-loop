@@ -1490,7 +1490,7 @@ COMMENT_FOOTER_EXTRA_CMD='f="$HOME/.agents/releases/cavil-loop/entrypoints/drive
   「未记到结束」；印了编号但没有记录 →「没有记账」；读不到编号 →「无法关联」；记录里有、没有任何会话
   命令印出过 → 单独算一次、实测计时。嵌套运行（测试里再跑 `tests/run.sh`）不记账。
 - **单跑测试**——从 agent 自己的会话里认出的测试命令（`bash tests/<名字>.test.sh`、
-  `bash test/tauri/mutations.sh`、`npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
+  `npm test` / `npm run test…`、`npx vitest`、`npx playwright test`、
   `cargo test`；引号和 here-doc 里的文字不算），按工具调用到工具结果计时，是整条命令的估算。
 - **回答**：任何一栏读不了 → `unknown`；有实测部分 → 各段时间的并集（并行的同一秒只算一次；另有未计时的
   写进细节，所以是下限）；看到了运行、一秒都没计上 → `unknown`；两栏都读到、一次都没跑 → 0。
@@ -1617,12 +1617,8 @@ python3 ~/.agents/skills/cavil-loop/scripts/pr-time-stats.py \
   （按名字跑几个文件或 `--changed-from`）、全部（不带挑选条件）、其他；`Tests` 工作流的 CI 每次尝试按汇总
   那一步印的挑选方式分（全量 / 只跑改动够得着的 / 未知），`Client` 工作流单列；本地小计、CI 小计（各次尝试
   取并集）、测试总耗时。
-- 「完整测试」= 带负对照的整套运行，只有每晚的 `Negative controls` 工作流在主干上这么跑、不属于某个 PR：
-  这一栏为 0，报告另列它每次运行多久——只算「负对照那一步」自己真的跑了的那几次（shell 分片、autopilot、
-  客户端三种作业都按步骤判断；跑红的照实计入）。只做了准备就收尾的运行（不在主干上的手动运行、定时运行发现
-  同一个提交上次已经跑绿），以及准备步骤失败、负对照那一步没开始的运行，整条运行照样显示完成或失败，都不算
-  进去、单列为「没真跑」；作业或步骤读不到、负对照那一步被取消或状态认不出的，也不算、单列，下次重读。发版
-  流水线和客户端完整测试单列为「其他主干测试」，不算完整测试。
+- 发版流水线和客户端完整测试（每周定时、发版标签）属于主干、不属于某个 PR：报告另列它们每次运行多久，
+  标为「主干测试参考」。
 
 </details>
 
@@ -3629,7 +3625,7 @@ Release 只是 changelog 和 `npx skills add` 的落点，**和受管安装的�
 - **何时**：`.github/workflows/release.yml` 的定时触发，**每天** 00:10 北京时间（16:10 UTC）。周一那次发刚结束的那一周；其余六天发现这一周已发布，十几秒就结束——周一门禁没过时，修复合进 main 之后的第一次每天检查把这一周补发出来，名字和标题仍归那一周。GitHub 的定时任务高峰期会晚几分钟到几十分钟执行。
 - **发哪一周**：「刚结束的那一周」= 运行开始时按北京时间算、最近一个已经过完的周日 D（北京时间周日 23:59 还是上一周，周一 00:00 起是这一周）。计划那步只算一次，门禁和打标签都用它定下的周、提交和 tag，跨过零点也不变。只补最近这一周：连续漏发两周以上时更早的周不单独出版本，它们的提交算进补发的这一版。
 - **运行期间 main 又有合入时发哪个提交**：一次运行可能排在另一次 Release 运行后面等着（同一时间只跑一个），门禁也要跑一阵，这期间 main 常会有新提交。计划那步取它执行时 main 的最新提交——不是触发运行那一刻的提交；发版那步只给门禁测过的那个提交打 tag，不管 main 之后又走了多远。只有签出根本不在 main 历史上（分叉）才拒绝。在本机手动跑 `scripts/release.sh` 仍要求本地 main 与 `origin/main` 完全一致。
-- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。负对照**不在**门禁里：它们每晚单独跑（见后面第二节），红了开 issue，不拦发版。
+- **门禁跑什么**：shell 普通回归——和每个 PR 上 Tests 工作流同样的四个 `tests/run.sh --ci` 分片和「每个单元恰好通过一次」核对——测的是 tag 将要指向的那个提交。任何一个门禁任务红、被跳过或缺失，就不打 tag、不建页面。
 - **发什么**：tag 是 `release/vD.N`。Release 标题带上 tag 日期所在的周一～周日，例如 `release/v2026.10.25.1 · 迭代 2026-10-19 ~ 10-25`。计划那步（`scripts/release.sh --plan`）按顺序判断，命中第一条即定：
   1. main 最新提交上有 `release/v*` tag 还没有 Release 页面 → 门禁测这个提交，给这个 tag 补建页面，不打新 tag
   2. 刚结束那一周的 tag 里有没有页面的（取序号最大的那个）→ 门禁测**这个 tag 自己的提交**，给它补建页面，不打新 tag
@@ -3679,34 +3675,6 @@ gh variable delete RELEASE_FAILURE_REPORT --repo GigleAI/cavil-loop
 
 停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `RELEASE_FAILURE_REPORT off`，恢复后没有这一项。
 <!-- release-failure-ops:end -->
-
-</details>
-
-### 负对照每晚单独跑
-
-负对照是故意把代码改坏、要求测试变红——检验的是测试本身，不是代码。全部负对照（每个 `tests/*.test.sh` 带 `MUTATION=1`、autopilot 分到六个任务的改坏副本、客户端的 `test/mutation` 和真实应用那一套）只在 `.github/workflows/negative-controls.yml` 里跑：
-
-<details><summary>什么时候在哪跑、红了怎样</summary>
-
-- **何时**：每晚 02:10 北京时间（18:10 UTC），测 main 最新提交。定时运行在第一个任务里先查：本工作流上一次成功运行就在同一个提交上，就到此为止；查不到就照跑。Actions → Negative controls → Run workflow（选 main）手动跑，总是跑；在别的分支上运行什么都不做。
-- **不在 PR 上跑，也不在 Tests、Client 里跑**：这两个工作流的手动运行也没有「也跑负对照」的选项。worker 和复审在开发期间不跑负对照。
-- **不拦发版**：发版门禁只跑普通回归（见上面「门禁跑什么」）。
-- **红了自动开 issue**：和 Release 运行失败同一个脚本、同样的规则（只新建或评论、写前重读、从不改已有 issue 的标签），但是单独一条：标题 `负对照每晚运行失败（自动报告）`，标记 `<!-- cavil-negative-controls-failure -->`，带 `pending/agent`（`RELEASE_FAILURE_LABEL`）。两种报告互不评论到对方的 issue 上。正文列出失败的任务、没按预期变红的 shell 单位和客户端条目。
-
-</details>
-
-<details><summary>停用 / 恢复每晚报告</summary>
-
-<!-- negative-controls-ops:begin -->
-**停用每晚报告**（照常每晚运行，红了只是不开 issue）与**恢复**：
-
-```bash
-gh variable set NEGATIVE_CONTROLS_REPORT --body off --repo GigleAI/cavil-loop
-gh variable delete NEGATIVE_CONTROLS_REPORT --repo GigleAI/cavil-loop
-```
-
-停用只跑第一行，恢复只跑第二行。核对：`gh variable list --repo GigleAI/cavil-loop` 停用期间显示 `NEGATIVE_CONTROLS_REPORT off`，恢复后没有这一项。
-<!-- negative-controls-ops:end -->
 
 </details>
 

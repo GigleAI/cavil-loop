@@ -4,9 +4,8 @@
 # Waking the bot on items it did not file (GitHub#133: `REQUESTER_BOT_WAKE_ANY_ITEM`, the `MODE=any`
 # branch of `notify-requester-bot.sh`, `scripts/requester_bot_handoff.py`,
 # `REQUESTER_BOT_ORIGIN_CLASS` / `REQUESTER_BOT_LINKED` from `requester_bot_item_origin`,
-# `prompts/requester-bot-handoff-any-item.md`) → `tests/requester-bot-any-item.test.sh` (~1 min by
-# default; ~3.5 min with `MUTATION=1`, eighteen broken copies incl. the bot-side rules of design
-# rounds 2 and 3 and routing on the body marker alone). The bot side is
+# `prompts/requester-bot-handoff-any-item.md`) → `tests/requester-bot-any-item.test.sh` (~1 min).
+# The bot side is
 # `tests/fixtures/requester-bot-ref-consumer.py`, written from the doc's handoff protocol and
 # deliberately **not** importing `requester_bot_handoff.py` — keep it that way, it is the cross-check.
 # The fake GitHub runs it before every call of the wake-up script (`FAKE_GH_OBSERVER`), so "the bot

@@ -506,7 +506,7 @@ trust_fingerprint() {
 # Folder-trust records and the trust dialog (GitHub#108: `agent_trust_key` / `agent_trust_paths` /
 # `AGENT_TRUST_PROMPT_*` in the drivers, `trust_config_locked_update` / `agent_trust_dirs` in
 # `drivers/_common.sh`, `agent_prepare_trust` / `agent_launch_trust_gate` in `_lib.sh`, setup step 1b)
-# → `tests/agent-trust-paths.test.sh` (~50 s by default, ~2 min with `MUTATION=1`). The dialog is
+# → `tests/agent-trust-paths.test.sh` (~50 s). The dialog is
 # recognized by its structure on real screen captures (`tests/fixtures/trust-dialog/`), never by one
 # phrase — a conversation quoting it must not get killed. Which directory an agent trusts by was
 # measured on the real CLIs, not inferred — neither inherits trust from a parent inside a git repo,

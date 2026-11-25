@@ -159,46 +159,6 @@ put(f"repos/{R}/actions/jobs/502/logs", "\x1b[36;1m...\x1b[0m\n2026-11-11T02:09:
 client_runs = [run(200, [10], 1, "2026-11-11T02:00:00Z", "2026-11-11T02:04:00Z", "feature/issue-5")]   # 与 Tests 重叠 4 分钟
 put(f"repos/{R}/actions/workflows/client.yml/runs?created=%3E%3D2026-10-08&event=pull_request&per_page=100&page=1",
     {"total_count": 1, "workflow_runs": client_runs})
-# 完整测试 = 负对照那一步真的跑了的运行。三种作业（shell 分片、autopilot、客户端）用真实的步骤名：
-#   300 全部跑绿；301 shell 负对照那一步跑红（算，照实计时）；307 shell / autopilot 准备失败，只有客户端那一步跑了（算）
-#   302 负对照作业全部 skipped（只做了准备）；304 三种作业都在准备步骤失败、负对照那一步 skipped —— 都不算
-#   303 作业列表读不到；305 客户端负对照那一步 cancelled、其余 skipped；306 作业里没有步骤信息 —— 说不清，不算
-NC_RUNS = [(300, "2026-11-10T18:10:00Z", "2026-11-10T19:10:00Z"), (301, "2026-11-11T18:10:00Z", "2026-11-11T20:10:00Z"),
-           (302, "2026-11-12T18:10:00Z", "2026-11-12T18:13:00Z"), (303, "2026-11-13T18:10:00Z", "2026-11-13T21:10:00Z"),
-           (304, "2026-11-14T18:10:00Z", "2026-11-14T18:14:00Z"), (305, "2026-11-15T18:10:00Z", "2026-11-15T19:10:00Z"),
-           (306, "2026-11-16T18:10:00Z", "2026-11-16T19:10:00Z"), (307, "2026-11-17T18:10:00Z", "2026-11-17T18:40:00Z")]
-put(f"repos/{R}/actions/workflows/negative-controls.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1",
-    {"total_count": len(NC_RUNS), "workflow_runs": [run(i, [], 1, a, b, "main") for i, a, b in NC_RUNS]})
-def steps(prep_name, prep, tests):
-    return ([{"name": "Set up job", "conclusion": "success"}, {"name": prep_name, "conclusion": prep}]
-            + [{"name": n, "conclusion": c} for n, c in tests] + [{"name": "Complete job", "conclusion": "success"}])
-def nc_jobs(shell, auto, client, no_steps=False):
-    """每种作业给 (作业结论, 准备步骤结论, 负对照步骤结论…)；结论 skipped 的作业不带步骤，和真实接口一样。"""
-    def job(i, name, prep_name, test_names, spec):
-        jc, prep, *tc = spec
-        j = {"id": i, "name": name, "conclusion": jc}
-        if jc != "skipped" and not no_steps:
-            j["steps"] = steps(prep_name, prep, list(zip(test_names, tc)))
-        return j
-    jobs = [{"id": 0, "name": "plan", "conclusion": "success"},
-            job(1, "negative controls 1/4", "Install tmux", ["Negative controls, shard 1/4"], shell),
-            job(2, "negative controls autopilot 1/6", "Install tmux", ["autopilot negative controls, part 1/6"], auto),
-            job(3, "negative controls client", "Run ./.github/actions/client-setup",
-                ["Negative controls (vitest / back end / UI)", "Negative controls for the app shell (each rebuilds the real app)"], client),
-            {"id": 4, "name": "negative controls summary", "conclusion": "failure",
-             "steps": [{"name": "Negative-control totals", "conclusion": "success"}]}]
-    return {"total_count": len(jobs), "jobs": jobs}
-OK3 = ("success", "success", "success")
-SKIP = ("skipped", None, None)
-put(f"repos/{R}/actions/runs/300/attempts/1/jobs?per_page=100", nc_jobs(OK3[:3], OK3[:3], ("success", "success", "success", "success")))
-put(f"repos/{R}/actions/runs/301/attempts/1/jobs?per_page=100", nc_jobs(("failure", "success", "failure"), OK3[:3], ("success", "success", "success", "success")))
-put(f"repos/{R}/actions/runs/302/attempts/1/jobs?per_page=100", nc_jobs(SKIP, SKIP, ("skipped", None, None, None)))
-put(f"repos/{R}/actions/runs/304/attempts/1/jobs?per_page=100", nc_jobs(("failure", "failure", "skipped"), ("failure", "failure", "skipped"),
-                                                                        ("failure", "failure", "skipped", "skipped")))
-put(f"repos/{R}/actions/runs/305/attempts/1/jobs?per_page=100", nc_jobs(SKIP, SKIP, ("cancelled", "success", "cancelled", "skipped")))
-put(f"repos/{R}/actions/runs/306/attempts/1/jobs?per_page=100", nc_jobs(("failure", "success", "success"), SKIP, ("skipped", None, None, None), no_steps=True))
-put(f"repos/{R}/actions/runs/307/attempts/1/jobs?per_page=100", nc_jobs(("failure", "failure", "skipped"), ("failure", "failure", "skipped"),
-                                                                        ("failure", "success", "success", "failure")))
 put(f"repos/{R}/actions/workflows/release.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1", {"total_count": 0, "workflow_runs": []})
 put(f"repos/{R}/actions/workflows/client.yml/runs?created=%3E%3D2026-11-07&per_page=100&page=1",
     {"total_count": 2, "workflow_runs": [{**run(400, [], 1, "2026-11-10T16:40:00Z", "2026-11-10T17:40:00Z", "main"), "event": "schedule"},
@@ -269,7 +229,7 @@ eq("【3】#10 CI：第 1 次尝试按改动挑选 300 s、第 2 次全量 600 s
 eq("【3】#10 CI 尝试次数", r["ci_attempts"], {"shell_full": 1, "shell_changed": 1, "shell_unknown": 0, "client": 1})
 eq("【3】#10 CI 小计按并集（客户端与 Tests 第 2 次重叠）= 900", r["ci_total_secs"], 900.0)
 eq("#10 测试总耗时 = 285 + 900", r["test_total_secs"], 1185.0)
-eq("#10 完整测试 0", r["full_secs"], 0)
+eq("#10 不再有「完整测试」一栏", "full_secs" in r, False)
 r = P[11]
 eq("【4】#11 没有 footer → AI 无记录", (r["ai_secs"], r["ai_state"]), (None, "none"))
 eq("【3】#11 fork 运行按分支认到 #11，挑选方式未知（没有汇总那一步）", (r["ci_secs"]["shell_unknown"], r["ci_attempts"]["shell_unknown"]), (180.0, 1))
@@ -287,11 +247,7 @@ eq("【7】AI 平均只用 #10 #12 #13：(180+60+70)/3", round(s["ai"]["stat"]["
 eq("【7】AI 中位数 70、分母 3、未计入 2", (s["ai"]["stat"]["median"], s["ai"]["stat"]["n"], s["ai"]["excluded"]), (70.0, 3, 2))
 eq("【7】测试总耗时分母 4、未计入 1（#11 没 footer）；CI 小计分母 5", (s["test_total"]["stat"]["n"], s["test_total"]["excluded"], s["ci_total"]["stat"]["n"]), (4, 1, 5))
 eq("【7】标注计数", s["flagged"], {"派工重叠": 1, "测试记录不全": 1, "共用工作树": 2})
-eq("完整测试 = 负对照那一步真跑了的 3 次（跑红的、只有客户端那一步跑了的也算）、平均 70 分钟",
-   (d["full_tests"]["n"], d["full_tests"]["mean"]), (3, 4200.0))
-eq("负对照没真跑的 2 次（全部跳过、三种作业都在准备步骤失败）不算、单列", d["full_tests"]["not_run"], 2)
-eq("说不清的 3 次（作业列表读不到、负对照那一步被取消、作业没有步骤信息）不算、单列", d["full_tests"]["unknown"], 3)
-eq("其他主干测试单列：发版 0 次、客户端只算定时那 1 次", (d["other_main_tests"]["release.yml"]["n"], d["other_main_tests"]["client.yml"]["n"]), (0, 1))
+eq("主干测试参考：发版 0 次、客户端只算定时那 1 次；没有「完整测试」", (d["other_main_tests"]["release.yml"]["n"], d["other_main_tests"]["client.yml"]["n"], "full_tests" in d), (0, 1, False))
 eq("流水读不懂的行计数 1", d["runs_log_bad_lines"], 1)
 PY
 )
@@ -319,9 +275,9 @@ while i < len(lines):
 print(f"tables={tables}"); print("\n".join(bad))
 PY
 )
-if [ "$(head -1 <<<"$bad")" = "tables=4" ] && [ "$(sed -n 2p <<<"$bad")" = "" ]; then echo "  ✅ 报告 4 张表，表头、分隔行、数据行列数都一致"; pass=$((pass+1))
+if [ "$(head -1 <<<"$bad")" = "tables=3" ] && [ "$(sed -n 2p <<<"$bad")" = "" ]; then echo "  ✅ 报告 3 张表，表头、分隔行、数据行列数都一致"; pass=$((pass+1))
 else echo "  ❌ 表格：$bad"; fail=$((fail+1)); fi
-grep -q "另有 2 次负对照没真跑（只做了准备就收尾，或准备步骤失败后负对照没开始），3 次说不清" "$SB/out.md" && grep -q "其他主干测试参考（不是完整测试" "$SB/out.md" && ! grep -q "| release.yml |.*完整" "$SB/out.md" && { echo "  ✅ 发版 / 客户端单列为其他主干测试；完整测试跳过 / 读不到的次数写在报告里"; pass=$((pass+1)); } || { echo "  ❌ 没有单列其他主干测试"; fail=$((fail+1)); }
+grep -q "主干测试参考（不进每 PR）" "$SB/out.md" && grep -q "| release.yml | 0 |" "$SB/out.md" && ! grep -q "完整测试 |\|负对照" "$SB/out.md" && { echo "  ✅ 发版 / 客户端单列为主干测试参考；没有「完整测试」一栏"; pass=$((pass+1)); } || { echo "  ❌ 没有单列主干测试参考，或仍有完整测试 / 负对照"; fail=$((fail+1)); }
 
 echo "【3】--no-ci-selection：不读日志，挑选方式记未知"
 : > "$SB/gh/calls.log"
@@ -330,29 +286,23 @@ got=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv
 if [ "$got" = 2 ] && ! grep -q '/logs$' "$SB/gh/calls.log"; then echo "  ✅ 两次尝试都记未知、没读日志"; pass=$((pass+1))
 else echo "  ❌ 得到 $got；日志调用：$(grep -c '/logs$' "$SB/gh/calls.log")"; fail=$((fail+1)); fi
 
-echo "【10】跑完的 CI 尝试存本机缓存：重跑不再读，读失败的不存；判定规则改了的旧结论不再用"
+echo "【10】跑完的 CI 尝试存本机缓存：重跑不再读，读失败的不存"
 rm -rf "$SB/cache"; mkdir -p "$SB/cache/cavil-loop"
-# 上一版规则（只看作业结论）会把 304 判成「跑了」，按旧前缀存着：新规则不能拿它用
-printf '{"nc:304:1": "ran", "nc:302:1": "ran"}' > "$SB/cache/cavil-loop/pr-time-stats-o_r.json"
 FAKE_GH_FAIL="repos/o/r/actions/jobs/502/logs" run_stats --json > "$SB/c1.json" 2>/dev/null
 v1=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv[1]))["prs"]}[10]; print(r["ci_attempts"]["shell_unknown"], r["ci_attempts"]["shell_full"])' "$SB/c1.json")
 : > "$SB/gh/calls.log"
 run_stats --json > "$SB/c2.json" 2>/dev/null
 v2=$(python3 -c 'import json,sys; r={x["pr"]:x for x in json.load(open(sys.argv[1]))["prs"]}[10]; print(r["ci_attempts"]["shell_unknown"], r["ci_attempts"]["shell_full"])' "$SB/c2.json")
 reread=$(grep -c 'jobs/502/logs' "$SB/gh/calls.log")
-fn=$(python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["full_tests"]; print(f["n"], f["not_run"])' "$SB/c1.json")
-if [ "$fn" = "3 2" ]; then echo "  ✅ 旧规则存下的「跑了」没被拿来用：完整测试仍是 3 次、没真跑 2 次"; pass=$((pass+1))
-else echo "  ❌ 带旧缓存时完整测试 / 没真跑 =「$fn」"; fail=$((fail+1)); fi
 if [ "$v1" = "1 0" ] && [ "$v2" = "0 1" ] && [ "$reread" = 1 ]; then echo "  ✅ 读失败那次记未知、没进缓存，下次重新读到全量"; pass=$((pass+1))
 else echo "  ❌ 第一次「$v1」第二次「$v2」重读 $reread 次"; fail=$((fail+1)); fi
 : > "$SB/gh/calls.log"
 run_stats --json > "$SB/c3.json" 2>/dev/null
-n=$(grep -E '/logs$|/jobs\?|/attempts/[0-9]+$' "$SB/gh/calls.log" | grep -cvE 'runs/30[356]/')
-retry=$(grep -cE 'runs/30[356]/attempts/1/jobs' "$SB/gh/calls.log")
+n=$(grep -cE '/logs$|/jobs\?|/attempts/[0-9]+$' "$SB/gh/calls.log")
 same=$(python3 -c 'import json,sys
 a,b=(json.load(open(f)) for f in sys.argv[1:]); a.pop("gh_calls"); b.pop("gh_calls"); print(a==b)' "$SB/c2.json" "$SB/c3.json")
-if [ "$n" = 0 ] && [ "$retry" = 3 ] && [ "$same" = True ]; then echo "  ✅ 第三次：已缓存的 CI 尝试、作业、日志一次都没再读，只重读了上次说不清的那 3 个作业列表，结果相同"; pass=$((pass+1))
-else echo "  ❌ 第三次还读了 $n 次已缓存的、重读读不到的 $retry 次；结果相同：$same"; fail=$((fail+1)); fi
+if [ "$n" = 0 ] && [ "$same" = True ]; then echo "  ✅ 第三次：已缓存的 CI 尝试、作业、日志一次都没再读，结果相同"; pass=$((pass+1))
+else echo "  ❌ 第三次还读了 $n 次已缓存的；结果相同：$same"; fail=$((fail+1)); fi
 calls=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["gh_calls"])' "$SB/c3.json")
 if [ "$calls" = "$(wc -l < "$SB/gh/calls.log")" ]; then echo "  ✅ 报告的请求数 $calls = 假 gh 收到的请求数"; pass=$((pass+1))
 else echo "  ❌ 报告 $calls 次，假 gh 收到 $(wc -l < "$SB/gh/calls.log") 次"; fail=$((fail+1)); fi

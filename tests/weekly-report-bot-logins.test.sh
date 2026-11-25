@@ -107,7 +107,7 @@ import json; w=json.load(open('$TMP/d.json'))['weekly']['$W']
 D=json.load(open('$TMP/d.json')); d=[x for x in D['detail'] if x['num']==10]
 print(int(w['human']), int(w['bot']), int(w['wall']), round(w['cost'], 2), int(d[0]['human']) if d else 'no-detail')"
 }
-chk "不配名单：机器人的 2 条算成人发的、耗时 / 金额归零（负对照，即 #46 的现象）" \
+chk "不配名单：机器人的 2 条算成人发的、耗时 / 金额归零（对照：即 #46 的现象）" \
     "$(collect '')" "3 0 0 0 3"
 chk "配了名单：周总表和明细的人发都只剩 1 条，30 分钟 / \$12.5 入账" \
     "$(collect acme-bot-pusher)" "1 2 1800 12.5 1"

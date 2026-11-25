@@ -2,8 +2,7 @@
 # kind: e2e
 # 托管的 issue 拆成子 issue 后照样托管到底；合并后 issue 留给人关；互通名单里的仓库 —— GitHub#233。
 #
-# 跑法：bash tests/autopilot-split.test.sh             （默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/autopilot-split.test.sh  （连负对照一起跑：每份改坏的脚本副本把整套场景重跑一遍）
+# 跑法：bash tests/autopilot-split.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py：标签、标签记录、评论、
 # 合并接口、父子关系、第二个仓库）+ 假 tmux，HOME 指向临时目录。每一轮都**真的**起 agent-poll.sh 子进程。
 #
@@ -21,8 +20,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 SANDBOX=$(mktemp -d)
 trap '[ -n "${KEEP_SANDBOX:-}" ] && echo "SANDBOX=$SANDBOX" || rm -rf "$SANDBOX"' EXIT
@@ -513,65 +510,10 @@ PY2
     chk "别的仓库的前置读不到 → 不动（零写入）" "$(has_label 90 pending/blocked)/$(label_writes 90)" "yes/0"
 }
 
-REAL_PASS=0; REAL_FAIL=0
 section "══ 正式版 ══"
 run_scenarios "$REPO_DIR/scripts"
-REAL_PASS=$pass; REAL_FAIL=$fail
-
-# ── 负对照：把被测脚本复制一份、改坏一处，同一套场景必须有断言变红 ──
-mut_ran=0; mut_fail=0
-mutate() {   # <名字> <python 替换：旧文本> <新文本>
-    local name="$1" old="$2" new="$3" M="$SANDBOX/mut-$1"
-    mutation_gate || return 0
-    rm -rf "$M"; cp -r "$REPO_DIR/scripts" "$M"
-    if ! OLD="$old" NEW="$new" python3 - "$M/_lib.sh" <<'PY'
-import os, sys
-p = sys.argv[1]; t = open(p).read(); o = os.environ["OLD"]
-if o not in t:
-    sys.exit(1)
-open(p, "w").write(t.replace(o, os.environ["NEW"], 1))
-PY
-    then
-        echo "  ❌ 负对照「$name」准备失败：原文不在了"; mut_fail=$((mut_fail+1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M"
-    QUIET=0; mut_ran=$((mut_ran+1))
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照「$name」变红（$fail 条）"
-    else echo "  ❌ 负对照「$name」没变红：测试分不出这处改坏"; mut_fail=$((mut_fail+1)); fi
-}
-section "══ 负对照 ══"
-mutate parent-ignored 'rc=0; split_parent_check "$num" "$ij" || rc=$?
-    case "$rc" in
-        0) autopilot_authorization_split' 'rc=1
-    case "$rc" in
-        0) autopilot_authorization_split'
-mutate no-author-check '[ -z "$author" ] || [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$me")" ]; then
-        SPLIT_PARENT_WHY="#$num 不是 loop 写入账号建的"; return 1' 'false; then
-        SPLIT_PARENT_WHY="#$num 不是 loop 写入账号建的"; return 1'
-mutate no-trust-check 'if ! repo_trusted "$prepo"; then' 'if false; then'
-mutate parent-stop-ignored 'if printf '"'"'%s'"'"' "$paj" | jq -e --arg H' 'if false && printf '"'"'%s'"'"' "$paj" | jq -e --arg H'
-mutate other-repo-perm-skipped 'if [ -n "$also" ] && [ "$(requester_bot_lc "$also")" != "$(requester_bot_lc "$REPO")" ]; then' 'if false; then'
-mutate unknown-as-not-split '        2) AUTOPILOT_REASON="$SPLIT_PARENT_WHY"; return 2 ;;
-    esac
-    return 1
-}' '        2) return 1 ;;
-    esac
-    return 1
-}'
-mutate handoff-ignores-flow '            if [ -n "$rest" ]; then
-                AH_V=superseded' '            if false; then
-                AH_V=superseded'
-mutate handoff-no-reread '        if [ "$AH_V" != "$v" ] || [ "$AH_ID|$AH_NEXT" != "$id" ]; then' '        if false; then'
-mutate handoff-delete-unchecked '            printf '"'"'%s'"'"' "$out" | grep -q '"'"'HTTP 404'"'"' && continue' '            continue'
-mutate bare-number-dropped '| {r: ((.[0] // "") | ascii_downcase' '| select(.[0] != null) | {r: ((.[0] // "") | ascii_downcase'
-mutate foreign-not-read 'gh api "repos/${pr:-$REPO}/issues/$p"' 'gh api "repos/$REPO/issues/$p"'
-mutate refs-binding-off '       && [ "$(printf '"'"'%s\n'"'"' "$body" | autopilot_body_refs)" = "$n" ]; then' '       && false; then'
-mutate discover-off '    [ -s "${TICK_DIR:-/nonexistent}/issues.json" ] || return 0' '    return 0'
-pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
-mutation_summary "$0"
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "正式版：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

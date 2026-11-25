@@ -446,7 +446,7 @@ markdown 只支持周报用得到的子集：标题 / 表格 / 列表 / 引用 /
    自检比对派工次数、两种时长、金额、四项 token；`collect.py` 写 `data.json` 前、`report.py` 渲染前
    各跑一遍（同一个 `bymodel.check()`），对不上就非零退出，不静默输出。钉住它的是
    `tests/weekly-report-by-model.test.sh`（两个模型 + 一条没写模型的旧记录 + 一条多模型记录 + 一组
-   不可去重合计的重叠派工，走 collect → report 真实链路；负对照删掉一行，报告必须报错）。
+   不可去重合计的重叠派工，走 collect → report 真实链路；数据里删掉一行，报告必须报错）。
    > 来源：维护者在 GigleTutor-Web#1106 用临时副本手工跑过一周：4 个模型之和与原报告总数完全一致（GitHub#61）。
 
 ## 给 agent 的规则（原在根目录 AGENTS.md，改代码前读）

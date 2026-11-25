@@ -31,7 +31,6 @@ ci-failure-report:2/3 176
 ci-failure-report:3/3 256
 claude-resume-model 10
 client-docs 1
-client-tauri-mutation-prep 1
 closed-issue-done 52
 comment-footer 14
 comment-layout-prompts 1

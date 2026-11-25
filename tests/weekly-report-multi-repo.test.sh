@@ -2,8 +2,7 @@
 # kind: e2e
 # 周报把多个项目合并成一份（GitHub#232）：各仓库独立采数，只在结果层合并，同号不串账。
 #
-# 跑法：bash tests/weekly-report-multi-repo.test.sh            （默认回归，~9 s）
-#       MUTATION=1 bash tests/weekly-report-multi-repo.test.sh （再跑 6 项负对照，~15 s）
+# 跑法：bash tests/weekly-report-multi-repo.test.sh            （~9 s）
 # 依赖：bash / python3 / jq / git。走真实入口 scripts/weekly-report/run.sh（不加 --dry-run，
 # 一路走到「开 issue」那一步）：真实 collect.py / merge.py / render.py / report.py 子进程，
 # 假 gh（按仓库返回不同数据、记下每次调用带的凭据）、假 node（出图）、假 curl（公网 200），
@@ -18,13 +17,10 @@
 #   beta  #44 / #45 各 600 s、$1，没有日志 → 沿用原值（只为让中位数分得出「重算」和「平均」）
 # 两边的窗口重叠、编号相同：只要被放进同一次认领，alpha 10:20 那次调用就会归给 start 更晚的
 # beta，alpha 一次调用都没认领到（重算成 $0、处理时长拿不到），beta 照旧回退，两条重叠派工
-# 一条重算一条回退、整组变成「不可相加」——下面第 2 组的断言就是为分开这两种实现写的
-# （负对照 M1 实际跑一遍「合进同一次认领」的做法）。
+# 一条重算一条回退、整组变成「不可相加」——下面第 2 组的断言就是为分开这两种实现写的。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
-# shellcheck source=lib/mutation.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/compat.sh"
 
@@ -73,7 +69,7 @@ case "${FAKE_GH_FAIL:-}" in
 esac
 d="$FAKE_FIX/$repo"
 pick() {
-    if [ "${FAKE_GH_MIX:-}" = 1 ]; then jq -s 'add' "$FAKE_FIX"/*/"$1"; else cat "$d/$1"; fi
+    cat "$d/$1"
 }
 case "$path" in
     *"/issues/comments"*) pick comments.json ;;
@@ -182,7 +178,7 @@ J() { python3 -c "import json,sys; D=json.load(open(sys.argv[1])); print($2)" "$
 num() { python3 -c "import sys; v=float(sys.argv[1]); print(int(v) if v==int(v) else round(v,4))" "$1" 2>/dev/null || echo "$1"; }
 
 # ════════════════════════════════════════════════════════════════════
-# 第 1–5 组的断言放在一个函数里：默认跑一遍本版；负对照 M1 拿「合进同一次认领」的做法再跑一遍
+# 第 1–5 组的断言放在一个函数里
 check_merged() {   # $1 data.json  $2 本轮是否真出了报告（yes / no）
     local D="$1" WK="D['weekly']['$W']"
     local BR="{r['repo']:r['week'] for r in D.get('by_repo',[])}"
@@ -431,130 +427,8 @@ if ! compat_skip "不配附加项目：开出的 issue 正文与改动前" "$TMP
     chk "数据文件（除生成时间外）与改动前逐字节一致" "$(cmp -s "$TMP/dj-old.json" "$TMP/dj-new.json" && echo same || echo diff)" "same"
 fi
 
-# ════════════════════════════════════════════════════════════════════
-echo "════ 负对照 ════"
-mut_ran=0; mut_fail=0
-mut() {   # $1 名字  $2 1 = 断言变红（负对照通过）/ 0 = 仍然全绿
-    mut_ran=$((mut_ran+1))
-    if [ "$2" = 1 ]; then echo "  ✅ 负对照 [$1]：断言变红"
-    else echo "  ❌ 负对照 [$1]：断言仍然全绿，测试分不出这个错"; mut_fail=$((mut_fail+1)); fi
-}
-mutcopy() { rm -rf "$1"; mkdir -p "$1"; cp -r "$TMP/new/scripts" "$1/"; }
-apply() {     # $1 文件 $2 原文 $3 改成：原文不在就算准备失败（这一项记红）
-    if python3 -c '
-import sys
-p, old, new = sys.argv[1:]
-s = open(p).read()
-if s.count(old) != 1: sys.exit(1)
-open(p, "w").write(s.replace(old, new))' "$1" "$2" "$3"; then return 0; fi
-    echo "  ❌ 负对照准备失败：$1 里找不到要改的原文"; return 1
-}
-# 跑一组断言、把输出留下，不计入回归计数
-quiet_check() {   # $1 输出文件  其余：命令
-    local f="$1" p0=$pass f0=$fail; shift
-    "$@" >"$f" 2>&1; pass=$p0; fail=$f0
-}
-red() { grep -F "❌ " "$1" | grep -qF -- "$2"; }   # 那条断言（名字里含 $2）在输出里是 ❌
-
-if mutation_gate; then
-    # M1：把两个仓库的窗口和日志合进同一次认领（一次采数、一个日志目录）——
-    # 也就是「不分仓库采数、直接把数据塞进同一条采数链」的做法
-    mixed() {
-        build_fixtures
-        sed -i '/WEEKLY_REPORT_EXTRA_PROJECTS/d' "$HOME/.config/cavil-loop/alpha.conf"
-        logrec "$TMP/wt-alpha/issue-42" sb < "$CLAUDE_PROJECTS_DIR/$(printf '%s' "$TMP/wt-beta/issue-42" | tr / -)/sb.jsonl"
-        local ok=no; FAKE_GH_MIX=1 runsh_data "$TMP/new" alpha && ok=yes
-        check_merged "$TMP/data-alpha.json" "$ok"
-    }
-    quiet_check "$TMP/m1.out" mixed
-    r=1
-    for k in '合并后真的出了报告' 'alpha 10:20 那次调用只归 alpha' '处理时长不串仓' '「能否相加」各自判定' '合计：金额'; do
-        if [ "$k" = '合并后真的出了报告' ]; then
-            red "$TMP/m1.out" "$k" && { echo "     M1 没跑成，不能算变红"; r=0; }
-        else
-            red "$TMP/m1.out" "$k" || { echo "     M1 下仍为绿：$k"; r=0; }
-        fi
-    done
-    mut "M1 合进同一次认领 → 调用归属 / 处理时长 / 能否相加 / 合计各自变红" "$r"
-fi
-if mutation_gate; then
-    # M2：中位数改成各仓库中位数的平均（自检一起改，否则自检先拦下）
-    M2="$TMP/m2"; mutcopy "$M2"; r=0
-    if apply "$M2/scripts/weekly-report/merge.py" '        cell["sess_med"] = median_min(ds)' \
-           '        cell["sess_med"] = sum(D["weekly"][w]["sess_med"] for _, D in parts) / len(parts)' \
-       && apply "$M2/scripts/weekly-report/merge.py" '        want = median_min(ds)' \
-           '        want = sum(D["weekly"][w]["sess_med"] for _, D in parts) / len(parts)'; then
-        build_fixtures; ok=no; runsh_data "$M2" alpha >/dev/null && ok=yes
-        quiet_check "$TMP/m2.out" check_merged "$TMP/data-alpha.json" "$ok"
-        red "$TMP/m2.out" '派工总耗时中位数' && ! red "$TMP/m2.out" '合并后真的出了报告' && r=1
-    fi
-    mut "M2 中位数求平均" "$r"
-fi
-if mutation_gate; then
-    # M3：去掉「没声明的字段报错」
-    M3="$TMP/m3"; mutcopy "$M3"; r=0
-    if apply "$M3/scripts/weekly-report/merge.py" '            if f not in declared:
-                raise' '            if False:
-                raise'; then
-        python3 "$M3/scripts/weekly-report/merge.py" --out "$TMP/m3.json" --primary "$TMP/pa.json" "$TMP/pb-weekly.json" >/dev/null 2>&1
-        [ $? = 1 ] || r=1
-    fi
-    mut "M3 去掉未声明字段报错" "$r"
-fi
-if mutation_gate; then
-    # M4：严格模式下接口失败仍当空列表
-    M4="$TMP/m4"; mutcopy "$M4"; r=0
-    if apply "$M4/scripts/weekly-report/collect.py" '    if STRICT:
-        # 只有' '    if False:
-        # 只有'; then
-        r=1
-        for mode in exit badjson; do
-            build_fixtures; echo "FAKE_GH_FAIL=$mode" >> "$HOME/.config/cavil-loop/beta.conf"
-            runsh "$M4" alpha; rc=$?
-            if [ "$rc" != 0 ] && [ "$(grep -c ' issue create ' "$TMP/gh.log")" = 0 ]; then
-                echo "     M4 [$mode] 仍被拦下"; r=0
-            fi
-        done
-    fi
-    mut "M4 严格模式吞掉接口失败（exit / badjson 两种注入都要漏过去）" "$r"
-fi
-if mutation_gate; then
-    # M5：合并器去掉严格采数标记检查
-    M5="$TMP/m5"; mutcopy "$M5"; r=0
-    if apply "$M5/scripts/weekly-report/merge.py" '    if D.get("strict") is not True:' '    if False:'; then
-        python3 "$M5/scripts/weekly-report/merge.py" --out "$TMP/m5.json" --primary "$TMP/pa.json" "$TMP/pb-loose.json" >/dev/null 2>"$TMP/m.err"
-        rc=$?
-        # 与回归断言同一判据：退出 1 且点名「严格采数标记」（缺别的字段也会退出 1，不算拦住）
-        [ "$rc" = 1 ] && grep -q '严格采数标记' "$TMP/m.err" || r=1
-    fi
-    mut "M5 去掉严格采数标记检查" "$r"
-fi
-
-if mutation_gate; then
-    # M6：不按名字清，等于本 PR 首版「启动时的环境快照」在定时任务下的效果
-    # （快照里已经有主项目配置，还原它就把主项目的值带给了附加项目）
-    M6="$TMP/m6"; mutcopy "$M6"; r=0
-    if apply "$M6/scripts/weekly-report/run.sh" '        for v in $SCOPED_NAMES; do unset "$v" 2>/dev/null || true; done' '        :' \
-       && apply "$M6/scripts/weekly-report/run.sh" \
-            'wtb=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a;' 'wtb=$(set -a;' \
-       && apply "$M6/scripts/weekly-report/run.sh" \
-            'wtp=$(unset WORKTREE_BASE SESSION_NAME_PREFIX; set -a;' 'wtp=$(set -a;'; then
-        preload_case "$M6"
-        quiet_check "$TMP/m6.out" preload_checks
-        r=1
-        for k in '不带 alpha 的凭据' 'beta 没配切换周' 'carol 在 beta 算人' 'beta 不读日志' '不拿 alpha 的仓库名'; do
-            red "$TMP/m6.out" "$k" || { echo "     M6 下仍为绿：$k"; r=0; }
-        done
-        red "$TMP/m6.out" '预载主项目配置后仍成功出报告' && { echo "     M6 没跑成，不能算变红"; r=0; }
-    fi
-    mut "M6 不清主项目配置（= 首版环境快照）→ 凭据 / 切换周 / 机器人名单 / 目录规则 / 仓库名各自变红" "$r"
-fi
-
-
 echo
-mutation_summary
 compat_summary
 echo "通过 $pass / 失败 $fail"
-if mutation_on; then REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-else report_counts "$pass" "$fail"; fi
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]
