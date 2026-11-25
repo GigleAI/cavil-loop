@@ -171,14 +171,30 @@ exec "{base.REAL_GIT}" "$@"
 
 
 class ReadFailure(_ReportDir):
-    def test_git_cannot_tell_means_no_model_call_and_retry(self):
+    def test_git_cannot_tell_waits_without_using_attempts_then_runs(self):
+        """More failed reads than a job has attempts, then git works again: the job never
+        becomes `failed`, no attempt is spent, and the round after recovery writes the report."""
+        real_git = (self.bin / 'git').read_text()
         (self.bin / 'git').write_text(FAILING_LS_TREE)
         self.configure(NEW_DIR)
-        self.assertEqual(self.run_round(), 0, self.out)
-        job = self.read_job(50)
-        self.assertEqual(job['status'], 'pending', self.out)
-        self.assertIn('cannot read origin/main', job.get('error', ''))
+        for _ in range(5):                  # more rounds than a job's 3 attempts
+            job = self.read_job(50)
+            job['retry_after'] = 0          # the hourly retry time has come
+            (self.queue / 'pr-50.json').write_text(json.dumps(job) + '\n')
+            self.assertEqual(self.run_round(), 0, self.out)
+            job = self.read_job(50)
+            self.assertEqual((job['status'], job.get('attempts', 0)), ('pending', 0), self.out)
+            self.assertIn('cannot read origin/main', job.get('error', ''))
         self.assertEqual(self.model_calls(), [])
+        # git works again
+        (self.bin / 'git').write_text(real_git)
+        job = self.read_job(50)
+        job['retry_after'] = 0
+        (self.queue / 'pr-50.json').write_text(json.dumps(job) + '\n')
+        self.assertEqual(self.run_round(), 0, self.out)
+        self.assertEqual(self.read_job(50)['status'], 'done', self.out)
+        self.assertEqual(len(self.model_calls()), 1)
+        self.assertIsNotNone(self.on_origin(f'{NEW_DIR}/pr-50.md'))
 
     def test_classification_leaves_unknown_jobs_alone(self):
         (self.bin / 'git').write_text(FAILING_LS_TREE)

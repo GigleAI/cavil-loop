@@ -26,7 +26,9 @@ DEFAULT_PREAMBLE = '# 项目复盘经验\n\n以下经验仅适用于本项目，
 
 
 class NotReady(Exception):
-    """The project's lessons file is still in the old format: skip without calling the model."""
+    """This job cannot be judged yet — the project's lessons file is still in the old format,
+    or git cannot tell whether the PR already has a report: skip without calling the model,
+    and without counting an attempt, so the job waits as long as it takes (never `failed`)."""
 
 
 def command(args, cwd=None, stdin=None, timeout=120):
@@ -392,7 +394,7 @@ def review(repo, job, queue, root, *, directories):
     # Remote report is the durable completion marker, including crash after push.
     exists = report_on_ref(project, ref, number)
     if exists is None:
-        raise RuntimeError(f'cannot read {ref} to see whether PR #{number} already has a report')
+        raise NotReady(f'cannot read {ref} to see whether PR #{number} already has a report')
     if exists:
         return
     evidence = collect(repo, number)
