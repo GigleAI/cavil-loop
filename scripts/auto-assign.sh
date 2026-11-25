@@ -23,9 +23,32 @@
 # ── 三种结果分开（L36）──
 #   找到 / 确定没有 / 判不了。判不了 = 任何一次读取失败、字段缺失：这一轮不写、不记，下一轮重来。
 #   条目本身读回 404 / 410 而同一时刻仓库本身读得到 = 已不在（被删 / 转走）；其他错误都是判不了。
-#   读到了也要认得：判定用到的每个字段先过 AA_ISSUE_OK / AA_PULL_OK——开关状态只认 open / closed、
-#   账号类型只认 GitHub 的四种、正文键必须在（值可以是 null = 空正文）、PR 的来源仓库键必须在（null = 来源
-#   仓库已删）；缺字段、不认识的值 = 判不了，不当成「已关闭」「不是真人」「没有来源」。
+#   读到了也要认得：读进来的每一样东西都先过下表的校验（列表页 AA_LIST_OK、条目 AA_ISSUE_OK、PR 详情
+#   AA_PULL_OK、写后读回 AA_BACK_OK、状态文件 AA_STATE_OK），初判和写前重算走同一份。缺字段、空串、
+#   不认识的值 = 判不了，不当成「已关闭」「不是真人」「没有来源」。只有表里标「可为空」的才允许空：
+#
+#     来源          字段                     要求                                  可为空 / null 的含义
+#     列表页        number                   正整数                                —
+#                   created_at               能解析的时间                          —
+#     条目          number                   等于所读的编号                        —
+#                   state                    open / closed                         —
+#                   user.login               非空                                  —
+#                   user.type                User / Bot / Organization / Mannequin —
+#                   assignees[].login        数组，每个非空                        空数组 = 没人
+#                   created_at               能解析的时间                          —
+#                   body                     键必须在，字符串或 null               null / "" = 空正文
+#                   parent_issue_url         不在 / null / 非空字符串              不在或 null = 没有父 issue
+#                   pull_request             不在 / null / 对象                    不在或 null = 是 issue
+#     PR 详情       number                   等于所读的编号                        —
+#                   state / merged           open|closed / true|false              —
+#                   head.ref / base.ref      非空                                  —
+#                   head.sha                 非空                                  —
+#                   head.repo                键必须在；null 或带非空 full_name     null = 来源仓库已删
+#                   body                     键必须在，字符串或 null               null / "" = 空正文
+#     写后读回      assignees[].login        数组，每个非空                        —
+#     仓库本身      full_name                非空（判「已不在」时用）              —
+#     状态文件      cursor / pending 值      非负整数                              —
+#                   done 值                  已知的几种结果                        —
 #   PR 的开关以 PR 详情为准：详情里 closed 或 merged 也算已关闭。
 #
 # ── 按编号续读（issue 与 PR 共用一套递增编号）──
@@ -63,6 +86,29 @@ AA_SETTLE_SECS=300    # 建好满这么久才让 cursor 越过它
 AA_SLOW_AFTER=30
 AA_SLOW_EVERY=10
 
+# 读进来的每一样东西的校验（字段表见文件头；L36：缺、空、不认识 ≠ 否）
+AA_TIME='(type == "string" and ((fromdateiso8601?) != null))'
+AA_NONEMPTY='(type == "string" and length > 0)'
+AA_LIST_OK="type == \"array\" and all(.[]; (.number | type) == \"number\" and .number > 0 and .number == (.number | floor)
+    and (.created_at | $AA_TIME))"
+AA_ISSUE_OK="(.number == \$n) and (.state == \"open\" or .state == \"closed\")
+    and (.user.login | $AA_NONEMPTY)
+    and (.user.type == \"User\" or .user.type == \"Bot\" or .user.type == \"Organization\" or .user.type == \"Mannequin\")
+    and (.assignees | type) == \"array\" and all(.assignees[]; .login | $AA_NONEMPTY)
+    and (.created_at | $AA_TIME)
+    and has(\"body\") and ((.body | type) == \"string\" or .body == null)
+    and (.parent_issue_url == null or (.parent_issue_url | $AA_NONEMPTY))
+    and (.pull_request == null or (.pull_request | type) == \"object\")"
+AA_PULL_OK="(.number == \$n) and (.state == \"open\" or .state == \"closed\") and (.merged == true or .merged == false)
+    and (.head.ref | $AA_NONEMPTY) and (.head.sha | $AA_NONEMPTY) and (.base.ref | $AA_NONEMPTY)
+    and (.head | has(\"repo\")) and (.head.repo == null or (.head.repo.full_name | $AA_NONEMPTY))
+    and has(\"body\") and ((.body | type) == \"string\" or .body == null)"
+AA_BACK_OK="(.assignees | type) == \"array\" and all(.assignees[]; .login | $AA_NONEMPTY)"
+AA_STATE_OK='type == "object" and (.cursor | type) == "number" and .cursor >= 0 and .cursor == (.cursor | floor)
+    and (.done | type) == "object" and all(.done[]; . == "assigned" or . == "none" or . == "unassignable"
+        or . == "closed" or . == "gone" or . == "assigned_already")
+    and (.pending | type) == "object" and all(.pending[]; type == "number" and . >= 0 and . == floor)'
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
@@ -71,8 +117,7 @@ NOW=$(date +%s)
 
 # ── 状态文件 ──
 if [ -f "$AA_STATE" ]; then
-    if ! jq -e 'type == "object" and (.cursor | type) == "number" and (.done | type) == "object" and (.pending | type) == "object"' \
-            "$AA_STATE" >/dev/null 2>&1; then
+    if ! jq -e "$AA_STATE_OK" "$AA_STATE" >/dev/null 2>&1; then
         # 不覆盖：覆盖就等于把进度改成「现在」，停机期间新建的条目再也补不上。要人看一眼再删
         aa_log "⚠️ 状态文件 $AA_STATE 读不懂，本轮跳过；确认无用后删掉它，会从当前最大编号重新起算"
         exit 0
@@ -106,7 +151,7 @@ page=1
 while :; do
     if [ "$page" -gt "$AA_MAX_PAGES" ]; then aa_log "列表超过 $AA_MAX_PAGES 页还没读到上次的进度 #${CURSOR}，本轮跳过"; exit 0; fi
     if ! gh api "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=$AA_PAGE&page=$page" > "$WORK/page.json" 2>/dev/null \
-       || ! jq -e 'type == "array" and all(.[]; (.number | type) == "number" and (.created_at | type) == "string")' "$WORK/page.json" >/dev/null 2>&1; then
+       || ! jq -e "$AA_LIST_OK" "$WORK/page.json" >/dev/null 2>&1; then
         aa_log "读条目列表第 $page 页失败，本轮不处理，下一轮重读"
         exit 0
     fi
@@ -123,25 +168,11 @@ aa_get() {   # <仓库> <路径>
     if out=$(gh api "repos/$1/$2" 2>"$err") && [ -n "$out" ] && printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
         printf '%s' "$out"; return 0
     fi
-    if grep -qE 'HTTP (404|410)' "$err" 2>/dev/null && gh api "repos/$1" --jq .full_name >/dev/null 2>&1; then
+    if grep -qE 'HTTP (404|410)' "$err" 2>/dev/null && [ -n "$(gh api "repos/$1" --jq '.full_name // ""' 2>/dev/null)" ]; then
         return 2
     fi
     return 1
 }
-
-# 判定用到的字段，读到的形状必须完整、值必须认得（L36：不认识 ≠ 否）
-AA_ISSUE_OK='(.number|type)=="number" and (.state == "open" or .state == "closed")
-    and (.user.login|type)=="string" and (.user.login|length) > 0
-    and (.user.type == "User" or .user.type == "Bot" or .user.type == "Organization" or .user.type == "Mannequin")
-    and (.assignees|type)=="array" and all(.assignees[]; (.login|type)=="string")
-    and (.created_at|type)=="string" and ((.created_at | fromdateiso8601?) != null)
-    and has("body") and ((.body|type)=="string" or .body == null)
-    and ((.parent_issue_url // "")|type)=="string"'
-AA_PULL_OK='(.state == "open" or .state == "closed") and (.merged == true or .merged == false)
-    and (.head.ref|type)=="string" and (.head.sha|type)=="string" and (.head.sha|length) > 0
-    and (.base.ref|type)=="string" and (.head|has("repo"))
-    and (.head.repo == null or ((.head.repo.full_name|type)=="string" and (.head.repo.full_name|length) > 0))
-    and has("body") and ((.body|type)=="string" or .body == null)'
 
 age_of() { jq -rn --arg t "$1" '($t | fromdateiso8601) as $c | (now | floor) - $c' 2>/dev/null || echo 0; }
 
@@ -157,9 +188,9 @@ aa_resolve() {
         AA_DOC+=$'\n'"$repo#$num gone"; return
     fi
     [ "$rc" = 0 ] || { AA_RES=unknown; return; }
-    if ! printf '%s' "$ij" | jq -e "$AA_ISSUE_OK" >/dev/null 2>&1; then AA_RES=unknown; return; fi
+    if ! printf '%s' "$ij" | jq -e --argjson n "$num" "$AA_ISSUE_OK" >/dev/null 2>&1; then AA_RES=unknown; return; fi
     author=$(printf '%s' "$ij" | jq -r '.user.login'); atype=$(printf '%s' "$ij" | jq -r '.user.type')
-    isPR=$(printf '%s' "$ij" | jq -r 'if .pull_request then "pr" else "issue" end')
+    isPR=$(printf '%s' "$ij" | jq -r 'if .pull_request != null then "pr" else "issue" end')
     state=$(printf '%s' "$ij" | jq -r '.state'); created=$(printf '%s' "$ij" | jq -r '.created_at')
     url=$(printf '%s' "$ij" | jq -r '.parent_issue_url // ""')
     AA_DOC+=$'\n'"$repo#$num $isPR state=$state author=$author/$atype parent=$url"
@@ -178,7 +209,7 @@ aa_resolve() {
         if [ "$repo" != "$REPO" ]; then AA_RES=none; return; fi
         rc=0; pj=$(aa_get "$repo" "pulls/$num") || rc=$?
         [ "$rc" = 0 ] || { AA_RES=unknown; return; }
-        printf '%s' "$pj" | jq -e "$AA_PULL_OK" >/dev/null 2>&1 || { AA_RES=unknown; return; }
+        printf '%s' "$pj" | jq -e --argjson n "$num" "$AA_PULL_OK" >/dev/null 2>&1 || { AA_RES=unknown; return; }
         AA_DOC+=" pr_state=$(printf '%s' "$pj" | jq -r '"\(.state)/merged=\(.merged)"')"
         if [ "$depth" = 0 ] && ! printf '%s' "$pj" | jq -e '.state == "open" and .merged == false' >/dev/null; then
             AA_RES=closed; return
@@ -210,7 +241,8 @@ aa_resolve_source() {   # <仓库> <编号> <层数>
     local rc=0 ij
     ij=$(aa_get "$1" "issues/$2") || rc=$?
     if [ "$rc" = 1 ]; then AA_RES=unknown; return; fi
-    if [ "$rc" = 0 ] && printf '%s' "$ij" | jq -e '.pull_request' >/dev/null 2>&1; then
+    if [ "$rc" = 0 ] && ! printf '%s' "$ij" | jq -e --argjson n "$2" "$AA_ISSUE_OK" >/dev/null 2>&1; then AA_RES=unknown; return; fi
+    if [ "$rc" = 0 ] && printf '%s' "$ij" | jq -e '.pull_request != null' >/dev/null 2>&1; then
         AA_DOC+=$'\n'"$1#$2 is-pr"; AA_RES=none; return
     fi
     aa_resolve "$1" "$2" "$3"
@@ -249,11 +281,11 @@ while read -r num; do
             aa_log "#$num 指派 @$who 的请求失败，下一轮重试"
             continue
         fi
-        if ! back=$(gh api "repos/$REPO/issues/$num" --jq '[.assignees[].login] | map(ascii_downcase)' 2>/dev/null) || [ -z "$back" ]; then
+        if ! back=$(gh api "repos/$REPO/issues/$num" 2>/dev/null) || ! printf '%s' "$back" | jq -e "$AA_BACK_OK" >/dev/null 2>&1; then
             aa_log "#$num 已发出指派 @${who}，读回失败，下一轮再看"
             continue
         fi
-        if printf '%s' "$back" | jq -e --arg w "$(requester_bot_lc "$who")" 'index($w) != null' >/dev/null 2>&1; then
+        if printf '%s' "$back" | jq -e --arg w "$(requester_bot_lc "$who")" '[.assignees[].login | ascii_downcase] | index($w) != null' >/dev/null 2>&1; then
             set_done "$num" assigned; aa_log "#$num 已指派给提出者 @$who"
         else
             set_done "$num" unassignable; aa_log "#$num 的提出者 @$who 不能被指派（GitHub 没有接受，可能没有仓库权限），不再重试"

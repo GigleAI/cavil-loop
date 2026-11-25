@@ -325,6 +325,47 @@ set_item 5 '.drop_pull = []'; set_item 6 '.drop_pull = []'; set_item 7 '.drop_is
 tick
 chk "恢复后全部补上" "$(assignees 2)/$(assignees 3)/$(assignees 5)/$(assignees 6)/$(assignees 7)" "bob/carol/dave/dave/dave"
 chk "进度推到最后" "$(st .cursor)" 7
+echo "── 8c. 字段表逐行：空串 / 编号对不上 = 判不了，合法的空值照常 ──"
+new_env; start
+item 2 issue bob
+item 3 pr loop-bot '.head_ref = "" | .body = ""'                         # 来源分支名为空、正文也空
+item 4 pr loop-bot '.head_ref = "feature/issue-2" | .base = ""'          # 目标分支名为空
+item 5 pr loop-bot '.head_ref = "feature/issue-2" | .head_sha = ""'      # 提交为空
+item 6 issue "" '.user = ""'                                             # 作者登录名为空
+item 7 issue loop-bot '.parent = "" | .patch_issue = {parent_issue_url: ""}'   # 父 issue 地址是空串
+item 8 issue frank '.patch_issue = {assignees: [{login: ""}]}'          # assignee 登录名为空
+item 9 issue gina '.patch_issue = {number: 99}'                         # 条目接口回了别的编号
+item 10 pr loop-bot '.head_ref = "feature/issue-2" | .patch_pull = {number: 99}'   # PR 详情回了别的编号
+tick
+chk "八种都不写" "$(assignees 3)$(assignees 4)$(assignees 5)$(assignees 7)$(assignees 9)$(assignees 10)/$(writes)" "/1"
+chk "唯一的一次写是正常的 #2" "$(writes_of 2)" 1
+chk "八条都记未决，进度停在 #2" "$(st '[.cursor, (.pending | keys)]')" '[2,["10","3","4","5","6","7","8","9"]]'
+set_item 3 '.head_ref = "feature/issue-2"'; set_item 4 '.base = "main"'; set_item 5 '.head_sha = "abc123"'
+set_item 6 '.user = "henry"'; set_item 7 ".patch_issue = {} | .parent = \"$(PARENT_URL 2)\" | .body = \"$(SUBMARK 2)\""
+set_item 8 '.patch_issue = {}'; set_item 9 '.patch_issue = {}'; set_item 10 '.patch_pull = {}'
+tick
+chk "恢复后全部补上" "$(assignees 3)/$(assignees 4)/$(assignees 5)/$(assignees 6)/$(assignees 7)/$(assignees 8)/$(assignees 9)/$(assignees 10)" "bob/bob/bob/henry/bob/frank/gina/bob"
+chk "进度推到最后" "$(st .cursor)" 10
+new_env; start
+item 2 issue bob '.body = null'
+item 3 pr loop-bot '.head_ref = "feature/issue-2" | .body = null'
+tick
+chk "合法的空值：正文为 null 照常指派" "$(assignees 2)/$(assignees 3)" "bob/bob"
+new_env; start
+item 2 issue bob
+# 写后第一次读回（第三次读 #2）回了坏形状
+world '.hooks = [{path: "repos/acme/widget/issues/2", nth: 3, jq: ".items[\"2\"].patch_issue = {assignees: null}"}]'
+tick
+chk "写后读回形状不对：不记完成、进度不越过" "$(writes_of 2)/$(st '.done | has("2")')/$(st .cursor)" "1/false/1"
+set_item 2 '.patch_issue = {}'
+tick
+chk "下一轮看到已有人，记完成，不再写" "$(writes_of 2)/$(st .cursor)" "0/2"
+new_env; start
+item 2 issue bob
+jq '.done = {"5": "whatever"}' "$W/state/auto-assign.json" > "$W/s.tmp" && mv "$W/s.tmp" "$W/state/auto-assign.json"
+tick
+chk "状态文件里有不认识的结果：不写、不覆盖" "$(writes)/$(st '.done["5"]')" '0/"whatever"'
+
 new_env; start
 item 2 pr loop-bot '.head_ref = "feature/issue-1"'
 world '.items["2"].head_repo = null' 

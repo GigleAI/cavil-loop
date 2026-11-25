@@ -10,7 +10,8 @@
                       "assignees": [...], "body": "...", "created_at": "...", "labels": [...],
                       "parent": "<parent_issue_url>"|null, "deleted": true?,
                       "head_ref", "head_sha", "head_repo", "base", "merged": bool,
-                      "drop_issue": ["body", ...], "drop_pull": ["body", "head.repo", ...]}},   回答里拿掉这些字段
+                      "drop_issue": ["body", ...], "drop_pull": ["body", "head.repo", ...],   回答里拿掉这些字段
+                      "patch_issue": {...}, "patch_pull": {...}}},   回答里顶层字段换成这些值（造空串、编号对不上）
     "unassignable": ["<login>", ...],                   指派时 GitHub 不接受的账号（照常回 201，只是不加）
     "faults": [{"path": "<不带查询串的路径>", "method": "GET"?, "times": n?}],   命中 = HTTP 502，times 省略 = 一直
     "hooks":  [{"path": "...", "nth": k, "jq": "<改 world 的 jq 过滤器>"}]     第 k 次 GET 这个路径前先改世界
@@ -133,7 +134,7 @@ def dropped(v, paths):
     return v
 
 
-def issue_view(n):
+def issue_view(n, single=False):
     x = ITEMS[str(n)]
     v = {"number": int(n), "title": f"item {n}", "state": x.get("state", "open"),
          "user": {"login": x["user"], "type": x.get("utype", "User")},
@@ -144,6 +145,8 @@ def issue_view(n):
         v["parent_issue_url"] = x["parent"]
     if x.get("kind") == "pr":
         v["pull_request"] = {"url": f"https://api.github.com/repos/{REPO}/pulls/{n}"}
+    if single:   # 只改单条读取的回答，列表照常（列表里编号对不上会变成另一条）
+        v.update(x.get("patch_issue", {}))
     return dropped(v, x.get("drop_issue", []))
 
 
@@ -169,7 +172,7 @@ if m and m_ == "GET":
     if x is None or x.get("deleted"):
         http_fail(404, "Not Found")
     if m.group(1) == "issues":
-        emit(issue_view(n))
+        emit(issue_view(n, single=True))
     if x.get("kind") != "pr":
         http_fail(404, "Not Found")
     emit(dropped({"number": int(n), "state": x.get("state", "open"), "merged": x.get("merged", False),
@@ -177,7 +180,7 @@ if m and m_ == "GET":
                   "head": {"ref": x.get("head_ref", ""), "sha": x.get("head_sha", "0" * 40),
                            "repo": (None if x.get("head_repo", REPO) is None
                                     else {"full_name": x.get("head_repo", REPO)})},
-                  "base": {"ref": x.get("base", "main")}}, x.get("drop_pull", [])))
+                  "base": {"ref": x.get("base", "main")}, **x.get("patch_pull", {})}, x.get("drop_pull", [])))
 
 m = re.fullmatch(rf"repos/{re.escape(REPO)}/issues/(\d+)/assignees", bare)
 if m and m_ == "POST":
