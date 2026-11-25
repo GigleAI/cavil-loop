@@ -170,12 +170,27 @@ exec "{base.REAL_GIT}" "$@"
 '''
 
 
+# Fetching origin fails (the network is down): the step before the tree is read.
+FAILING_FETCH = f'''#!/usr/bin/env bash
+if [ "$*" = "remote get-url origin" ]; then echo "https://github.com/{base.REPO}"; exit 0; fi
+if [ "$1" = fetch ]; then echo "fatal: unable to access origin" >&2; exit 128; fi
+exec "{base.REAL_GIT}" "$@"
+'''
+
+
 class ReadFailure(_ReportDir):
     def test_git_cannot_tell_waits_without_using_attempts_then_runs(self):
-        """More failed reads than a job has attempts, then git works again: the job never
-        becomes `failed`, no attempt is spent, and the round after recovery writes the report."""
+        """Tree read fails: more failed rounds than a job has attempts, then git works again —
+        the job never becomes `failed`, no attempt is spent, the round after recovery writes the report."""
+        self.waits_then_runs(FAILING_LS_TREE)
+
+    def test_fetch_failing_waits_without_using_attempts_then_runs(self):
+        """The same when fetching origin fails, the step before the tree read."""
+        self.waits_then_runs(FAILING_FETCH)
+
+    def waits_then_runs(self, failing_git):
         real_git = (self.bin / 'git').read_text()
-        (self.bin / 'git').write_text(FAILING_LS_TREE)
+        (self.bin / 'git').write_text(failing_git)
         self.configure(NEW_DIR)
         for _ in range(5):                  # more rounds than a job's 3 attempts
             job = self.read_job(50)

@@ -390,11 +390,13 @@ def review(repo, job, queue, root, *, directories):
     ref = f'origin/{base}'
     report_folder = report_dir()
     report_file = report_path(number, report_folder)
-    command(['git', 'fetch', 'origin'], project)
-    # Remote report is the durable completion marker, including crash after push.
-    exists = report_on_ref(project, ref, number)
+    # Remote report is the durable completion marker, including crash after push. The same
+    # check as the directory-lessons classification (remote_report: fetch, resolve the branch,
+    # read the tree); any of them failing is "cannot tell", which waits without using an attempt.
+    exists = remote_report(project, base, number, [])
     if exists is None:
-        raise NotReady(f'cannot read {ref} to see whether PR #{number} already has a report')
+        raise NotReady(f'cannot read {ref} (fetch, branch or tree read failed) to see whether '
+                       f'PR #{number} already has a report')
     if exists:
         return
     evidence = collect(repo, number)
