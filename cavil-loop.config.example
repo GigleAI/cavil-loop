@@ -677,19 +677,44 @@ COPY_TO_WORKTREE=".env"
 
 # ── Worker identity / Worker 身份 (commit author / pusher 显示成谁) ──
 
-# Empty (default) = worktree uses your global ~/.gitconfig user.name/email (you).
-# To make worker commits/push appear as a separate bot account, set bot identity here:
+# Who a worker's commits are signed as. By default (WORKTREE_GIT_USER_FROM_ITEM, below, on)
+# they are signed as a person on the item; the two lines here are only the fallback for
+# when nobody qualifies. On every dispatch the daemon looks, in order, at: the item's
+# assignees, then (for a PR) the bound issue's assignees, then the parent issues'
+# assignees; then the authors along the same chain. The first account that is a real user
+# with write access to this repository (not the loop's own account, not the requester bot,
+# not an outside account) signs the worktree's commits, as
+# <login> <<id>+<login>@users.noreply.github.com>.
+#
+# Nobody qualifies, or WORKTREE_GIT_USER_FROM_ITEM=false (or empty) -> WORKTREE_GIT_USER_NAME /
+# _EMAIL, each field on its own; a field left empty comes from the repo / global git config.
+# To sign every commit as a fixed bot account, set both lines below AND turn the switch off:
+#   WORKTREE_GIT_USER_FROM_ITEM=false
 #   WORKTREE_GIT_USER_NAME="my-bot"
 #   WORKTREE_GIT_USER_EMAIL="<numeric-id>+my-bot@users.noreply.github.com"
-# Note: this only controls commit author. Push attribution depends on GH_TOKEN
+# The identity goes into the worktree's own git config (extensions.worktreeConfig); the
+# main checkout and the shared repo config are not touched. Exception: a repository whose
+# shared config sets core.bare=true or core.worktree cannot use per-worktree config — there
+# the two lines below are written into the shared config and items are not signed per person.
+# This only controls the commit author. Push attribution depends on GH_TOKEN
 # (EnvironmentFile) + ~/.git-credentials routing — keep them consistent.
 #
-# 默认空 = worktree 用你 global ~/.gitconfig 的 user.name/email（也就是你自己）
-# 想让 worker 的 commit / push 显示为单独的 bot 账号，在这里写 bot 的身份：
+# worker 的提交署成谁。默认（下面的 WORKTREE_GIT_USER_FROM_ITEM 开着）署成条目上的人，这里两行只是
+# 「谁都不合格」时的兜底。每次派工按顺序找：条目的负责人 →（PR 时）它绑定的 issue 的负责人 → 父 issue
+# 的负责人；再按同一条链找提出者。第一个「在本仓库有写权限的真人账号」（不是 loop 自己的账号、不是外部
+# 需求机器人、不是外部账号）就是这个 worktree 提交的作者，署 <账号名> <<数字编号>+<账号名>@users.noreply.github.com>。
+#
+# 谁都不合格，或 WORKTREE_GIT_USER_FROM_ITEM=false（或空值）→ 用 WORKTREE_GIT_USER_NAME / _EMAIL，两项各自
+# 生效；留空的那项由仓库 / 全局 git 配置补。想让每次提交都固定署成一个机器人账号，下面两行都填，并且把开关关掉：
+#   WORKTREE_GIT_USER_FROM_ITEM=false
 #   WORKTREE_GIT_USER_NAME="my-bot"
 #   WORKTREE_GIT_USER_EMAIL="<numeric-id>+my-bot@users.noreply.github.com"
+# 身份写进 worktree 自己的 git 配置（extensions.worktreeConfig），主 checkout 和仓库共用配置都不动。例外：
+# 仓库共用配置里设了 core.bare=true 或 core.worktree 的仓库没法给每个 worktree 单独配置，这种仓库把下面两行
+# 写进共用配置，不按条目署名。
 # 注意：这只控制 commit author。push 用谁的 token 还看 GH_TOKEN (EnvironmentFile) +
 # ~/.git-credentials 的路径路由，要一致设置才能 attribution 干净。
+WORKTREE_GIT_USER_FROM_ITEM=true
 WORKTREE_GIT_USER_NAME=""
 WORKTREE_GIT_USER_EMAIL=""
 

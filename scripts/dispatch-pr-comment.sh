@@ -140,6 +140,10 @@ if session_alive "$TMUX_SESSION"; then
     fi
 fi
 
+# 提交署名跟着条目上的人走（GitHub#699）：链从 PR 自己开始，再到它绑定的 issue；注入和重起都在这之后。
+# worktree 没了（Case C）时这里什么都不做，建好 worktree 之后再写
+commit_identity_apply "$WORKTREE" "$PR" "$ISSUE_N"
+
 # Case A: 现有 worker session，且是同一个 worker
 if [ "$REUSE_SESSION" = 1 ]; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
@@ -311,6 +315,8 @@ done
 
 [ -n "${WORKTREE_SETUP_CMD:-}" ] && [ "${WORKTREE_SETUP_CMD}" != ":" ] && \
     (cd "$WORKTREE" && eval "$WORKTREE_SETUP_CMD") || true
+
+commit_identity_apply "$WORKTREE" "$PR" "$ISSUE_N"
 
 agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \

@@ -3177,6 +3177,204 @@ split_parent_of() {
     echo "$parent"
 }
 
+# ── 提交署名跟着条目上的人走（GitHub#699）──
+# 每次派工（新 issue、issue 留言、PR 留言；worker 和复审都算）在 worker 开工或收到新说明之前，算出这个条目的
+# 提交身份，写进这个 worktree 自己的 git 配置（`git config --worktree`，作者和提交者都是它）。
+#
+# 查找顺序。「链」= 条目本身 → PR 绑定的 issue（条目是 PR、工作编号不是 PR 自己时）→ 父 issue → 父 issue 的
+# 父 issue……（只认本仓库的父 issue，最多 COMMIT_IDENTITY_CHAIN_MAX 个条目，碰到重复编号就停）：
+#   1. 沿着链依次看每一层的负责人（assignee，同一层按 GitHub 给的顺序），第一个合格的就用
+#   2. 都没有 → 沿着链依次看每一层的提出者，第一个合格的就用
+#   3. 都没有 → 项目原有的提交身份
+# 「合格」只有一份判据，和外部内容保护、托管授权共用（outsider_role → repo_maintainer_check）：真人账号
+# （User 类型）、不是 loop 的写入账号、不是外部需求机器人，并且在本仓库有写权限。外部账号也跳过（方案 Q1 = A）。
+#
+# 三种结论各有各的写法，互不混用：
+#   person  找到合格的人 → 姓名（账号名）和邮箱（<数字编号>+<账号名>@users.noreply.github.com）两项一起写
+#   none    确定没有合格的人，或开关关着 → 两项都删掉，再把非空的 WORKTREE_GIT_USER_NAME / _EMAIL 各自写回；
+#           缺的那项由 git 照常从仓库共用配置 / 全局配置取，所以不会拼出「新姓名 + 旧负责人邮箱」
+#   unknown 任何一次读取失败（条目、账号类型、权限、账号编号）→ 什么都不改，保留上一次的结果；这个 worktree
+#           还从没写过身份时按 none 处理（第一次建 worktree 也要用上配置的兜底身份）
+# 每个输入怎么进结论（「判不了」= unknown，「不合格」= 跳过看下一个，走到底才是 none）：
+#   | 输入                              | 判不了（unknown）                          | 不合格（跳过）                    | 合格 |
+#   | 链上条目（issues/<N>）            | 读不到、编号对不上、负责人不是数组、       | —                                 | —    |
+#   |                                   | 任一负责人 / 提出者记录不完整（见下一行）  |                                   |      |
+#   | 账号记录 login + type             | login 不是非空字符串；type 不是 User /     | type 是 Bot / Organization /      | 见下 |
+#   |                                   | Bot / Organization / Mannequin 之一        | Mannequin                         |      |
+#   | 角色（outsider_role，仅 User）    | 读不到写入账号、权限读不到 / 读不懂        | loop 账号、外部需求机器人、外部账号 | 维护者 |
+#   | 父 issue 地址                     | 地址读不懂                                 | 没有父 / 父在别的仓库 = 链到头    | —    |
+#   | 账号编号（users/<login>，选中后） | 读不到、id 不是数字、回来的 login 对不上   | —                                 | 写入 |
+# 只要链上出现一个「判不了」，整个结论就是 unknown（不能拿它后面的人顶替：前面那个人可能才是该署的）。
+# worktree 自己这一层的 user.name / user.email 只由这里写，删掉它不会误删人的设置；仓库共用配置和全局配置
+# 一概不碰。仓库共用配置里有 core.bare=true 或 core.worktree 时打开每个 worktree 单独配置会改变主 checkout
+# 的行为（git 文档），这种仓库不打开它，退回旧做法：把配置的兜底身份写进共用配置，不按条目署名。
+COMMIT_IDENTITY_CHAIN_MAX=5
+
+commit_identity_from_item_on() {
+    # 配置里没写这一行 = 开；写 false 或空值 = 关（读法和 ENABLE_ROUND_LOG 一样）
+    case "$(printf '%s' "${WORKTREE_GIT_USER_FROM_ITEM-true}" | tr '[:upper:]' '[:lower:]')" in
+        true|1|yes|on) return 0 ;;
+    esac
+    return 1
+}
+
+# 这个账号合不合格：0 = 合格；1 = 明确不合格；2 = 判不了。类型只认 GitHub 的四种（取链上条目时已校验过）
+_commit_identity_eligible() {   # <login> <账号类型>
+    local rc=0
+    case "$2" in
+        User) ;;
+        Bot|Organization|Mannequin) return 1 ;;
+        *) return 2 ;;
+    esac
+    outsider_role "$1" User || rc=$?
+    [ "$rc" = 0 ] || return 2
+    [ "$OS_ROLE" = maintainer ] && return 0
+    return 1
+}
+
+# 链上第 i 个条目：读到 → 0（_CI_JSON[i]）；链到头 → 1；读不到 → 2
+_commit_identity_fetch() {   # <i>
+    local i="$1" num url j
+    [ "$i" -lt "${#_CI_JSON[@]}" ] && return 0
+    [ "$i" -lt "$COMMIT_IDENTITY_CHAIN_MAX" ] || return 1
+    if [ "$i" -eq 0 ]; then
+        num="$_CI_ITEM"
+    elif [ "$i" -eq 1 ] && [ -n "$_CI_BOUND" ]; then
+        num="$_CI_BOUND"
+    else
+        url=$(printf '%s' "${_CI_JSON[$((i - 1))]}" | jq -r '.parent_issue_url // ""' 2>/dev/null) || return 2
+        [ -n "$url" ] || return 1
+        # 父 issue 在别的仓库：本仓库的权限管不到那边的人，当作链到头（和 issue_parent_num 同一口径）
+        case "$url" in
+            */repos/"$REPO"/issues/*) num="${url##*/}" ;;
+            */repos/*/*/issues/*) return 1 ;;
+            *) CI_WHY="读不懂父 issue 的地址"; return 2 ;;
+        esac
+        [[ "$num" =~ ^[0-9]+$ ]] || { CI_WHY="读不懂父 issue 的地址"; return 2; }
+    fi
+    case " ${_CI_NUMS[*]:-} " in *" $num "*) return 1 ;; esac
+    j=$(gh api "repos/$REPO/issues/$num" 2>/dev/null) || { CI_WHY="读不到 #$num"; return 2; }
+    # 参与选择的每个账号记录都要完整：账号名是非空字符串、类型是 GitHub 的四种之一。缺字段、空串、不认识的类型 = 读不全，
+    # 不能跳过它或补成真人（跳过会把「读不全」当成「没有合格的人」，撤掉已有的署名）
+    printf '%s' "$j" | jq -e --argjson n "$num" '
+        def acct: type == "object" and (.login | type) == "string" and .login != ""
+            and (.type | IN("User", "Bot", "Organization", "Mannequin"));
+        (.number == $n) and ((.assignees | type) == "array") and all(.assignees[]; acct) and (.user | acct)' >/dev/null 2>&1 \
+        || { CI_WHY="#$num 的负责人或提出者资料读不全"; return 2; }
+    _CI_JSON+=("$j"); _CI_NUMS+=("$num")
+}
+
+# 选人：0 = 找到（CI_LOGIN / CI_FROM）；1 = 确定没有合格的人；2 = 判不了（CI_WHY）
+commit_identity_resolve() {   # <条目编号> [绑定的 issue 编号]
+    _CI_ITEM="$1"; _CI_BOUND="${2:-}"
+    [ "$_CI_BOUND" = "$_CI_ITEM" ] && _CI_BOUND=""
+    _CI_JSON=(); _CI_NUMS=(); CI_LOGIN=""; CI_FROM=""; CI_WHY=""
+    OUTSIDER_ROLE_CACHE=()   # 权限每次现查，不沿用这个进程里别处的结果
+    local i rc pass login atype role
+    for pass in assignees user; do
+        i=0
+        while :; do
+            rc=0; _commit_identity_fetch "$i" || rc=$?
+            [ "$rc" = 1 ] && break
+            [ "$rc" = 0 ] || return 2
+            while IFS=$'\t' read -r login atype; do
+                rc=0; _commit_identity_eligible "$login" "$atype" || rc=$?
+                case "$rc" in
+                    0) CI_LOGIN="$login"
+                       role="负责人"; [ "$pass" = user ] && role="提出者"
+                       CI_FROM="#${_CI_NUMS[$i]} 的$role"
+                       return 0 ;;
+                    1) ;;
+                    *) CI_WHY="判断不了 $login 是否在本仓库有写权限（${OS_WHY:-}）"; return 2 ;;
+                esac
+            done < <(printf '%s' "${_CI_JSON[$i]}" | jq -r --arg p "$pass" \
+                'if $p == "assignees" then .assignees[] else .user end | [.login, .type] | @tsv' 2>/dev/null)
+            i=$((i + 1))
+        done
+    done
+    return 1
+}
+
+# worktree 自己这一层：仓库开没开每个 worktree 单独配置。0 = 已开或刚打开；1 = 这个仓库不能开（见上）；2 = 写不进去
+_commit_identity_wt_config() {   # <worktree>
+    local wt="$1"
+    [ "$(git -C "$wt" config --bool extensions.worktreeConfig 2>/dev/null)" = true ] && return 0
+    if [ "$(git -C "$wt" config --bool core.bare 2>/dev/null)" = true ] \
+       || git -C "$wt" config --get core.worktree >/dev/null 2>&1; then
+        return 1
+    fi
+    run_git "打开每个工作目录单独的 git 配置" git -C "$wt" config extensions.worktreeConfig true || return 2
+}
+
+# none：撤掉本功能写过的两项，再各自写回非空的兜底
+_commit_identity_write_fallback() {   # <worktree>
+    local wt="$1" k rc
+    for k in user.name user.email; do
+        rc=0; git -C "$wt" config --worktree --unset-all "$k" >/dev/null 2>&1 || rc=$?
+        # 5 = 本来就没有这一项
+        if [ "$rc" != 0 ] && [ "$rc" != 5 ]; then
+            log "  ⚠️ 提交身份：撤不掉工作目录里的 ${k}（git 退出码 ${rc}）"; return 1
+        fi
+    done
+    if [ -n "${WORKTREE_GIT_USER_NAME:-}" ]; then
+        run_git "写工作目录的提交姓名" git -C "$wt" config --worktree user.name "$WORKTREE_GIT_USER_NAME" || return 1
+    fi
+    if [ -n "${WORKTREE_GIT_USER_EMAIL:-}" ]; then
+        run_git "写工作目录的提交邮箱" git -C "$wt" config --worktree user.email "$WORKTREE_GIT_USER_EMAIL" || return 1
+    fi
+}
+
+# 入口：派工的三个脚本在 worktree 已经在、worker 开工 / 收到新说明之前调用。失败只记日志、不挡派工
+commit_identity_apply() {   # <worktree> <条目编号> [绑定的 issue 编号]
+    local wt="$1" item="$2" bound="${3:-}" rc=0 id cfg=0 has
+    [ -d "$wt" ] || return 0
+    _commit_identity_wt_config "$wt" || cfg=$?
+    if [ "$cfg" = 1 ]; then
+        # 这个仓库不能按工作目录分开配置：照旧把兜底身份写进共用配置（GitHub#699 之前的做法），不按条目署名
+        log "  提交身份：仓库配置里有 core.bare / core.worktree，不能给每个工作目录单独配置，沿用配置的身份"
+        [ -n "${WORKTREE_GIT_USER_NAME:-}" ] && run_git "写提交姓名" git -C "$wt" config user.name "$WORKTREE_GIT_USER_NAME"
+        [ -n "${WORKTREE_GIT_USER_EMAIL:-}" ] && run_git "写提交邮箱" git -C "$wt" config user.email "$WORKTREE_GIT_USER_EMAIL"
+        return 0
+    fi
+    [ "$cfg" = 0 ] || return 0
+    if ! commit_identity_from_item_on; then
+        _commit_identity_write_fallback "$wt" && log "  提交身份：按条目署名已关，用配置的身份"
+        return 0
+    fi
+    commit_identity_resolve "$item" "$bound" || rc=$?
+    if [ "$rc" = 0 ]; then
+        # 回来的账号名要和选中的对上（不分大小写），编号是数字，否则判不了
+        id=$(gh api "users/$CI_LOGIN" --jq '[(.id | tostring), (.login // "")] | @tsv' 2>/dev/null) || id=""
+        if [ "$(printf '%s' "${id#*$'\t'}" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$CI_LOGIN" | tr '[:upper:]' '[:lower:]')" ]; then
+            id="${id%%$'\t'*}"
+        else
+            id=""
+        fi
+        if [[ "$id" =~ ^[0-9]+$ ]]; then
+            if run_git "写工作目录的提交姓名" git -C "$wt" config --worktree user.name "$CI_LOGIN" \
+               && run_git "写工作目录的提交邮箱" git -C "$wt" config --worktree user.email "${id}+${CI_LOGIN}@users.noreply.github.com"; then
+                log "  提交身份：${CI_LOGIN}（来自 ${CI_FROM}）"
+            else
+                # 只写进去一项会拼出混合身份：两项一起退回兜底
+                _commit_identity_write_fallback "$wt"
+            fi
+            return 0
+        fi
+        rc=2; CI_WHY="读不到 $CI_LOGIN 的账号编号"
+    fi
+    if [ "$rc" = 1 ]; then
+        _commit_identity_write_fallback "$wt" && log "  提交身份：链上没有合格的负责人或提出者，用配置的身份"
+        return 0
+    fi
+    has=$(git -C "$wt" config --worktree --get-regexp '^user\.(name|email)$' 2>/dev/null || true)
+    if [ -n "$has" ]; then
+        log "  ⚠️ 提交身份：${CI_WHY:-读取失败}，本轮不改，沿用上一次的结果"
+    else
+        _commit_identity_write_fallback "$wt"
+        log "  ⚠️ 提交身份：${CI_WHY:-读取失败}，这个工作目录还没写过身份，先用配置的身份"
+    fi
+}
+
 # 互通名单里有没有这个仓库（不分大小写）。本仓库自己总算（GitHub#233）
 repo_trusted() {   # <owner/repo>
     local r x
