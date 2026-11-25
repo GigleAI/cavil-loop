@@ -26,7 +26,7 @@ An issue gets `Done` when it is closed as completed — by a `Closes #N` merge, 
 - `pending/merge` (only with the autopilot label configured) — on a PR: "review passed, waiting for the daemon to check and merge".
 - `pending/blocked` (on unless `LABEL_PENDING_BLOCKED` is set to an empty value) — "waiting for another issue / PR (of this repo, or of a repo on the trusted list); the daemon puts it back on `pending/agent` once every prerequisite is done".
 - `pending/later` (on unless `LABEL_PENDING_LATER` is set to an empty value) — "parked: never picked up automatically; a trigger label still dispatches it".
-- The autopilot *mode* label itself, on an issue or on an existing PR. The daemon never removes a label a maintainer added — it only copies the issue's label onto the bound PR and takes that copy back once the authorization is gone. Its merge closes an autopilot issue, which then carries `Done` plus `pending/human` as a reminder for a human to look at; sub-issues split from it inherit its autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).
+- The autopilot *mode* label itself, on an issue or on an existing PR. The daemon never removes a label a maintainer added — it only copies the issue's label onto the bound PR and takes that copy back once the authorization is gone. Its merge closes an autopilot issue, which then carries `Done` plus `pending/human` as a reminder for a human to look at; sub-issues split from it inherit its autopilot. See [operations](operations.md#autopilot-label-autopilot).
 
 </details>
 

@@ -164,7 +164,7 @@ Another AI assistant can file requests directly and get called back when an item
 
 ## Autopilot: one issue end to end
 
-With `LABEL_AUTOPILOT` configured (off by default, needs the review gate), a maintainer can hand a single issue — or an existing PR — over completely: design and code go through review only, and the daemon merges the PR itself under fixed checks. It is a *mode* label, so it coexists with the routing above; details and the merge conditions: [operations](operations.md#autopilot-label-optional-off-by-default).
+With `LABEL_AUTOPILOT` on (on by default, needs the review gate), a maintainer can hand a single issue — or an existing PR — over completely: design and code go through review only, and the daemon merges the PR itself under fixed checks. It is a *mode* label, so it coexists with the routing above; details and the merge conditions: [operations](operations.md#autopilot-label-autopilot).
 
 ## Practical considerations
 

@@ -26,7 +26,7 @@ issue 关闭为「已完成」时打 `Done`——被 `Closes #N` 带关，或你
 - `pending/merge`（只在配了托管标签时）——PR 上的「复审已通过，等 daemon 检查后合并」。
 - `pending/blocked`（除非 `LABEL_PENDING_BLOCKED` 写成空值，否则开着）——「在等别的 issue / PR（本仓库的，或互通名单里别的仓库的），前置全部完成后 daemon 自动翻回 `pending/agent`」。
 - `pending/later`（除非 `LABEL_PENDING_LATER` 写成空值，否则开着）——「暂缓：daemon 不自动捞它开工，打派工标签照常派」。
-- 托管「模式标签」本身，打在 issue 上或已开好的 PR 上。daemon 从不摘维护者打的；它只把 issue 上的托管标签复制到绑定的 PR 上，授权没了再收回自己补的那份。托管 issue 合并即关，打 `Done` 并挂 `pending/human` 提醒人看；拆出的子项继承父 issue 的托管。见 [operations](operations.zh.md#托管标签可选默认关闭)。
+- 托管「模式标签」本身，打在 issue 上或已开好的 PR 上。daemon 从不摘维护者打的；它只把 issue 上的托管标签复制到绑定的 PR 上，授权没了再收回自己补的那份。托管 issue 合并即关，打 `Done` 并挂 `pending/human` 提醒人看；拆出的子项继承父 issue 的托管。见 [operations](operations.zh.md#托管标签autopilot)。
 
 </details>
 

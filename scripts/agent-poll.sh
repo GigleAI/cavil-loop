@@ -1157,6 +1157,10 @@ fi
 # 放在派工和清理全部做完之后；AUTO_ADD_PROJECTS 留空时一次 GitHub 调用都不发。
 project_auto_add_tick
 
+# ── 3e2. 新建的 issue / PR 自动把提出者设为 assignee（GitHub#690）──
+# 同样放在派工和清理之后、独立子进程；AUTO_ASSIGN_REQUESTER 不是 true 时一次 GitHub 调用都不发。
+auto_assign_tick
+
 # ── 3g. 配置缺新功能的设置 → 提示维护者（GitHub#289）──
 # 纯本地比对；缺项集合不变时一次 GitHub 调用都不发。只在调度器起的轮询里运行。
 config_notice_tick || true

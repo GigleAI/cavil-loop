@@ -860,14 +860,16 @@ LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAUL
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
-# ── 托管标签（GitHub#114，可选，默认关闭）──
+# ── 托管标签（GitHub#114；GitHub#691 起默认开启）──
 # 维护者在 issue 上打这个标签 = 这条从方案到合并全交给 agent：方案只过复审、不等人确认，
 # 代码复审通过后翻 LABEL_PENDING_MERGE，由 daemon 按固定条件合并（autopilot_merge_tick）。
 # 它是「模式标签」不是触发标签：派工时不摘、全程挂着。只在 issue 上打才算数——PR 上的同名
 # 标签一概不看（PR 由 worker 开，上面的任何标签都可能是 worker 打的）。
-# 留空 = 关闭：下面的 LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json
-# 和以前逐字节一样。开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
-LABEL_AUTOPILOT="${LABEL_AUTOPILOT:-}"
+# 配置里没有这一行 = 开，用 autopilot；写成空值（LABEL_AUTOPILOT=""）= 人决定不开：下面的
+# LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json 和以前逐字节一样。
+# 用 ${X-默认}（不带冒号），和等前置、暂缓两个标签同一条规则（GitHub#551）。
+# 开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
+LABEL_AUTOPILOT="${LABEL_AUTOPILOT-autopilot}"
 LABEL_PENDING_MERGE="${LABEL_PENDING_MERGE:-pending/merge}"
 # 关掉之后的收尾（autopilot_off_sweep）还要认得这个标签名，所以清空之前先留一份
 AUTOPILOT_MERGE_LABEL_NAME="$LABEL_PENDING_MERGE"
@@ -1037,6 +1039,11 @@ PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
 # 一个或多个「组织或用户名/编号」，空格或逗号分隔；留空 = 关闭（默认），不多发任何请求。
 # 逻辑全在 scripts/project-auto-add.sh；这里只放默认值和每轮的入口 project_auto_add_tick。
 AUTO_ADD_PROJECTS="${AUTO_ADD_PROJECTS:-}"
+
+# ── 新建的 issue / PR 自动把提出者设为 assignee（GitHub#690）──
+# true = 开；不写这一行或写成别的值 = 关（模板里写 true，已在用的项目升级后不会自己开始写 assignee）。
+# 逻辑全在 scripts/auto-assign.sh；这里只放默认值、开关判断和每轮的入口 auto_assign_tick。
+AUTO_ASSIGN_REQUESTER="${AUTO_ASSIGN_REQUESTER:-false}"
 
 # ── base 分支测试工作流失败 → 自动开 / 续报告 issue（GitHub#345）──
 # CI_FAILURE_REPORT_WORKFLOWS：要监视的工作流文件名（空格或逗号分隔）；留空 = 关闭（默认），
@@ -11028,6 +11035,17 @@ project_auto_add_tick() {
     local rc=0
     CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/project-auto-add.sh" || rc=$?
     [ "$rc" = 0 ] || log "⚠️ 自动加入 Project：同步脚本异常退出（退出码 ${rc}），本轮跳过，派工不受影响"
+    return 0
+}
+
+# 只认 true：模板、运维文档和客户端设置都说「写成别的值 = 关」，这里照字面执行
+auto_assign_enabled() { [ "${AUTO_ASSIGN_REQUESTER:-}" = true ]; }
+# 开关关着时一个请求都不发（子进程都不起）
+auto_assign_tick() {
+    auto_assign_enabled || return 0
+    local rc=0
+    CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/auto-assign.sh" || rc=$?
+    [ "$rc" = 0 ] || log "⚠️ 自动指派：脚本异常退出（退出码 ${rc}），本轮跳过，派工不受影响"
     return 0
 }
 

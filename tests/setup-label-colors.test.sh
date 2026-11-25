@@ -80,17 +80,24 @@ make_skill_src() {   # <目录>：把当前工作区（含未提交改动）做�
     git -C "$d" remote add origin "$d.git"; git -C "$d" push -q -u origin main 2>/dev/null
 }
 
-run_setup() {   # <skill 目录> [配置变体：missing = 删掉等前置 / 暂缓两行；empty = 两行写成空值] → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
+run_setup() {   # <skill 目录> [配置变体：missing = 删掉等前置 / 暂缓两行；empty = 两行写成空值；ap-missing = 托管两行都不写；ap-empty = 托管写成空值] → stdout：每个建标签请求一行「名字|颜色」，按名字排序；安装失败输出 SETUP-FAILED
     local src="$1" variant="${2:-}" H="$SANDBOX/h" HOST="$SANDBOX/projects/widget"
     rm -rf "$H" "$SANDBOX/projects"; mkdir -p "$H" "$SANDBOX/projects"
     git init -q -b main "$HOST"; git -C "$HOST" -c user.email=t@x -c user.name=t commit -q --allow-empty -m init
     # 和真实安装一样以配置模板打底，再打开全部可选标签（后写的赋值生效）
-    { if [ "$variant" = missing ]; then grep -vE '^LABEL_PENDING_(BLOCKED|LATER)=' "$REPO_DIR/cavil-loop.config.example"
-      else cat "$REPO_DIR/cavil-loop.config.example"; fi
+    { case "$variant" in
+        missing) grep -vE '^LABEL_PENDING_(BLOCKED|LATER)=' "$REPO_DIR/cavil-loop.config.example" ;;
+        ap-*) grep -vE '^LABEL_(AUTOPILOT|PENDING_MERGE)=' "$REPO_DIR/cavil-loop.config.example" ;;
+        *) cat "$REPO_DIR/cavil-loop.config.example" ;;
+      esac
       printf 'REPO="acme/widget"\nPROJECT_ROOT="%s"\nSTATE_DIR="%s/state"\nWORKTREE_BASE="%s/wt"\nTMUX_PREFIX="widget"\n' "$HOST" "$H" "$H"
       printf 'LABEL_PENDING_REVIEW="pending/review"\n'
       printf 'LABEL_PENDING_REQUESTER_BOT="waiting/requester-bot"\n'
-      printf 'LABEL_AUTOPILOT="autopilot"\nLABEL_PENDING_MERGE="pending/merge"\n'
+      case "$variant" in
+        ap-missing) ;;
+        ap-empty) printf 'LABEL_AUTOPILOT=""\n' ;;
+        *) printf 'LABEL_AUTOPILOT="autopilot"\nLABEL_PENDING_MERGE="pending/merge"\n' ;;
+      esac
       [ "$variant" = empty ] && printf 'LABEL_PENDING_BLOCKED=""\nLABEL_PENDING_LATER=""\n'
     } > "$HOST/cavil-loop.config"
     printf 'n\n' | env -u CAVIL_SKILL_LINK -u CAVIL_DEPLOY_ROOT -u CAVIL_DEPLOY_CONF -u CODING_AGENT_CONFIG \
@@ -134,6 +141,16 @@ got=$(run_setup "$SANDBOX/src" empty)
 chk "写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
 chk "写成空值：这两个标签不建" "$(printf '%s\n' "$got" | grep -cE '^pending/(blocked|later)\|')" 0
 chk "写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
+
+echo "── 1c. GitHub#691：配置里没有托管那两行也建托管和等合并标签；托管写成空值才不建 ──"
+got=$(run_setup "$SANDBOX/src" ap-missing)
+chk "没写托管两行：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "没写托管两行：两个标签照样建、颜色照旧" "$(printf '%s\n' "$got" | grep -E '^(autopilot|pending/merge)\|' | tr '\n' ' ')" "autopilot|c5def5 pending/merge|5319e7 "
+chk "没写托管两行：其余标签不受影响（共 15 条）" "$(printf '%s\n' "$got" | grep -c '|')" 15
+got=$(run_setup "$SANDBOX/src" ap-empty)
+chk "托管写成空值：安装入口跑通" "$(printf '%s' "$got" | grep -c SETUP-FAILED)" 0
+chk "托管写成空值：托管和等合并两个标签都不建" "$(printf '%s\n' "$got" | grep -cE '^(autopilot|pending/merge)\|')" 0
+chk "托管写成空值：其余 13 个照建" "$(printf '%s\n' "$got" | grep -c '|')" 13
 
 echo
 echo "通过 $pass，失败 $fail"
