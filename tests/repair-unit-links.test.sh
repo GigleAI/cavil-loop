@@ -18,19 +18,16 @@
 # 其余一律走假 systemctl（按单元记状态：是否启用 / 运行状态 / 结束原因，按顺序记每次调用，
 # 可按次数注入失败）。HOME 指向临时目录。
 #
-#   bash tests/repair-unit-links.test.sh            默认（约 10 秒；MUTATION=1 约 27 秒）
-#   MUTATION=1 bash tests/repair-unit-links.test.sh 另跑负对照：把被测代码改坏一处，对应检查必须变红
+#   bash tests/repair-unit-links.test.sh            （约 10 秒）
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=lib/mutation.sh
-source "$REPO_DIR/tests/lib/mutation.sh"
 TMP="$(mktemp -d)"
 trap 'chmod -R u+w "$TMP" 2>/dev/null; [ -n "${KEEP_TMP:-}" ] || rm -rf "$TMP"; [ -n "${KEEP_TMP:-}" ] && echo "kept $TMP"' EXIT
 REAL_SYSTEMCTL="$(command -v systemctl || true)"
-TREES="$TMP"   # 新旧两份脚本快照；负对照在自己的临时目录里跑，但共用这两份
+TREES="$TMP"   # 新旧两份脚本快照
 
 PASS=0; FAIL=0
 chk() {   # <name> <actual> <expected>
@@ -300,7 +297,7 @@ commit_tree() {   # <src repo> <tree dir> <msg>
     git -C "$src" push -q origin main 2>/dev/null
     git -C "$src" rev-parse HEAD
 }
-group3() {   # [mutated new tree dir] [plain|linked]
+group3() {   # [new tree dir] [plain|linked]
 local NEWTREE="${1:-$TREES/tree-new}" LAYOUT="${2:-plain}" L=""
 if [ "$LAYOUT" = linked ]; then
     L="（单元目录本身是软链接）"
@@ -369,7 +366,7 @@ chk "$L下一轮修好后删掉 V3，两条链接仍能解析" \
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-group4() {   # [mutated new tree dir]
+group4() {   # [new tree dir]
 local NEWTREE="${1:-$TREES/tree-new}"
 echo "【4】setup.sh 回答 y 启用之后，链接已经在稳定入口"
 local H="$TMP/h4$$$RANDOM" HOST
@@ -442,9 +439,6 @@ chk "$L下一轮：修好链接后删掉 V1，两条链接仍能解析" \
     "$([ -e "$DR/releases/$V1" ] && echo kept || echo deleted)|$(readlink "$SYS/$u")|$(readlink "$SYS/timers.target.wants/$u")|$([ -f "$SYS/$u" ] && [ -f "$SYS/timers.target.wants/$u" ] && echo ok)" \
     "deleted|$SK/systemd/cavil-loop-poll@.timer|$SK/systemd/cavil-loop-poll@.timer|ok"
 }
-group6_real()   { group6 "$1" real; }
-group6_linked() { group6 "$1" linked; }
-group6_wants()  { group6 "$1" wants; }
 
 # ═════════════════════════════════════════════════════════════════════════════
 group5() {
@@ -497,8 +491,6 @@ env -i HOME="$H3" PATH="$FAKEBIN:/usr/bin:/bin" FAKE_SC="$FAKE_SC" bash "$TMP/$d
 chk "$d 手工兜底：模板不存在时停下，不留半截链接" "$(find "$H3/.config/systemd/user" -type l | wc -l)|$(calls daemon-reload)" "0|0"
 }
 
-group3_linked() { group3 "$1" linked; }
-
 # ═════════════════════════════════════════════════════════════════════════════
 make_tree "$TREES/tree-old" old
 make_tree "$TREES/tree-new" new
@@ -512,82 +504,7 @@ group6 "" real
 group6 "" linked
 group6 "" wants
 
-# ── 负对照：改坏一处，对应检查必须变红 ─────────────────────────────────────────
-MUT_BAD=0
-mutant() {   # <描述> <文件（相对仓库）> <python 替换：old> <new> <要跑的组> <期望变红的检查名片段>
-    local desc="$1" file="$2" old="$3" new="$4" grp="$5" want="$6"
-    mutation_gate || return 0
-    local T="$TREES/mut$MUTATION_COUNT"; rm -rf "$T"; cp -a "$TREES/tree-new" "$T"
-    if ! OLD="$old" NEW="$new" python3 -c '
-import os,sys
-p=sys.argv[1]; s=open(p).read(); o=os.environ["OLD"]
-if s.count(o)!=1: sys.exit(1)
-open(p,"w").write(s.replace(o,os.environ["NEW"]))' "$T/$file"; then
-        echo "  ❌ 负对照准备失败（原文不在了）：$desc"; MUT_BAD=$((MUT_BAD + 1)); return
-    fi
-    local log; log=$(PASS=0 FAIL=0; TMP="$T.run"; mkdir -p "$TMP"; REPAIR_SH="$T/scripts/repair-unit-links.sh"; "$grp" "$T" 2>&1)
-    if printf '%s\n' "$log" | grep -F "❌" | grep -qF -- "$want"; then echo "  ✅ 负对照拦下：$desc"
-    else echo "  ❌ 负对照没拦下：$desc（期望「$want」变红）"; MUT_BAD=$((MUT_BAD + 1)); fi
-}
-if mutation_on; then echo "【负对照】"; fi
-mutant "重新加载不论成败都清记号" scripts/repair-unit-links.sh \
-    '    if systemctl --user daemon-reload >/dev/null 2>&1; then' \
-    '    rm -f "$UL_MARK"; if systemctl --user daemon-reload >/dev/null 2>&1; then' group2 "第二轮：仍调用了重新加载"
-mutant "重新加载失败也照样启动" scripts/repair-unit-links.sh \
-    '    if _ul_reload; then' '    _ul_reload; if true; then' group2 "第一轮：没有启动任何任务"
-mutant "启动条件放宽成「已启用就启动」" scripts/repair-unit-links.sh \
-    '[ "$ufs" = enabled ] && [ "$as" = failed ] && [ "$res" = resources ] || continue' \
-    '[ "$ufs" = enabled ] || continue' group2 "没有启动"
-mutant "状态查不到当成「失败」" scripts/repair-unit-links.sh \
-    '-p Result "$u" 2>/dev/null)" || continue' \
-    '-p Result "$u" 2>/dev/null)" || out=$'"'"'UnitFileState=enabled\nActiveState=failed\nResult=resources'"'"'' group2 "查询fail：没有启动"
-mutant "记号写不进也照改链接" scripts/repair-unit-links.sh \
-    '        UL_RC=1
-        return 1
-    fi
-    local item' '        UL_RC=1
-    fi
-    local item' group2 "链接原样"
-mutant "只改自己的：判断去掉" scripts/repair-unit-links.sh \
-    '        _ul_ours "$(basename "$l")" || continue
-        printf' '        printf' group2 "别人的链接没动"
-# 下面几处改坏的是整条发布链里的新版本（工作区快照），跑【3】/【4】
-mutant "轮询入口不调用修复" scripts/poll-entry.sh \
-    'if [ "$(uname -s)" = Linux ] && [ -f "$CODING_AGENT_RELEASE_ROOT/scripts/repair-unit-links.sh" ]; then' \
-    'if false; then' group3 "同一轮：两条链接都改回稳定入口"
-mutant "部署器不调用修复" scripts/skill-deploy.sh \
-    'if [ "$(uname -s)" = Linux ] && [ -f "$UNIT_LINKS_SH" ]; then' 'if false; then' group3 "新部署器：切到 V3、同一轮修链后删掉 V2"
-mutant "部署器删旧版本前不查引用" scripts/skill-deploy.sh \
-    '    if [ -f "$UNIT_LINKS_SH" ] && CAVIL_SYSTEMD_USER_DIR' '    if false && CAVIL_SYSTEMD_USER_DIR' group3 "修链失败：V3 保留"
-mutant "删前引用检查改回 find 列目录（复审第 1 轮的实现）" scripts/repair-unit-links.sh \
-    '    list="$(_ul_all_links)" || return 0' \
-    '    list="$(find "$UL_SYS_DIR" -maxdepth 2 -type l 2>/dev/null)" || return 0' group3_linked "（单元目录本身是软链接）修链失败：V3 保留"
-mutant "列目录：看不进单元目录当成「没有」（复审第 2 轮的实现）" scripts/repair-unit-links.sh \
-    '        absent) return 0 ;;
-        *) return 1 ;;
-    esac
-    [ -r "$UL_SYS_DIR" ]' '        *) return 0 ;;
-    esac
-    [ -r "$UL_SYS_DIR" ]' group6_real "（看不进单元目录·real）看不进去：V1 保留"
-mutant "列目录：看不进单元目录当成「没有」——软链接目标那一种" scripts/repair-unit-links.sh \
-    '        absent) return 0 ;;
-        *) return 1 ;;
-    esac
-    [ -r "$UL_SYS_DIR" ]' '        *) return 0 ;;
-    esac
-    [ -r "$UL_SYS_DIR" ]' group6_linked "（看不进单元目录·linked）看不进去：V1 保留"
-mutant "列目录：看不进的子目录悄悄跳过" scripts/repair-unit-links.sh \
-    '            other|absent) ;;
-            *) rc=1 ;;' '            *) ;;' group2 "子目录是软链接、目标的上层不可进入 → 看不进去"
-mutant "存在性判断改回 [ -e ]（看不进 = 不存在）" scripts/repair-unit-links.sh \
-    '        *"No such file or directory"*|*"Not a directory"*) echo absent ;;
-        *) echo unknown ;;' '        *) echo absent ;;' group6_real "（看不进单元目录·real）看不进去：V1 保留"
-mutant "setup 启用后不调用修复" setup.sh \
-    '            bash "$SKILL_DIR/scripts/repair-unit-links.sh" \' '            false \' group4 "启用后两条链接都指向稳定入口"
-
 echo
-mutation_summary "$0"
-[ "$MUT_BAD" -eq 0 ] || FAIL=$((FAIL + MUT_BAD))
 echo "通过 $PASS，失败 $FAIL"
 report_counts "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

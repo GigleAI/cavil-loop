@@ -12,7 +12,7 @@
 #
 # 另验证 FABLE_MODEL 改成别名后，state 里老的 claude-fable-5 记录仍回 fable 队列。
 #
-# 负对照：REPO_DIR=<旧版 checkout> bash tests/claude-resume-model.test.sh 应当变红。
+# 和旧版对比：REPO_DIR=<旧版 checkout> bash tests/claude-resume-model.test.sh 应当变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

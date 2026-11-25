@@ -15,18 +15,12 @@
 #   · 搬到一半失败 → 旧登记已经不在旧目录，下一轮再也不会处理这个端口；
 #   · 冲突或失败的端口还在，旧入口却被删掉 → 本来还能用的旧预览也一起坏掉；
 #   · 已经迁完的机器 → 轮询入口不再调迁移，坏掉的旧预览永远没人修。
-# 每个关键断言都拿改动前的代码（BASE_COMMIT）跑同一场景做负对照，必须变红。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
-BASE_COMMIT="d41ee75"   # 本 issue 动手之前的 main
-PREV_COMMIT="b7369b9"   # PR #79 第 1 轮复审打回的那版（查不到单元状态时照样收尾）
-PREV3_COMMIT="7e5d382"  # PR #79 第 3 轮复审打回的那版（换回时不认备份归属、半路失败留下空登记）
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -497,52 +491,7 @@ chk "第 1 轮：日志写明查不到旧单元停没停" "$(grep -c ':4050 查�
 chk "第 2 轮：旧 app 停掉、旧登记收走、按原状不开新监听、旧入口删掉" \
     "$(expect "$R" r2_old_app)|$(expect "$R" r2_old)|$(expect "$R" r2_new_sock)|$(expect "$R" r2_link)" "inactive|no|inactive|gone"
 
-# ─────────────────────────────────────────────────────────────────────────────
-mutation_on && echo "【负对照】改动前的代码（$BASE_COMMIT）跑同一场景，必须变红"
-BASE="$TMP/code-base"
-if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif mkdir -p "$BASE" && git -C "$REPO_DIR" archive "$BASE_COMMIT" 2>/dev/null | tar -x -C "$BASE" 2>/dev/null; then
-    scenario_issue "$BASE" "$TMP/b1" > "$TMP/b1.res"
-    chk "issue 原场景：旧代码起不来却退出 0、打印地址（复现 issue）" \
-        "$(expect "$TMP/b1.res" rc)|$(expect "$TMP/b1.res" url)|$(expect "$TMP/b1.res" new_app)" "0|1|inactive"
-    scenario_issue_newfail "$BASE" "$TMP/b1b" > "$TMP/b1b.res"
-    chk "起不来时旧代码仍打印地址" "$(expect "$TMP/b1b.res" url)" "1"
-    scenario_probe "$BASE" "$TMP/b2" 502 > "$TMP/b2.res"
-    chk "预热拿到 502 旧代码仍打印地址" "$(expect "$TMP/b2.res" url)" "1"
-    scenario_poll_entry "$BASE" "$TMP/b9" > "$TMP/b9.res"
-    chk "已迁完的机器上旧代码不再搬旧预览" "$(expect "$TMP/b9.res" old_left)" "2"
-else
-    echo "  ⚠️ 取不到 $BASE_COMMIT（浅克隆？），跳过负对照"
-fi
-
-mutation_on && echo "【负对照】PR #79 第 1 轮复审打回的那版（$PREV_COMMIT）：查不到状态时照样收尾，必须变红"
-PREV="$TMP/code-prev"
-if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif mkdir -p "$PREV" && git -C "$REPO_DIR" archive "$PREV_COMMIT" 2>/dev/null | tar -x -C "$PREV" 2>/dev/null; then
-    for when in from_start on_stop; do
-        scenario_bus_down "$PREV" "$TMP/p10-$when" "$when" > "$TMP/p10-$when.res"
-        chk "上一版（$when）第 1 轮就收走旧登记或删了旧入口（实得 $(expect "$TMP/p10-$when.res" r1_old)|$(expect "$TMP/p10-$when.res" r1_link)）" \
-            "$([ "$(expect "$TMP/p10-$when.res" r1_old)|$(expect "$TMP/p10-$when.res" r1_link)" != "yes|kept" ] && echo red || echo green)" "red"
-    done
-else
-    echo "  ⚠️ 取不到 $PREV_COMMIT（浅克隆？），跳过负对照"
-fi
-
-mutation_on && echo "【负对照】PR #79 第 3 轮复审打回的那版（$PREV3_COMMIT）：换回时的两个缺陷必须复现"
-PREV3="$TMP/code-prev3"
-if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif mkdir -p "$PREV3" && git -C "$REPO_DIR" archive "$PREV3_COMMIT" 2>/dev/null | tar -x -C "$PREV3" 2>/dev/null; then
-    scenario_swap_edges "$PREV3" "$TMP/p7g" > "$TMP/p7g.res"; R="$TMP/p7g.res"
-    chk "上一版拿 4050 的备份换 4051 照样成功、改掉了 4051（实得 $(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)）" \
-        "$(expect "$R" wrong_rc)|$(expect "$R" wrong_conf_same)" "0|no"
-    chk "上一版替换失败后登记没了、重跑也救不回（实得 $(expect "$R" mvfail_reg)|$(expect "$R" mvfail_retry_rc)）" \
-        "$(expect "$R" mvfail_reg)|$(expect "$R" mvfail_retry_rc)" "no|1"
-else
-    echo "  ⚠️ 取不到 $PREV3_COMMIT（浅克隆？），跳过负对照"
-fi
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -4,8 +4,8 @@
 // and checks what is left in it afterwards with the one leftover rule — names starting with `cavil-`.
 //
 // The cases follow a run's whole life: passed / failed / stopped by a signal; only the launcher
-// killed while a process it started in a session of its own (the way the negative-control runner
-// starts tests) still writes in the folder; two runs reaping the same leftover at once; a run stopped
+// killed while a process it started in a session of its own (detached, as a test runner may start
+// its workers) still writes in the folder; two runs reaping the same leftover at once; a run stopped
 // between "lock file made" and "locked" while another reaps; a state that cannot be judged; a framework
 // started without the launcher. Where a folder must be kept, the case also shows its user really was
 // alive and writing in it.
@@ -147,7 +147,7 @@ describe('a test run in its own temp folder (GitHub#469)', () => {
     const { d, sys } = world();
     const mark = join(d, 'm');
     const stop = join(d, 'stop');
-    // the command starts a writer the way the negative-control runner starts tests (detached: own session)
+    // the command starts a writer detached, in a session of its own
     const writer = `require('child_process').spawn('sh', ['-c', 'date +%s%N > "$TMPDIR/w"; echo $$ > "$0.pid"; while [ ! -e "$1" ]; do date +%s%N > "$TMPDIR/w"; sleep 0.05; done', process.argv[1], process.argv[2]], { detached: true, stdio: 'ignore' }).unref()`;
     const r = launch(sys, `${sq(process.execPath)} -e ${sq(writer)} ${JSON.stringify(mark)} ${JSON.stringify(stop)}; echo "$$ $TMPDIR" > ${JSON.stringify(mark)}; exec sleep 60`);
     await until('the writer', () => existsSync(`${mark}.pid`) && existsSync(mark) && readFileSync(mark, 'utf8').endsWith('\n'));

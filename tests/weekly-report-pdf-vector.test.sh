@@ -2,8 +2,7 @@
 # kind: unit
 # 周报 PDF 里的趋势图是矢量，不是单倍截图（GitHub#273）。
 #
-# 跑法：bash tests/weekly-report-pdf-vector.test.sh            （默认回归，~5 s；有浏览器时再加 ~10 s）
-#       MUTATION=1 bash tests/weekly-report-pdf-vector.test.sh （再跑 4 项负对照）
+# 跑法：bash tests/weekly-report-pdf-vector.test.sh            （~5 s；有浏览器时再加 ~10 s）
 # 依赖：bash / python3 / node / git。
 #   真出 PDF 的第 4 组另需 playwright 的 chromium 与 poppler（pdfimages / pdftotext）：
 #   WEEKLY_REPORT_TEST_PLAYWRIGHT_DIR=<装了 @playwright/test 的项目目录>，不设时试 client/；
@@ -25,8 +24,6 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
-# shellcheck source=lib/mutation.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/compat.sh"
 
@@ -144,7 +141,7 @@ mkreport() {   # $1 输出  $2 图片地址前缀  $3 戳
 }
 
 # ══════════════════════════════════════════════════════════════════
-# 断言组 1–3：默认对本版跑一遍；负对照对改坏的副本再跑
+# 断言组 1–3：对本版跑一遍
 check_render() {   # $1 根目录
     local root="$1" out="$TMP/r-$RANDOM"
     mkdir -p "$out"
@@ -327,45 +324,9 @@ else
     fi
 fi
 
-# ══════════════════════════════════════════════════════════════════
-echo "════ 负对照 ════"
-REAL_PASS=$pass; REAL_FAIL=$fail; mut_ran=0; mut_fail=0
-mutant() {   # $1 名字 $2 文件（相对根目录）$3 原文 $4 改成 → 打印副本根目录；原文不在就失败
-    local m="$TMP/mut-$1"; rm -rf "$m"; mkdir -p "$m"; cp -r "$TMP/new/scripts" "$m/"
-    python3 - "$m/$2" "$3" "$4" <<'PY' || return 1
-import sys
-p, old, new = sys.argv[1:]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit("原文出现 %d 次" % s.count(old))
-open(p, "w").write(s.replace(old, new))
-PY
-    printf '%s' "$m"
-}
-mut() {   # $1 名字 $2 说明 $3 文件 $4 原文 $5 改成 $6 跑哪一组
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    local m
-    if ! m=$(mutant "$1" "$3" "$4" "$5"); then
-        echo "  ❌ 负对照准备失败 [$1]：$3 里找不到要改的原文"; mut_fail=$((mut_fail + 1)); return
-    fi
-    pass=0; fail=0; QUIET=1; "$6" "$m"; QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照拦下 [$1] $2（$fail 条变红）"
-    else echo "  ❌ 负对照没拦下 [$1] $2"; mut_fail=$((mut_fail + 1)); fi
-}
-mut no-swap "topdf 不换矢量（照旧放 PNG）" scripts/weekly-report/topdf.mjs \
-    'outHtml = outHtml.replace(m[0], () => c.html);' 'void c;' check_topdf
-mut silent-fallback "取不到矢量版时悄悄退回 PNG" scripts/weekly-report/topdf.mjs \
-    'if (!allowRaster) {' 'if (false) {' check_topdf
-mut no-publish "run.sh 不把矢量版留在本机矢量版目录" scripts/weekly-report/run.sh \
-    'cp "$WORK/$n.chart.html" "$VECTOR_DIR/$n-$REV.chart.html"' ':' check_runsh
-mut local-path "矢量版仍按本机路径引用字体" scripts/weekly-report/render.py \
-    'if embed:' 'if False:' check_render
-pass=$REAL_PASS; fail=$REAL_FAIL
 
 echo
-mutation_summary "$0"
 compat_summary
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

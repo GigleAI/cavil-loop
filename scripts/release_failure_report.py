@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """A workflow run failed → open an issue, or comment on the open one of the same kind (GitHub#285).
 
-Three kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#416 / #628):
+Two kinds of run report through here, each into its own issue (REPORT_KIND, GitHub#628):
   release            the `report failure` job of .github/workflows/release.yml (scheduled, tag push,
                      manual release, manual gate-only)
-  negative-controls  the `report failure` job of .github/workflows/negative-controls.yml, the nightly
-                     run of every negative control
   client-nightly     the `report failure` job of .github/workflows/client.yml, the nightly
                      development build of the desktop client (GitHub#628)
 The kinds differ only in the marker, the title and the wording; finding, re-reading and writing are
@@ -28,14 +26,13 @@ All GitHub access goes through `gh api` (REST) with the job's token.
 Input (environment):
   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT (default 1), GITHUB_SERVER_URL,
   GITHUB_SHA, GITHUB_REF_NAME   as Actions sets them
-  REPORT_KIND    release (default), negative-controls or client-nightly; anything else → no write, exit 1
+  REPORT_KIND    release (default) or client-nightly; anything else → no write, exit 1
   EVENT          github.event_name
   GATE_ONLY      "true" for a manual gate-only run
   NEEDS          toJSON(needs) of the report job
   DISPATCH_LABEL the label that makes the daemon dispatch (default pending/agent)
   SELF_JOB       this job's name in the run's job list (default "report failure")
-  SUMMARY_DIR    the gate summary's saved output (verify.md / tally.md), when downloaded
-  CLIENT_DIR     the client gate's "did not go red" list (not-red.txt), when uploaded
+  SUMMARY_DIR    the gate summary's saved output (verify.md), when downloaded
   GITHUB_STEP_SUMMARY  where the one-line outcome is appended (optional)
 
 Exit: 0 = nothing to report, or the report was written in full; 1 = anything else (see above).
@@ -61,24 +58,7 @@ KINDS = {
         "workflow": "Release 工作流",
         "schedule": "定时（每周）",
         "manual": "手动发版",
-        "client_key": "gate-client",
-        "client_job": "gate client",
         "hint": None,
-        "plan_key": "plan",
-    },
-    "negative-controls": {
-        "marker": "<!-- cavil-negative-controls-failure -->",
-        "title": "负对照每晚运行失败（自动报告）",
-        "noun": "负对照每晚",
-        "workflow": "Negative controls 工作流（每晚负对照）",
-        "schedule": "定时（每晚）",
-        "manual": "手动",
-        "client_key": "client",
-        "client_job": "negative controls client",
-        "hint": ("负对照没按预期变红，说明对应的测试已分辨不出那处改坏：修测试，"
-                 "或在被改坏的代码变了时把这个条目指向新代码。修复用普通回归验证；开发期间不跑负对照、"
-                 "不新增负对照，是否重新变红由合并后 main 上的下一次每晚运行确认（GitHub#234 / #416）。"
-                 "发版不等这里。"),
         "plan_key": "plan",
     },
     "client-nightly": {
@@ -88,9 +68,6 @@ KINDS = {
         "workflow": "Client 工作流（每晚开发版）",
         "schedule": "定时（每晚）",
         "manual": "手动",
-        # no client negative-controls job here: nothing for client_section to list
-        "client_key": None,
-        "client_job": None,
         # which sentence depends on where it failed (client_nightly_hint)
         "hint": None,
         "plan_key": "mode",
@@ -308,47 +285,14 @@ def read_text(d, name):
 
 def shell_section():
     d = os.environ.get("SUMMARY_DIR", "")
-    verify, tally = read_text(d, "verify.md"), read_text(d, "tally.md")
-    if verify is None and tally is None:
+    verify = read_text(d, "verify.md")
+    if verify is None:
         return []
     out = ["### shell 测试单位", ""]
-    if verify is not None:
-        lines = [l for l in verify.splitlines() if l.startswith("- ❌ ")]
-        head = next((l for l in verify.splitlines() if l.startswith("## ")), "")
-        out.append(f"四个分片的核对：{head[3:].strip() or '（没有结论行）'}")
-        out += lines
-        out.append("")
-    if tally is not None:
-        ls = tally.splitlines()
-        if "没通过的单位：" in ls:
-            i = ls.index("没通过的单位：")
-            bad = [l for l in ls[i + 1:] if l.startswith("- ")]
-            out.append("负对照汇总（含 autopilot 六个任务）里没通过的单位：")
-            out += bad
-        else:
-            out.append("负对照汇总（含 autopilot 六个任务）里没有没通过的单位。")
-        out.append("")
-    return out
-
-
-def client_section(needs, jobs):
-    key = KIND["client_key"]
-    if not key:
-        return []
-    res = needs.get(key, {}).get("result") if isinstance(needs.get(key), dict) else None
-    if res != "failure":
-        return []
-    txt = read_text(os.environ.get("CLIENT_DIR", ""), "not-red.txt")
-    out = ["### 客户端负对照", ""]
-    if txt is not None and txt.strip():
-        out.append("没按预期变红的条目：")
-        out += [f"- {l.strip()}" for l in txt.splitlines() if l.strip()]
-    else:
-        link = ""
-        for j in jobs or []:
-            if j.get("name") == KIND["client_job"] and j.get("html_url"):
-                link = f"（[任务日志]({j['html_url']})）"
-        out.append(f"客户端没留下条目清单，见该任务日志{link}。")
+    lines = [l for l in verify.splitlines() if l.startswith("- ❌ ")]
+    head = next((l for l in verify.splitlines() if l.startswith("## ")), "")
+    out.append(f"四个分片的核对：{head[3:].strip() or '（没有结论行）'}")
+    out += lines
     out.append("")
     return out
 
@@ -387,7 +331,6 @@ def report_text(needs, jobs):
         lines += ["", f"**{client}**"]
     lines += ["", "### 各任务结果", ""] + job_section(needs, jobs) + [""]
     lines += shell_section()
-    lines += client_section(needs, jobs)
     return "\n".join(lines).rstrip() + "\n"
 
 

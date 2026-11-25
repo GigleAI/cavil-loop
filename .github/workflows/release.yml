@@ -28,11 +28,9 @@ concurrency:
 
 # The release gate is the shell regression suite — the same tests/run.sh shards and exactly-once
 # check as the Tests workflow — run against the one commit the tag will point at, before a tag is
-# cut. Any failure means no tag and no Release this run. The negative controls are not part of it:
-# they run every night in negative-controls.yml and a red one opens an issue there, it does not
-# hold a release (GitHub#416; until then they were this gate, GitHub#195).
+# cut. Any failure means no tag and no Release this run.
 #   plan  → which commit, and is there anything to release at all
-#   gate  → tests/run.sh --ci on 4 shards (no MUTATION)
+#   gate  → tests/run.sh --ci on 4 shards
 #   gate-summary → green only when every unit passed exactly once and every gate job passed
 #   release → checks the gate again, then tags exactly the planned commit, notes, Release page
 #   client-plan → (GitHub#576) does the client get a release too: only on a run that releases the

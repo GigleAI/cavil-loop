@@ -18,9 +18,6 @@
 #                                        print "<shard> <unit>" (shard 1 without --shard)
 #   bash tests/run.sh --verify DIR --ci  read every results.tsv under DIR (one per shard)
 #                                        and pass only if each expected unit passed once
-#   bash tests/run.sh --tally DIR...     add up the count lines of every results.tsv under DIR...
-#                                        (no "exactly once" rule; the nightly negative-controls run uses it for
-#                                        the autopilot jobs, whose parts run in six jobs)
 #   --out DIR                            where results.tsv and logs/<unit>.log go
 #                                        (default: a fresh temp dir, printed at the end)
 #   --changed-from REF                   run only what this change can affect (GitHub#495; PR runs
@@ -40,8 +37,6 @@
 # that fails, an empty diff. The selection is written to selection.txt next to results.tsv, and --verify
 # given the same REF recomputes it and requires every shard to have recorded exactly that.
 #
-# MUTATION=1 is passed through untouched: each test file reads it itself.
-#
 # Units (GitHub#211). A file is one unit, unless its header declares parts:
 #     # parts: 3
 # Then each part is its own unit, named NAME:K/N, run as TEST_PART=K/N bash NAME.test.sh
@@ -58,13 +53,10 @@
 # stops every mode with exit 2 — a new file cannot slip in unclassified.
 #
 # Count line (GitHub#212). Every file ends by calling report_counts (tests/lib/report.sh), which prints
-#     CAVIL_TEST_COUNTS v=1 regress_pass=N|- regress_fail=N|- compat_ran=N compat_skipped=N mut_ran=N mut_skipped=N mut_fail=N|-
+#     CAVIL_TEST_COUNTS v=2 regress_pass=N regress_fail=N compat_ran=N compat_skipped=N
 # A unit that exits 0 is still a failure when that line is missing ("没汇报计数" — it stopped early
-# or never got to the end), printed more than once, malformed, reports failed assertions, or carries
-# a negative-control count different from the file's own "负对照：跳过 N 项" / "本次跑了 N 项" line.
-# Summaries group by kind, with regression and negative controls in separate columns. Under MUTATION=1
-# most files cannot keep the two apart (their negative controls bump the same counters), so they report
-# regression as "-": the summaries list those units as "not counted separately", never add them in.
+# or never got to the end), printed more than once, malformed, or reports failed assertions.
+# Summaries group by kind.
 #
 # Verdicts per unit:
 #   pass      exit 0 and a valid count line
@@ -114,7 +106,7 @@ default_jobs() {
 }
 
 ORIG_ARGS="$*"
-CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""; KIND_OPT=""; QUICK=0; TALLY=0
+CI_MODE=0; LIST=0; SHARD=""; OUT=""; VERIFY=""; NAMES=(); JOBS=""; KIND_OPT=""; QUICK=0
 CHANGED_FROM=""; CHANGED_SET=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -129,7 +121,6 @@ while [ $# -gt 0 ]; do
         --kind) [ $# -ge 2 ] || die "--kind needs a list, e.g. unit,guard"; KIND_OPT="$2"; shift ;;
         --kind=*) KIND_OPT="${1#--kind=}" ;;
         --quick) QUICK=1 ;;
-        --tally) TALLY=1 ;;
         --changed-from) [ $# -ge 2 ] || die "--changed-from needs a git ref"; CHANGED_FROM="$2"; CHANGED_SET=1; shift ;;
         --changed-from=*) CHANGED_FROM="${1#--changed-from=}"; CHANGED_SET=1 ;;
         -j|--jobs) [ $# -ge 2 ] || die "$1 needs a number"; JOBS="$2"; shift ;;
@@ -157,7 +148,6 @@ if [ -n "$KIND_OPT" ]; then
         case " $KINDS_ALL " in *" $k "*) WANT_KIND[$k]=1 ;; *) die "--kind: unknown kind [$k] (kinds: $KINDS_ALL)" ;; esac
     done
     [ ${#WANT_KIND[@]} -gt 0 ] || die "--kind: empty list"
-    [ "$TALLY" = 0 ] || die "--tally adds up what is there; --kind / --quick don't apply"
 fi
 
 SHARD_K=1; SHARD_N=1
@@ -172,7 +162,6 @@ fi
 if [ "$CHANGED_SET" = 1 ]; then
     [ -n "$CHANGED_FROM" ] || die "--changed-from needs a git ref"
     [ ${#NAMES[@]} -eq 0 ] || die "--changed-from and explicit test names don't mix"
-    [ "$TALLY" = 0 ] || die "--tally adds up what is there; --changed-from doesn't apply"
 fi
 
 # ── what exists ────────────────────────────────────────────────────────────────
@@ -340,15 +329,14 @@ assign() {
 
 # ── counts (GitHub#212) ────────────────────────────────────────────────────────
 # results.tsv columns: unit status secs note kind regress_pass regress_fail compat_ran compat_skipped
-# mut_ran mut_skipped mut_fail ("-" in every field where a unit has no count line; mut_ran is always a
-# number when it has one, so that is the field that tells them apart — regression alone may be "-"). The note can be empty, so the
+# ("-" in every count field where a unit has no count line). The note can be empty, so the
 # file is always split on single tabs (awk -F'\t' / to_us), never with `read`'s whitespace IFS.
-NOCOUNTS="-	-	-	-	-	-	-"
+NOCOUNTS="-	-	-	-"
 to_us() { awk -F'\t' -v OFS=$'\x1f' '{ $1 = $1; print }' "$@"; }
 
-# Parse one log's count line → "rp<TAB>rf<TAB>cr<TAB>cs<TAB>mr<TAB>ms<TAB>mf" on stdout, or a reason
+# Parse one log's count line → "rp<TAB>rf<TAB>cr<TAB>cs" on stdout, or a reason
 # on stderr with return 1 (0 lines / several / malformed).
-COUNT_RE='^CAVIL_TEST_COUNTS v=1 regress_pass=([0-9]+|-) regress_fail=([0-9]+|-) compat_ran=([0-9]+) compat_skipped=([0-9]+) mut_ran=([0-9]+) mut_skipped=([0-9]+) mut_fail=([0-9]+|-)$'
+COUNT_RE='^CAVIL_TEST_COUNTS v=2 regress_pass=([0-9]+) regress_fail=([0-9]+) compat_ran=([0-9]+) compat_skipped=([0-9]+)$'
 parse_counts() {   # <log>
     local n line
     n=$(grep -c '^CAVIL_TEST_COUNTS' "$1" || true)
@@ -356,45 +344,34 @@ parse_counts() {   # <log>
     if [ "$n" -gt 1 ]; then echo "count line printed $n times (report_counts must run once)" >&2; return 1; fi
     line=$(grep '^CAVIL_TEST_COUNTS' "$1")
     if ! [[ "$line" =~ $COUNT_RE ]]; then echo "malformed count line: $line" >&2; return 1; fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" \
-        "${BASH_REMATCH[4]}" "${BASH_REMATCH[5]}" "${BASH_REMATCH[6]}" "${BASH_REMATCH[7]}"
+    printf '%s\t%s\t%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
 }
 
-# Markdown: one row per kind plus a total, then the negative-control section.
-# stdin: rows "unit status kind rp rf cr cs mr ms mf", tab-separated.
+# Markdown: one row per kind plus a total, then the units that did not pass.
+# stdin: rows "unit status kind rp rf cr cs", tab-separated.
 counts_report() {
     local labels="" k
     for k in $KINDS_ALL; do labels+="$(kind_label "$k")|"; done
     awk -F'\t' -v kinds="$KINDS_ALL" -v labels="$labels" '
         BEGIN { split(labels, L, "|"); nk = split(kinds, K, " "); for (i = 1; i <= nk; i++) LBL[K[i]] = L[i] }
         { k = $3; units[k]++; U++
-          if ($8 == "-") { nocount[k]++; NC++ } else {
-              if ($4 == "-") { mixed[k]++; MX++ } else { rp[k] += $4; rf[k] += $5; RP += $4; RF += $5 }
-              cr[k] += $6; cs[k] += $7; mr[k] += $8; ms[k] += $9
-              CR += $6; CS += $7; MR += $8; MS += $9
-              if ($10 == "-") MFU++; else MF += $10 }
+          if ($4 == "-") { nocount[k]++; NC++ } else {
+              rp[k] += $4; rf[k] += $5; RP += $4; RF += $5
+              cr[k] += $6; cs[k] += $7; CR += $6; CS += $7 }
           if ($2 != "pass" && $2 != "skipped-ok" && $2 != "excluded") bad[++nb] = $1 " (" $2 ")" }
-        function row(name, u, a, b, c, d, e, f, n, x,   note) {
+        function row(name, u, a, b, c, d, n,   note) {
             note = (n ? n " 个没有计数" : "")
-            if (x) note = note (note ? "；" : "") x " 个负对照模式下不单列回归"
-            printf "| %s | %d | %d / %d | %d / %d | %d / %d | %s |\n", name, u, a, b, c, d, e, f, note }
+            printf "| %s | %d | %d / %d | %d / %d | %s |\n", name, u, a, b, c, d, note }
         END {
-            print "| 类型 | 单位 | 回归（通过 / 失败） | 其中改动前对拍（跑 / 同版本跳过，组） | 负对照（跑 / 跳过） | 说明 |"
-            print "|---|---|---|---|---|---|"
+            print "| 类型 | 单位 | 回归（通过 / 失败） | 其中改动前对拍（跑 / 同版本跳过，组） | 说明 |"
+            print "|---|---|---|---|---|"
             for (i = 1; i <= nk; i++) { k = K[i]; if (!(k in units)) continue
-                row("`" k "` " LBL[k], units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k], mixed[k]) }
+                row("`" k "` " LBL[k], units[k], rp[k], rf[k], cr[k], cs[k], nocount[k]) }
             for (k in units) { known = 0; for (i = 1; i <= nk; i++) if (K[i] == k) known = 1
-                if (!known) row("`" k "`", units[k], rp[k], rf[k], cr[k], cs[k], mr[k], ms[k], nocount[k], mixed[k]) }
-            row("**合计**", U, RP, RF, CR, CS, MR, MS, NC, MX)
+                if (!known) row("`" k "`", units[k], rp[k], rf[k], cr[k], cs[k], nocount[k]) }
+            row("**合计**", U, RP, RF, CR, CS, NC)
             print ""
-            printf "**回归 %d 项 / 负对照 %d 项**", RP + RF, MR + MS
-            if (MX) printf "（回归只计 %d 个单位：另 %d 个在负对照模式下与负对照共用计数，不单列）", U - NC - MX, MX
-            if (MR > 0) {
-                printf "（负对照本次跑了 %d 项、跳过 %d 项）\n\n", MR, MS
-                printf "负对照：跑了 %d 项；没变红 %d 项", MR, MF
-                if (MFU) printf "（另有 %d 个单位不单独统计这一项，看下面的失败单位）", MFU
-                print ""
-            } else printf "（负对照本次一项没跑：只在每晚负对照运行或 MUTATION=1 时跑）\n"
+            printf "**回归 %d 项**\n", RP + RF
             if (nb) { print ""; print "没通过的单位："; for (i = 1; i <= nb; i++) print "- ❌ `" bad[i] "`" }
         }'
 }
@@ -410,36 +387,18 @@ fi
 
 GHA=0; [ "${GITHUB_ACTIONS:-}" = true ] && GHA=1
 
-# ── --tally: add up the count lines found, nothing else ────────────────────────
-if [ "$TALLY" = 1 ]; then
-    [ ${#NAMES[@]} -gt 0 ] || die "--tally needs at least one directory"
-    rows=$(mktemp "${TMPDIR:-/tmp}/run-tally.XXXXXX")
-    for d in "${NAMES[@]}"; do
-        [ -d "$d" ] || { echo "run.sh --tally: no directory $d (counted as nothing)" >&2; continue; }
-        while IFS= read -r -d '' rf; do
-            awk -F'\t' -v OFS='\t' '$1 != "" && $2 != "excluded" {
-                k = ($5 == "" ? "?" : $5); print $1, $2, k, ($6 == "" ? "-" : $6), $7, $8, $9, $10, $11, $12 }' "$rf"
-        done < <(find "$d" -name results.tsv -type f -print0)
-    done > "$rows"
-    { echo "## 负对照汇总：$(wc -l < "$rows" | tr -d ' ') 个结果（${NAMES[*]}）"; echo; counts_report < "$rows"; } > "$rows.md"
-    cat "$rows.md"
-    [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$rows.md" >> "$GITHUB_STEP_SUMMARY"
-    rm -f "$rows" "$rows.md"
-    exit 0
-fi
-
 # ── --verify: did every expected unit pass exactly once across the shards? ─────
 if [ -n "$VERIFY" ]; then
     [ -d "$VERIFY" ] || die "--verify: no directory $VERIFY"
     declare -A SEEN=() STATUS=() SECS=() CNT=()
     bad=0; problems=()
     while IFS= read -r -d '' rf; do
-        while IFS=$'\x1f' read -r name status secs _note _kind rp rf_ cr cs mr ms mf _rest; do
+        while IFS=$'\x1f' read -r name status secs _note _kind rp rf_ cr cs _rest; do
             [ -n "$name" ] || continue
             [ "$status" = excluded ] && continue
             SEEN[$name]=$(( ${SEEN[$name]:-0} + 1 ))
             STATUS[$name]="$status"; SECS[$name]="$secs"
-            if [[ "${mr:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs	$mr	$ms	$mf"; else CNT[$name]="$NOCOUNTS"; fi
+            if [[ "${rp:-}" =~ ^[0-9]+$ ]]; then CNT[$name]="$rp	$rf_	$cr	$cs"; else CNT[$name]="$NOCOUNTS"; fi
         done < <(to_us "$rf")
     done < <(find "$VERIFY" -name results.tsv -type f -print0)
     # Selections (GitHub#495): one selection.txt next to every results.tsv, all identical, and equal to
@@ -547,29 +506,19 @@ fi
 
 log_of() { printf '%s/logs/%s.log' "$OUT" "$(printf '%s' "$1" | tr ':/' '._')"; }
 
-# A passing unit's count line must agree with itself and with the file's own summary lines.
+# A passing unit's count line must not report failed assertions.
 count_problems() {   # <log> <counts> → prints the problem and returns 1, or returns 0
-    local rp rf cr cs mr ms mf said
-    IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$2"
-    if [ "$rf" != "-" ] && [ "$rf" -gt 0 ]; then echo "exit 0, but the count line reports $rf failed assertion(s)"; return 1; fi
-    said=$(sed -n 's/^负对照：跳过 \([0-9][0-9]*\) 项.*/\1/p' "$1" | tail -1)
-    if [ -n "$said" ] && [ "$said" != "$ms" ]; then
-        echo "count line says $ms negative control(s) skipped, the file printed 负对照：跳过 $said 项"; return 1
-    fi
-    said=$(sed -n 's/^负对照：本次跑了 \([0-9][0-9]*\) 项.*/\1/p' "$1" | tail -1)
-    if [ -n "$said" ] && [ "$ms" != "?" ] && [ "$said" != "$((mr + ms))" ]; then
-        echo "count line says $((mr + ms)) negative control(s), the file printed 负对照：本次跑了 $said 项"; return 1
-    fi
+    local rp rf cr cs
+    IFS=$'\t' read -r rp rf cr cs <<< "$2"
+    if [ "$rf" -gt 0 ]; then echo "exit 0, but the count line reports $rf failed assertion(s)"; return 1; fi
     return 0
 }
-counts_brief() {   # <counts> → "回归 12/0 · 负对照 跳过 3" for the per-unit line
-    local rp rf cr cs mr ms mf
-    IFS=$'\t' read -r rp rf cr cs mr ms mf <<< "$1"
-    [ "$mr" != "-" ] || { echo "–"; return; }
+counts_brief() {   # <counts> → "回归 12/0 · 对拍 1/2" for the per-unit line
+    local rp rf cr cs
+    IFS=$'\t' read -r rp rf cr cs <<< "$1"
+    [ "$rp" != "-" ] || { echo "–"; return; }
     local out="回归 $rp/$rf"
-    [ "$rp" != "-" ] || out="回归 不单列"
     [ $((cr + cs)) -eq 0 ] || out+=" · 对拍 $cr/$cs"
-    if [ "$mr" -gt 0 ]; then out+=" · 负对照 跑 $mr${ms:+/跳过 $ms}"; elif [ "$ms" != 0 ]; then out+=" · 负对照 跳过 $ms"; fi
     echo "$out"
 }
 
@@ -717,7 +666,7 @@ if [ -z "${CAVIL_TEST_RUN_ID:-}" ] && { [ -z "${RUN_TESTS_DIR:-}" ] || [ -n "${C
 fi
 
 change_note
-echo "Running ${#RUN[@]} unit(s)${SHARD:+ (shard $SHARD)}, up to $JOBS at a time${MUTATION:+, with MUTATION=$MUTATION}; logs in $OUT/logs"
+echo "Running ${#RUN[@]} unit(s)${SHARD:+ (shard $SHARD)}, up to $JOBS at a time; logs in $OUT/logs"
 [ ${#PAR[@]} -eq 0 ] || run_pool "$JOBS" "${PAR[@]}"
 # Files marked "# parallel: no" run alone, after everything else has finished.
 [ ${#SER[@]} -eq 0 ] || run_pool 1 "${SER[@]}"
@@ -726,9 +675,9 @@ rm -rf "$RUNSTATE"
 
 ran=$(( ${#PAR[@]} + ${#SER[@]} ))
 {
-    echo "### ${SHARD:+Shard $SHARD: }$(( ran - failed )) / $ran passed${MUTATION:+ (MUTATION=$MUTATION)}${KIND_OPT:+ (kinds: $KIND_OPT)}"
+    echo "### ${SHARD:+Shard $SHARD: }$(( ran - failed )) / $ran passed${KIND_OPT:+ (kinds: $KIND_OPT)}"
     echo
-    awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9, $10, $11, $12 }' "$RESULTS" | counts_report
+    awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9 }' "$RESULTS" | counts_report
     for kk in $KINDS_ALL; do
         keys=$(for k in "${!ROW[@]}"; do if [ "${KIND[$(file_of "$k")]}" = "$kk" ]; then printf '%s\n' "$k"; fi; done | LC_ALL=C sort)
         [ -n "$keys" ] || continue
@@ -744,7 +693,7 @@ ran=$(( ${#PAR[@]} + ${#SER[@]} ))
 
 echo
 # The per-kind table in the terminal too (the per-unit lines are above).
-awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9, $10, $11, $12 }' "$RESULTS" | counts_report
+awk -F'\t' -v OFS='\t' '$2 != "excluded" { print $1, $2, $5, $6, $7, $8, $9 }' "$RESULTS" | counts_report
 echo
 echo "Results: $RESULTS"
 if [ "$failed" -gt 0 ]; then echo "❌ $failed of $ran failed"; exit 1; fi

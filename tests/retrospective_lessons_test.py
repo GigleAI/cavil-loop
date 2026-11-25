@@ -312,9 +312,7 @@ class EvidenceUrlsTest(Case):
 
 def _load_runner():
     import importlib.util
-    # RETRO_RUNNER: a deliberately broken copy (tests/retrospective-lessons.test.sh, MUTATION=1)
-    path = Path(os.environ.get('RETRO_RUNNER') or
-                Path(__file__).resolve().parent.parent / 'scripts' / 'post-merge-retrospective.py')
+    path = Path(__file__).resolve().parent.parent / 'scripts' / 'post-merge-retrospective.py'
     spec = importlib.util.spec_from_file_location('post_merge_retrospective', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

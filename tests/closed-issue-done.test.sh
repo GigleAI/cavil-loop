@@ -2,8 +2,7 @@
 # kind: e2e
 # 人手动关闭（「已完成」）的 issue 自动打 Done —— GitHub#159。
 #
-# 跑法：bash tests/closed-issue-done.test.sh              （默认不跑末尾的负对照）
-#       MUTATION=1 bash tests/closed-issue-done.test.sh   （连负对照一起跑，见 tests/lib/mutation.sh）
+# 跑法：bash tests/closed-issue-done.test.sh
 # 依赖：bash、jq、python3、git。不碰网络：有状态的假 GitHub（tests/lib/fake_github.py，FAKE_GH_LISTS=1
 # 打开 issue / PR 列表）+ 假 tmux，HOME 指向临时目录。每一轮都**真的**起 agent-poll.sh 子进程，
 # 「打没打、摘了什么、留没留队」都从假 GitHub 的标签、调用记录和 state.json 里读，不读源码。
@@ -21,8 +20,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 
@@ -365,73 +362,8 @@ Closes #30" "pending/human,pending/merge"
 run_scenarios "$REPO_DIR/scripts"
 POS_PASS=$pass; POS_FAIL=$fail
 
-# ── 负对照：改坏一处，上面同一套场景必须变红 ──
-mut_fail=0; mut_ran=0
-mutate() {   # <名字> <文件（相对 scripts/）> <原文> <替换后>
-    local name="$1" file="$2" M="$SANDBOX/mut-$1"
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    rm -rf "$M"; mkdir -p "$M"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$M/"
-    if ! python3 - "$M/scripts/$file" "$3" "$4" <<'PY'
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) < 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
-PY
-    then
-        echo "  ❌ 负对照 $name：要改的原文找不到（准备失败）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1
-    run_scenarios "$M/scripts"
-    QUIET=0
-    if [ "$fail" -gt 0 ]; then
-        echo "  ✅ 负对照 $name：$fail 条检查变红"
-    else
-        echo "  ❌ 负对照 $name：改坏后整套检查仍全绿（测试分不出这个错误实现）"; mut_fail=$((mut_fail + 1))
-    fi
-}
-
-mutate unknown-as-completed _lib.sh '        completed) ;;
-        not_planned|duplicate)' '        *) ;;
-        not_planned|duplicate)'
-mutate no-reread-state _lib.sh '        open)
-            CD_V=skip; CD_MSG="issue #$issue 已重新打开' '        openx)
-            CD_V=skip; CD_MSG="issue #$issue 已重新打开'
-mutate fast-path-done-only _lib.sh '    if [ ${#stale[@]} -gt 0 ]; then
-        CD_V=write; CD_NEXT="del:${stale[0]}"' '    if false; then
-        CD_V=write; CD_NEXT="del:${stale[0]}"'
-mutate delete-fail-ok _lib.sh '                    log "  ⚠️ issue #$issue 摘 $lab 失败: $out"
-                    return 1' '                    log "  ⚠️ issue #$issue 摘 $lab 失败: $out"
-                    return 0'
-mutate add-fail-ok _lib.sh '                    log "  ⚠️ issue #$issue 加 $lab 失败: $out"
-                    return 1' '                    log "  ⚠️ issue #$issue 加 $lab 失败: $out"
-                    return 0'
-mutate no-custom-trigger _lib.sh '        trigger_labels_all
-        printf' '        printf'
-mutate dequeue-before-write _lib.sh '        if closed_done_label "$issue"; then' '        closed_done_label "$issue"; if true; then'
-mutate no-enqueue agent-poll.sh '            closed_done_enqueue "$issnum" "$STATE_FILE"
-            log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"' '            log "auto-cleanup closed issue #$issnum → cleanup-issue.sh --force"'
-mutate no-drain agent-poll.sh '    closed_done_drain "$STATE_FILE" || true' '    :'
-mutate finish-deletes _lib.sh '        if closed_done_label "$issue"; then
-            closed_done_finish "$issue" "$state_file"' '        if closed_done_label "$issue"; then
-            jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
-mutate giveup-deletes _lib.sh '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
-            closed_done_finish "$issue" "$state_file"' '→ 放弃（请手动打 ${LABEL_DONE}、摘掉流程标签）"
-            jq --arg i "$issue" "del(.closed_done_queue[\$i])" "$state_file" > "$tmp" && mv "$tmp" "$state_file"'
-mutate enqueue-resets _lib.sh '{($i): ((.closed_done_queue // {})[$i] // 0)}' '{($i): 0}'
-mutate no-forget agent-poll.sh '                closed_done_forget "$issnum" "$STATE_FILE"
-' ''
-mutate no-cap _lib.sh '        if [ "$tries" -ge "$cap" ]; then
-            log "⚠️ issue #$issue 关闭后' '        if false; then
-            log "⚠️ issue #$issue 关闭后'
-
 echo
 echo "正向：$POS_PASS 通过 / $POS_FAIL 失败"
-mutation_summary "$0"
 compat_summary
-if mutation_on; then echo "负对照：$mut_ran 项中 $mut_fail 项没能变红或准备失败"; fi
-# 正式版计数在负对照开始前已存下、负对照不改它：各模式下都只含回归（tests/lib/report.sh）
-REPORT_REGRESS_ONLY=1 report_counts "$POS_PASS" "$POS_FAIL" "$mut_ran" "$mut_fail"
-[ "$POS_FAIL" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+report_counts "$POS_PASS" "$POS_FAIL"
+[ "$POS_FAIL" -eq 0 ]

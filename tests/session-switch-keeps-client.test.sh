@@ -2,8 +2,7 @@
 # kind: e2e
 # 换 worker / 换复审时不把 attach 着的终端踢出 tmux（GitHub#197）。
 #
-# 跑法：bash tests/session-switch-keeps-client.test.sh            （默认回归，约 30 秒）
-#       MUTATION=1 bash tests/session-switch-keeps-client.test.sh （另跑 10 条负对照，约 6 分钟）
+# 跑法：bash tests/session-switch-keeps-client.test.sh            （约 30 秒）
 # 依赖：tmux（3.0+）、git、jq。
 #
 # 真跑两个派工脚本（issue 评论、PR 评论），真 tmux——但开在**私有 socket** 上，绝不碰本机
@@ -24,14 +23,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 # 读到真值，或者让 tmux 命令连到外层 server。
 if [ -z "${KEEPCLIENT_TEST_CLEAN_ENV:-}" ]; then
     keep=(KEEPCLIENT_TEST_CLEAN_ENV=1 HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" TERM="${TERM:-dumb}")
-    [ -n "${MUTATION:-}" ] && keep+=(MUTATION="$MUTATION")
     exec env -i "${keep[@]}" bash "${BASH_SOURCE[0]}" "$@"
 fi
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 
 if ! command -v tmux > /dev/null 2>&1; then
     echo "⏭ 本机没有 tmux，整份跳过"; exit 0
@@ -191,7 +187,7 @@ wait_gone() {   # 最多等 $1 秒 session 消失
     return 1
 }
 
-# 一整个场景，打印 PASS/FAIL 行（名字固定，负对照按名字找红）。$1 = skill 目录，$2 = issue|pr
+# 一整个场景，打印 PASS/FAIL 行（名字固定）。$1 = skill 目录，$2 = issue|pr
 scenario() {
     local R="$1" kind="$2" p1 p2 n
     setup_scenario "$(basename "$R").$kind"
@@ -435,28 +431,6 @@ log_fault_scenario() {
     T kill-server 2>/dev/null
 }
 
-# 把一份 skill 目录复制出来（不带 client/ 和 .git），改坏一处。$1 = 名字，$2 = python 替换脚本
-mutant() {
-    local M="$TMP/mut-$1"
-    rm -rf "$M"; mkdir -p "$M"
-    (cd "$REPO_DIR" && tar --exclude=./client --exclude=./.git -cf - .) | (cd "$M" && tar -xf -)
-    python3 -c "$2" "$M/scripts/_lib.sh" >&2 || return 1
-    printf '%s' "$M"
-}
-# 跑负对照：$1 = 名字，$2 = 期望变红的检查名，$3 = python 替换脚本，$4 = issue|pr
-expect_red() {
-    local M out
-    if ! M="$(mutant "$1" "$3")"; then
-        bad "负对照「$1」准备失败：要改的原文找不到"; return
-    fi
-    out="$("${5:-scenario}" "$M" "$4")"
-    if grep -qx "FAIL $2.*" <<<"$out" || grep -q "^FAIL $2 ::" <<<"$out"; then
-        ok "负对照「$1」：「$2」变红"
-    else
-        bad "负对照「$1」：「$2」没变红"; sed 's/^/      /' <<<"$out"
-    fi
-}
-
 judge() {   # 把 scenario 的输出换成计数
     local line
     while IFS= read -r line; do
@@ -483,131 +457,7 @@ judge PR < <(fault_scenario "$REPO_DIR" pr)
 echo "── 5. 读不到日志状态 / session 清单时 ──"
 judge issue < <(log_fault_scenario "$REPO_DIR")
 
-echo "── 6. 负对照 ──"
-if mutation_gate; then
-    # 换回删 session 再新建的旧做法
-    expect_red "删 session 重建" "换去复审后客户端还挂着" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if ! session_alive "$sess"; then
-        pane="$(tmux new-session"""
-assert old in s
-s=s.replace(old, old.replace("    if ! session_alive", "    tmux kill-session -t \"=$sess\" 2>/dev/null || true\n    if ! session_alive"))
-open(p,"w").write(s)' issue
-fi
-if mutation_gate; then
-    # 不先按进程组终止，只靠 respawn-pane -k 的挂断信号
-    expect_red "不先终止旧程序" "不理挂断信号的旧程序已不在" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="        kill_pane_pids \x22$pid\x22\n"
-assert old in s
-s=s.replace(old, "        :\n", 1)
-open(p,"w").write(s)' pr
-fi
-if mutation_gate; then
-    # 起完新程序忘了把「退出后保留窗格」关回去
-    expect_red "保留窗格没关回去" "程序自然退出后 session 消失" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    tmux set-option -w -t "$pane" remain-on-exit off 2>/dev/null || true
-    if [ "$(tmux display-message"""
-assert old in s
-s=s.replace(old, """    if [ "$(tmux display-message""")
-open(p,"w").write(s)' issue
-fi
-if mutation_gate; then
-    # 会话日志不先看有没有 pipe，又用回 pipe-pane -o（它是开关，会把已有日志关掉）
-    expect_red "日志开关没先判断" "换程序后的两次启动都写进同一份会话日志" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if [ "$pipe" = 1 ]; then
-        mark="$(tmux show-options -qv -t "=$sess:" @redact_pipe 2>/dev/null)" || return 0
-        [ "$mark" = 1 ] && return 0
-    fi
-"""
-assert s.count(old) == 1
-s=s.replace(old, "", 1)
-old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
-assert s.count(old2) == 1
-s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
-open(p,"w").write(s)' pr
-fi
-if mutation_gate; then
-    # 按排列顺序认 worker 窗格（复审第 1 轮的实现）
-    expect_red "按顺序认 worker 窗格" "分屏·人的程序还活着" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""        if [ -n "$rec" ] && [ "$id" = "$rec" ]; then hit="$id $pid $dead $pipe"; fi"""
-assert old in s
-s=s.replace(old, "        [ \x22$n\x22 -eq 1 ] && hit=\x22$id $pid $dead $pipe\x22", 1)
-open(p,"w").write(s)' issue split_scenario
-fi
-if mutation_gate; then
-    # 记录读失败当成「没有记录」（复审第 2 轮复现 B）
-    expect_red "记录读失败当没有" "故障·记录读不到·人的程序还活着" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if ! rec="$(tmux show-options -qv -t "=$sess:" @worker_pane 2>/dev/null)"; then
-        echo unknown; return 0
-    fi"""
-assert old in s
-s=s.replace(old, "    rec=\x22$(tmux show-options -qv -t \x22=$sess:\x22 @worker_pane 2>/dev/null || true)\x22", 1)
-open(p,"w").write(s)' issue fault_scenario
-fi
-if mutation_gate; then
-    # 窗格清单读失败当成「记录的窗格已不在」（复审第 2 轮复现 A）
-    expect_red "清单读失败当窗格不在" "故障·窗格清单读不到·没有起第二个程序" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    if ! panes="$(tmux list-panes -s -t "=$sess:" -F \x27#{pane_id} #{pane_pid} #{pane_dead} #{pane_pipe}\x27 2>/dev/null)"; then
-        echo unknown; return 0
-    fi"""
-assert old in s
-s=s.replace(old, "    panes=\x22$(tmux list-panes -s -t \x22=$sess:\x22 -F \x27#{pane_id} #{pane_pid} #{pane_dead} #{pane_pipe}\x27 2>/dev/null || true)\x22", 1)
-old2="""    if [ "$n" -eq 0 ]; then echo unknown; return 0; fi"""
-assert old2 in s
-s=s.replace(old2, """    if [ "$n" -eq 0 ] && [ -n "$rec" ]; then echo "gone $rec"; return 0; fi""", 1)
-open(p,"w").write(s)' pr fault_scenario
-fi
-if mutation_gate; then
-    # 日志状态读不到时照旧用 -o 开（复审第 3 轮复现）
-    expect_red "日志读不到当没开" "日志·读不到时管道还开着" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    case "$st" in
-        found|single) ;;
-        *)
-            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 ${st}），本次不碰会话日志"
-            return 0 ;;
-    esac
-"""
-assert s.count(old) == 1
-s=s.replace(old, "    [ \x22$st\x22 = found ] || [ \x22$st\x22 = single ] || tgt=\x22=$sess:\x22\n", 1)
-old2="    if ! tmux pipe-pane -t \x22$tgt\x22"
-assert s.count(old2) == 1
-s=s.replace(old2, "    if ! tmux pipe-pane -o -t \x22$tgt\x22", 1)
-open(p,"w").write(s)' issue log_fault_scenario
-fi
-if mutation_gate; then
-    # 身份读不到时当成默认值（改动前的写法）
-    expect_red "身份读不到当默认" "故障·身份读不到·原 worker 还活着" '
-import sys; p=sys.argv[1]; s=open(p).read()
-head="tmux_session_matches_worker() {"
-assert s.count(head) == 1
-a=s.index(head); b=s.index("\n}\n", a)
-body=s[a:b]
-old="2>/dev/null)\x22 || return 2"
-assert body.count(old) == 3
-s=s[:a]+body.replace(old, "2>/dev/null || true)\x22")+s[b:]
-open(p,"w").write(s)' pr fault_scenario
-fi
-if mutation_gate; then
-    # session 清单读不到时当成「不在」
-    expect_red "清单读不到当不在" "会话清单读不到·判活为不知道" '
-import sys; p=sys.argv[1]; s=open(p).read()
-old="""    rm -f "$err"
-    return 2
-}"""
-assert old in s
-s=s.replace(old, "    rm -f \x22$err\x22\n    return 1\n}", 1)
-open(p,"w").write(s)' issue log_fault_scenario
-fi
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

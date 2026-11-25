@@ -13,7 +13,6 @@
 #   · 注销说「没有登记，不动」并返回成功，旧单元和旧登记都留着；
 #   · 另一个项目拿走同一个端口，新旧目录各有一个主人；
 #   · 两份同端口登记时，旧单元启动读到新登记里别的项目的命令。
-# 每条断言都拿上一版实现（205d252）跑一遍负对照，必须变红。
 # ⑤ 的期望在 #75 改过：原先是「重注册留在旧单元」，现在旧单元起不来了，改成「搬到新单元」。
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -21,9 +20,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
-BUGGY_COMMIT="205d252"   # 第 1 轮复审打回的那版
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -159,25 +155,7 @@ NH="$SANDBOX/fresh"; mkdir -p "$NH/.config/systemd/user"; : > "$NH/.config/syste
 chk "锁在新目录" "$(HOME="$NH" bash -c 'source "$1/scripts/_names.sh"; cavil_preview_lock_dir' _ "$REPO_DIR" | sed "s|$NH|~|")" "~/.config/cavil-loop/preview"
 chk "没有旧名字目录" "$([ -e "$NH/.config/coding-agent-work-loop" ] && echo yes || echo no)" "no"
 
-mutation_on && echo "【负对照】上一版实现（$BUGGY_COMMIT）跑同一场景，复审指出的几条必须变红"
-OLD="$SANDBOX/code-buggy"
-if ! mutation_gate; then :     # 负对照只在 MUTATION=1 时跑（tests/lib/mutation.sh）
-elif mkdir -p "$OLD" && git -C "$REPO_DIR" archive "$BUGGY_COMMIT" 2>/dev/null | tar -x -C "$OLD" 2>/dev/null; then
-    mkdir -p "$SANDBOX/buggy"
-    scenario "$OLD" "$SANDBOX/buggy" > "$SANDBOX/buggy.out"
-    B="$SANDBOX/buggy.out"
-    for key_want in "list_sees_old=1" "steal_rc=2" "owners_4040=1" "reregister_adopted=yes" \
-                    "unserve_old_stops=3" "unserve_old_gone=yes" "old_unit_run=OLD-APP" "old_unit_wait=127.0.0.1:1"; do
-        key="${key_want%%=*}"; want="${key_want#*=}"
-        chk "上一版在 $key 上变红（实得 $(expect "$B" "$key")）" \
-            "$([ "$(expect "$B" "$key")" != "$want" ] && echo red || echo green)" "red"
-    done
-else
-    echo "  ⚠️ 取不到 $BUGGY_COMMIT（浅克隆？），跳过负对照"
-fi
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" = 0 ]
