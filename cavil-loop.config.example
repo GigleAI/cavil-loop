@@ -693,6 +693,25 @@ COPY_TO_WORKTREE=".env"
 WORKTREE_GIT_USER_NAME=""
 WORKTREE_GIT_USER_EMAIL=""
 
+# Sign each item's commits as a person on the item (on by default; a missing line = on,
+# false or an empty value = off). On every dispatch the daemon looks, in order, at: the
+# item's assignees, then (for a PR) the bound issue's assignees, then the parent issues'
+# assignees; then the authors along the same chain. The first account that is a real user
+# with write access to this repository (not the loop's own account, not the requester bot,
+# not an outside account) signs the worktree's commits, as
+# <login> <<id>+<login>@users.noreply.github.com>. Nobody eligible, or this switch off ->
+# the identity above (WORKTREE_GIT_USER_NAME / _EMAIL, each falling back to the repo /
+# global git config when empty). The identity goes into the worktree's own git config
+# (extensions.worktreeConfig), never into the shared repo config.
+#
+# 提交署成条目上的人（默认开；没写这一行 = 开，写 false 或空值 = 关）。每次派工按顺序找：条目的
+# 负责人 →（PR 时）它绑定的 issue 的负责人 → 父 issue 的负责人；再按同一条链找提出者。第一个
+# 「在本仓库有写权限的真人账号」（不是 loop 自己的账号、不是外部需求机器人、不是外部账号）就是这个
+# worktree 提交的作者，署 <账号名> <<数字编号>+<账号名>@users.noreply.github.com>。都找不到或开关关着
+# → 用上面配置的身份（两项各自为空时由仓库 / 全局 git 配置补）。身份写进 worktree 自己的 git 配置，
+# 不碰仓库共用配置。
+WORKTREE_GIT_USER_FROM_ITEM=true
+
 # ── Worker agent / Worker agent CLI ──
 
 # Which agent CLI runs as the worker. Built-in drivers (see docs/drivers.md):

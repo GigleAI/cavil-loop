@@ -262,7 +262,7 @@ test('Settings: a common card\'s less used option is under its own 「高级」'
   await expect(page.getByTestId('app-kind')).toBeVisible();
 });
 
-test('project settings: opens with the 18 common ones; each group\'s 「高级」 and the 高级设置 block hold the rest, all 81 there; a changed value keeps its fold open', async () => {
+test('project settings: opens with the 18 common ones; each group\'s 「高级」 and the 高级设置 block hold the rest, all 85 there; a changed value keeps its fold open', async () => {
   const page = await openSettings();
   const reg = registry();
   await page.getByTestId('daemon-settings').scrollIntoViewIfNeeded();
@@ -293,7 +293,7 @@ test('project settings: opens with the 18 common ones; each group\'s 「高级�
   // the block at the bottom: the advanced groups, and now every registered setting is on the dialog
   await page.getByTestId('config-adv-toggle').click();
   expect(await names()).toEqual([...reg.keys()].sort());
-  expect(reg.size).toBe(81);
+  expect(reg.size).toBe(85);
   // change one in the block and one under a group's 「高级」: neither fold closes while the change is unsaved
   await page.getByTestId('config-input-POLL_DUE_SLACK_SECS').fill('20');
   await page.getByTestId('config-input-DISPATCH_MAX_RETRIES').fill('5');

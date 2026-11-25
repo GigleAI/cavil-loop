@@ -15,6 +15,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
                   查询里写 issueOrPullRequest 时 issue 的也按编号从这里取，GitHub#391）
   review_comments.json / reviews.json  {"<pr>": [...]}  PR 行内评论 / review（GitHub#391；没有 = 空）
   perms.json 里写 "__404__" = 这个账号不存在
+  users.json      {"<login>": {id, type} | "__404__"}  GET users/<login>（GitHub#699）；没写的账号给固定编号、类型 User
+                  items 里的 assignees 原样带进 issue
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
   subs.json       {"<n>": [<n> | "<owner/repo>#<n>", ...]}  子项（GitHub#233）：/issues/N/sub_issues 和 sub_issues_summary
   items 里的 parent_issue_url 原样带进 issue（GitHub#233）；repos/<owner>__<repo>/ 子目录 = 另一个仓库的同一套状态
@@ -323,7 +325,7 @@ def view(n):
 
 def as_issue(n):
     kind, it = view(n)
-    out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "updated_at", "created_at") if k in it}
+    out = {k: it[k] for k in ("number", "state", "state_reason", "labels", "title", "body", "user", "assignees", "updated_at", "created_at") if k in it}
     out.setdefault("title", "t")
     out.setdefault("updated_at", "2026-01-01T00:00:00Z")
     out["pull_request"] = {"url": "x", "merged_at": it.get("merged_at") or ("2026-01-01T00:00:00Z" if it.get("merged") else None)} if kind == "pr" else None
@@ -435,6 +437,22 @@ if path == "graphql":
     where = "issueOrPullRequest" if "issueOrPullRequest" in fields.get("query", "") else "pullRequest"
     emit({"data": {"repository": {where: {"userContentEdits": {
         "pageInfo": {"hasNextPage": more, "endCursor": cursor}, "nodes": nodes}}}}})
+
+if path and path.startswith("users/") and method == "GET":
+    # 账号信息（GitHub#699，提交署名要账号的数字编号）：users.json {"<login>": {id, type}}；没写的账号按名字
+    # 算一个固定编号、类型 User；"__404__" = 账号不存在。F_users_<login> 让这一次读取失败
+    _lg = path.split("/")[1].split("?")[0]
+    if os.path.exists(p("F_users_" + _lg)):
+        fail("HTTP 502: injected failure (users/" + _lg + ")")
+    _u = load("users.json", {}).get(_lg)
+    if _u == "__404__":
+        fail("gh: Not Found (HTTP 404)")
+    import zlib as _z
+    _u = dict(_u or {})
+    _u.setdefault("id", 100000 + _z.crc32(_lg.encode()) % 900000)
+    _u.setdefault("type", "User")
+    _u["login"] = _lg
+    emit(_u)
 
 if path is None or not path.startswith("repos/" + REPO):
     emit([])

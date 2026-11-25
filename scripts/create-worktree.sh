@@ -65,12 +65,8 @@ else
         git worktree add "$WORKTREE_DIR" "$BRANCH" || exit 1
 fi
 
-# 3a. 给 worktree 设独立的 git 身份（worker commit 用 bot 而非 user）
-if [ -n "${WORKTREE_GIT_USER_NAME:-}" ] || [ -n "${WORKTREE_GIT_USER_EMAIL:-}" ]; then
-    [ -n "${WORKTREE_GIT_USER_NAME:-}" ] && git -C "$WORKTREE_DIR" config user.name "$WORKTREE_GIT_USER_NAME"
-    [ -n "${WORKTREE_GIT_USER_EMAIL:-}" ] && git -C "$WORKTREE_DIR" config user.email "$WORKTREE_GIT_USER_EMAIL"
-    log "  worker identity: $(git -C "$WORKTREE_DIR" config user.name) <$(git -C "$WORKTREE_DIR" config user.email)>"
-fi
+# 3a. 这个 worktree 的提交身份：条目的负责人 / 提出者，找不到用配置的身份（GitHub#699，规则见 _lib.sh）
+commit_identity_apply "$WORKTREE_DIR" "$ISSUE"
 
 # 3b. 复制 COPY_TO_WORKTREE 列出的本地配置（默认含 .env 和 .claude/settings.local.json）
 for rel in ${COPY_TO_WORKTREE:-}; do

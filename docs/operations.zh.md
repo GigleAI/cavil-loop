@@ -63,7 +63,8 @@ WORKTREE_SETUP_CMD="npm ci || npm install"
 COPY_TO_WORKTREE=".env"
 
 # Worker 身份（commit author）
-WORKTREE_GIT_USER_NAME=""        # 空 = 用 global ~/.gitconfig
+WORKTREE_GIT_USER_FROM_ITEM=true # 提交署成条目的负责人 / 提出者（见「worker 的提交署成谁」）
+WORKTREE_GIT_USER_NAME=""        # 兜底；空 = 用仓库 / 全局 git 配置
 WORKTREE_GIT_USER_EMAIL=""
 
 # Claude Code 启动 flag
@@ -287,6 +288,37 @@ Projects v2 只有 GraphQL 接口。
 - daemon 会把选中的 worker 和模型记录在 tmux `@worker_agent` / `@worker_model`，并把模型写入 `state.json`。如果现有 idle
   session 的 worker 或模型不同，会重启并以指定组合 resume。
 - worker crash 后 self-heal 会恢复到同一个模型专用 pending 标签。
+
+</details>
+
+## worker 的提交署成谁
+
+**默认开。** worker 的提交署成条目上的人：负责人（assignee），没有就署提需求的人。只认在本仓库有写权限的真人账号；
+谁都不合格时，用 `WORKTREE_GIT_USER_NAME` / `WORKTREE_GIT_USER_EMAIL` 配置的身份。写 `WORKTREE_GIT_USER_FROM_ITEM=false`
+（或空值）关掉，之后每次提交都用配置的身份。
+
+<details><summary>细节：查找顺序、谁算合格、身份写在哪</summary>
+
+每次派工（新 issue、issue 留言、PR 留言；worker 和复审都算），在 worker 开工或收到新说明之前，daemon 沿着一条链找：
+条目本身 → 条目是 PR 时，它绑定的 issue → 那个 issue 的父 issue → 再往上的父 issue（只认本仓库的，最多 5 个条目）。
+
+1. 沿着链从近到远看负责人（同一个条目有几个负责人时，按 GitHub 给的顺序）。
+2. 都没有 → 沿着同一条链从近到远看提出者。
+3. 都没有 → 配置的身份。
+
+合格 = 真人账号（不是 `名字[bot]` 这类应用账号）、不是 loop 自己的写入账号、不是外部需求机器人，并且在本仓库有写权限。
+外部账号一律不算，所以 agent 写的代码不会记到没提需求的人名下。提交署 `<账号名>`，邮箱用 GitHub 给每个账号的免公开邮箱
+`<数字编号>+<账号名>@users.noreply.github.com`：GitHub 一定把它算到那个账号名下，也不会暴露真实邮箱。
+
+| 这次派工的结论 | worktree 里怎么改 |
+|---|---|
+| 找到合格的人 | 姓名和邮箱两项一起写成这个人 |
+| 没有合格的人，或开关关着 | 两项都删掉，再把非空的 `WORKTREE_GIT_USER_NAME` / `_EMAIL` 各自写回；缺的那项照常由仓库 / 全局 git 配置补 |
+| 读 GitHub 失败 | 什么都不改，沿用上一次的结果；这个 worktree 从没写过时用配置的身份 |
+
+身份写在 worktree 自己的 git 配置里（`git config --worktree`；daemon 会在仓库上打开一次 `extensions.worktreeConfig`），
+主 checkout 的身份和仓库共用配置都不动。正在跑的 worker 下一次提交就用上新身份——git 每次提交都现读配置。仓库共用配置里设了
+`core.bare=true` 或 `core.worktree` 的仓库没法安全地给每个 worktree 单独配置，这种仓库把配置的身份写进共用配置，不按条目署名。
 
 </details>
 

@@ -64,7 +64,8 @@ WORKTREE_SETUP_CMD="npm ci || npm install"
 COPY_TO_WORKTREE=".env"
 
 # Worker identity (commit author)
-WORKTREE_GIT_USER_NAME=""        # empty = use global ~/.gitconfig
+WORKTREE_GIT_USER_FROM_ITEM=true # sign commits as the item's assignee / author (see "Who worker commits are signed as")
+WORKTREE_GIT_USER_NAME=""        # fallback; empty = the repo / global git config
 WORKTREE_GIT_USER_EMAIL=""
 
 # Claude Code launch flags
@@ -319,6 +320,43 @@ points at a closed local port for the probe, so no API request leaves the machin
   `state.json`. If an existing idle session uses a different worker or model, it is restarted and resumed with the
   requested selection.
 - Self-heal restores the same model-specific pending label after a worker crash.
+
+</details>
+
+## Who worker commits are signed as
+
+**On by default.** A worker's commits are signed as a person on the item: its assignee, else the author of the request.
+Only real accounts with write access to the repository count; when nobody qualifies, the identity in
+`WORKTREE_GIT_USER_NAME` / `WORKTREE_GIT_USER_EMAIL` is used. Turn it off with `WORKTREE_GIT_USER_FROM_ITEM=false`
+(or an empty value); then every commit uses that configured identity.
+
+<details><summary>Details: the lookup order, what counts, and where the identity is written</summary>
+
+On every dispatch (new issue, issue comment, PR comment; worker and reviewer alike), before the worker starts or
+receives its new instructions, the daemon walks a chain: the item itself → for a PR, the issue it is bound to → that
+issue's parent issue → its parent (parents in this repository only, at most five items).
+
+1. The assignees along the chain, nearest first (several assignees on one item: in GitHub's order).
+2. Nobody there → the authors along the same chain, nearest first.
+3. Nobody there → the configured identity.
+
+An account counts when it is a real user (not an app account like `name[bot]`), is not the loop's own write account,
+is not the requester bot, and has write access to this repository. Outside accounts never count, so code an agent
+wrote is never attributed to someone who did not ask for it. The commit is signed `<login>` with the account's
+no-reply address `<id>+<login>@users.noreply.github.com`, which GitHub always credits to that account without exposing
+a real address.
+
+| Outcome of this dispatch | What happens in the worktree |
+|---|---|
+| A person qualifies | Name and email are both set to that person |
+| Nobody qualifies, or the switch is off | Both are removed, then each non-empty `WORKTREE_GIT_USER_NAME` / `_EMAIL` is set; a missing one comes from the repo / global git config as usual |
+| A read from GitHub failed | Nothing changes; the last result stays. A worktree that never had one gets the configured identity |
+
+The identity is written to the worktree's own git config (`git config --worktree`; the daemon turns on
+`extensions.worktreeConfig` in the repository once). The main checkout's identity and the shared repo config are not
+touched. A running worker picks up a change on its next commit — git reads the config on every commit. Repositories
+whose shared config sets `core.bare=true` or `core.worktree` cannot use per-worktree config safely; there the configured
+identity is written to the shared config and items are not signed per person.
 
 </details>
 

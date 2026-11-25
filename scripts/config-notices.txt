@@ -73,6 +73,7 @@ WORKTREE_SETUP_CMD | quiet | 模板里的值只是示例，项目按需填
 COPY_TO_WORKTREE | quiet | 模板里的值只是示例，项目按需填
 WORKTREE_GIT_USER_NAME | quiet | 不写这一行时的行为和模板里的值相同
 WORKTREE_GIT_USER_EMAIL | quiet | 不写这一行时的行为和模板里的值相同
+WORKTREE_GIT_USER_FROM_ITEM | quiet | 不写这一行时的行为和模板里的值相同
 WORKER_AGENT | quiet | 不写这一行时的行为和模板里的值相同
 WORKER_MODEL | quiet | 不写这一行时的行为和模板里的值相同
 CLAUDE_EXTRA_FLAGS | quiet | 权限参数：要不要跳过权限确认由维护者自己定，不提示

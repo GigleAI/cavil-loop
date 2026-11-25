@@ -115,7 +115,7 @@ chk "整数项带范围" "$(jq -c '.fields[] | select(.name=="MAX_CONCURRENT_WOR
 # 层级（GitHub#591）：每项的 tier 就是登记表第 9 列，原样交给客户端
 chk "每项都带层级，和登记表第 9 列逐项相同" "$(jq -r '.fields[] | "\(.name) \(.tier // "缺")"' <<<"$G")" \
     "$(grep -vE '^[[:space:]]*(#|$)' "$REPO_DIR/scripts/config-fields.txt" | awk -F'|' '{n = $1; t = $9; gsub(/[ \t]/, "", n); gsub(/[ \t]/, "", t); print n, t}')"
-chk "三种层级的项数（常用 18 / 组内高级 26 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=26"
+chk "三种层级的项数（常用 18 / 组内高级 27 / 高级 40）" "$(jq -r '[.fields[].tier] | group_by(.) | map("\(.[0])=\(length)") | join(" ")' <<<"$G")" "advanced=40 main=18 more=27"
 chk_lacks "令牌的值不在输出里" "$G" "ghp_TESTSECRET0000"
 chk_lacks "命令的值不在输出里" "$G" "npm ci"
 chk "命令 / 钩子 / 令牌不是输出的字段" "$(jq -c '[.fields[].name] | map(select(test("CMD|HOOK|TOKEN|EXEC|URL|ROOT|_DIR$|^REPO$|PREFIX")))' <<<"$G")" '[]'
@@ -495,13 +495,14 @@ LIBKEYS="CONCURRENT_WORK_MAX_BYTES WORKER_AGENT WORKER_MODEL REVIEW_WORKER_AGENT
 # 这几项加载后的变量值不是 daemon 的判断本身，问真正做判断的那个函数（或保留下来的那份值）：
 #   ENABLE_CONCURRENT_WORK_HINT  concurrent_work_enabled
 #   ENABLE_ROUND_LOG             round_log_enabled
+#   WORKTREE_GIT_USER_FROM_ITEM  commit_identity_from_item_on（不写 = 开、空值 = 关，GitHub#699）
 #   ENABLE_USAGE_LIMIT_PAUSE     usage_limit_enabled（不写时变量是空值，判断是「关」）
 #   ENABLE_POLL_RUN_LOG          _runlog_enabled（agent-poll.sh 加载 _runlog.sh 后用它；不写 = 开、空值 = 关）
 #   LABEL_PENDING_MERGE          AUTOPILOT_MERGE_LABEL_NAME（托管关着时 LABEL_PENDING_MERGE 本身会被清空，这份是清空前的标签名）
 #   GREEDY_SKIP_LABELS           加载时不补值，用到时（greedy_skip_label_list）才读：问它在内置的跳过标签之后多列了哪些
 #   POLL_RUN_LOG_ROUNDS / _SNAPSHOTS / _INFLIGHT / _SLOW_SECS  加载时不补值，轮询记录用到时才补：问 _runlog_setting（用到它们的地方都问它，GitHub#556）
 RUNLOG_KEYS="POLL_RUN_LOG_ROUNDS POLL_RUN_LOG_SNAPSHOTS POLL_RUN_LOG_INFLIGHT POLL_RUN_LOG_SLOW_SECS"
-FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_ROUND_LOG ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS $RUNLOG_KEYS"
+FNKEYS="ENABLE_CONCURRENT_WORK_HINT ENABLE_ROUND_LOG WORKTREE_GIT_USER_FROM_ITEM ENABLE_USAGE_LIMIT_PAUSE ENABLE_POLL_RUN_LOG LABEL_PENDING_MERGE GREEDY_SKIP_LABELS $RUNLOG_KEYS"
 lib_load() {
     env -i HOME="$MIN" PATH="$SYS_PATH" CODING_AGENT_CONFIG="$MIN/cavil-loop.config" bash -c '
     source "$1/scripts/_lib.sh" >/dev/null 2>&1 || { echo LOAD_FAILED; exit 1; }
@@ -509,6 +510,7 @@ lib_load() {
     shift; for k in "$@"; do printf "%s=%s\n" "$k" "${!k-<未设置>}"; done
     if concurrent_work_enabled; then echo ENABLE_CONCURRENT_WORK_HINT=true; else echo ENABLE_CONCURRENT_WORK_HINT=false; fi
     if round_log_enabled; then echo ENABLE_ROUND_LOG=true; else echo ENABLE_ROUND_LOG=false; fi
+    if commit_identity_from_item_on; then echo WORKTREE_GIT_USER_FROM_ITEM=true; else echo WORKTREE_GIT_USER_FROM_ITEM=false; fi
     if usage_limit_enabled; then echo ENABLE_USAGE_LIMIT_PAUSE=true; else echo ENABLE_USAGE_LIMIT_PAUSE=false; fi
     if _runlog_enabled; then echo ENABLE_POLL_RUN_LOG=true; else echo ENABLE_POLL_RUN_LOG=false; fi
     echo "LABEL_PENDING_MERGE=$AUTOPILOT_MERGE_LABEL_NAME"

@@ -8,6 +8,7 @@
 # repeats a test.
 # autopilot-merge-close (GitHub#461) and later-label (GitHub#463) came after that run: their dev-box numbers, until a CI run measures them.
 # doc-links and orchestration-docs (GitHub#615) likewise.
+# worktree-git-identity (GitHub#699) likewise.
 agent-trust-paths 69
 autopilot-handover:1/3 106
 autopilot-handover:2/3 136
@@ -137,4 +138,5 @@ weekly-report-switch-week 1
 weekly-report-window-boundary 1
 weekly-report-worktime-turns 3
 worker-selection 1
+worktree-git-identity 126
 write-token-split 1

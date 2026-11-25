@@ -58,6 +58,7 @@ STUCK_WORKER_MAX_RESTARTS | 派工与重试 | int:0:10 | 1 | edit | 卡住后最
 SELFHEAL_ONLY_OWN_WORKERS | 派工与重试 | bool:true:false | false | edit | 只接管本机派出的活 | 多台机器盯同一个仓库时打开，免得一台把另一台正在跑的 worker 当成意外退出接管过去；单机保持关 | | more
 ENABLE_USAGE_LIMIT_PAUSE | 派工与重试 | bool:true:false | false | edit | agent 撞到用量上限时停派 | 认出用量上限提示后，到解除时间前不再给这个 agent 派新活，被打断的那条留言转 pending/human | | more
 USAGE_LIMIT_FALLBACK_SECS | 派工与重试 | int:60:604800 | 3600 | edit | 读不出解除时间时停派多少秒 | 用量上限提示里的解除时间读不出、或在 8 天以外时，按这么久估；停派关着时不用 | | more
+WORKTREE_GIT_USER_FROM_ITEM | 派工与重试 | bool:true:false | true;empty=false | edit | 提交署成条目上的人 | worker 的提交署成条目的负责人或提出者（只认在本仓库有写权限的真人账号），都找不到才用配置里的提交身份；配置里没写这一行 = 开，写 false 或空值 = 关 | | more
 DISPATCH_MODE | 派工与重试 | enum:label=只派打了标签的,greedy=开着的都派 | label | show | 派工模式 |  | 改成「开着的都派」后谁开的 issue 都会被派工，会扩大 daemon 做事的范围 | main
 GREEDY_SCAN_LIMIT | 派工挑选 | int:0: | 100 | edit | 「开着的都派」每轮最多看几条 | 每轮从开着的 issue / PR 里最多挑这么多条来看；积压多时调大；只派打了标签的时不用；0 = 一条都不看，十位数及以上 = 全看 | | advanced
 GREEDY_SKIP_LABELS | 派工挑选 | text |  | show | 「开着的都派」额外跳过的标签 | 逗号分隔，追加在内置的几个流程标签之后；空 = 只跳过内置的 | 多台机器分工时要和另一台机器的派工标签一起改，改错了一台会把另一台的活抢过来 | advanced

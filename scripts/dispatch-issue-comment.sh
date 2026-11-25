@@ -119,6 +119,10 @@ if session_alive "$TMUX_SESSION"; then
     fi
 fi
 
+# 提交署名跟着条目上的人走（GitHub#699）：注入现有会话和重起会话都在这之后，git 每次提交现读配置。
+# worktree 没了（Case C）时什么都不做，交给 dispatch-new-issue.sh → create-worktree.sh 去写
+commit_identity_apply "$WORKTREE" "$ISSUE"
+
 # Case A: session 还活着且是同一个 worker → 注入 prompt
 if [ "$REUSE_SESSION" = 1 ]; then
     log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
