@@ -134,6 +134,12 @@ new_env AUTO_ASSIGN_REQUESTER=""
 item 1 issue alice '.labels = ["pending/agent"]'
 tick
 chk "写成空值也是关：没读列表" "$(n_calls 'sort=created')" 0
+for v in 1 yes TRUE on; do
+    new_env "AUTO_ASSIGN_REQUESTER=$v"
+    item 1 issue alice '.labels = ["pending/agent"]'
+    tick
+    chk "写成 $v 也是关（说明里只有 true 算开）：没读列表、派工照常" "$(n_calls 'sort=created')/$(dispatched)" "0/1"
+done
 
 echo "── 2. 第一次打开：只记下进度，不回头补历史条目 ──"
 new_env
@@ -287,6 +293,43 @@ tick
 chk "写前重读失败：不写、不记完成" "$(writes_of 2)/$(st '.done | has("2")')" "0/false"
 tick
 chk "下一轮照常指派" "$(assignees 2)" bob
+
+new_env; start
+item 2 issue bob
+item 3 pr loop-bot '.head_ref = "feature/issue-2"'
+world '.hooks = [{path: "repos/acme/widget/pulls/3", nth: 2, jq: ".items[\"3\"].state = \"closed\""}]'
+tick
+chk "写前读 PR 详情才发现关了：不写" "$(writes_of 3)" 0
+tick
+chk "下一轮记成已关闭，进度越过，不写" "$(writes_of 3)/$(st .cursor)" "0/3"
+new_env; start
+item 2 issue bob
+item 3 pr loop-bot '.head_ref = "feature/issue-2" | .merged = true'
+tick
+chk "PR 详情说已合并（条目接口还写着 open）：不写，记已关闭" "$(writes_of 3)/$(st .cursor)" "0/3"
+
+echo "── 8b. 读到了但不认得 / 缺字段：判不了，恢复后补上 ──"
+new_env; start
+item 2 issue bob '.state = "mystery"'
+item 3 issue carol '.utype = "Alien"'
+item 4 issue dave
+item 5 pr loop-bot '.head_ref = "chore" | .body = "Closes #4" | .drop_pull = ["body"]'
+item 6 pr loop-bot '.head_ref = "feature/issue-4" | .drop_pull = ["head.repo"]'
+item 7 issue loop-bot ".parent = \"$(PARENT_URL 4)\" | .body = \"$(SUBMARK 4)\" | .drop_issue = [\"body\"]"
+tick
+chk "不认识的开关状态、账号类型、缺正文、缺来源仓库：都不写" "$(assignees 2)$(assignees 3)$(assignees 5)$(assignees 6)$(assignees 7)" ""
+chk "都记在未决里，进度停在第一个前面" "$(st '[.cursor, (.pending | keys)]')" '[1,["2","3","5","6","7"]]'
+chk "同一轮里正常的 #4 照常指派" "$(assignees 4)" dave
+set_item 2 '.state = "open"'; set_item 3 '.utype = "User"'
+set_item 5 '.drop_pull = []'; set_item 6 '.drop_pull = []'; set_item 7 '.drop_issue = []'
+tick
+chk "恢复后全部补上" "$(assignees 2)/$(assignees 3)/$(assignees 5)/$(assignees 6)/$(assignees 7)" "bob/carol/dave/dave/dave"
+chk "进度推到最后" "$(st .cursor)" 7
+new_env; start
+item 2 pr loop-bot '.head_ref = "feature/issue-1"'
+world '.items["2"].head_repo = null' 
+tick
+chk "PR 的来源仓库已删（明确为空）→ 记没有，不指派" "$(assignees 2)/$(st .cursor)" "/2"
 
 echo "── 9. 写失败、GitHub 不接受这个人、条目被删 ──"
 new_env; start

@@ -11045,12 +11045,8 @@ project_auto_add_tick() {
     return 0
 }
 
-auto_assign_enabled() {
-    case "$(printf '%s' "${AUTO_ASSIGN_REQUESTER:-}" | tr '[:upper:]' '[:lower:]')" in
-        true|1|yes|on) return 0 ;;
-    esac
-    return 1
-}
+# 只认 true：模板、运维文档和客户端设置都说「写成别的值 = 关」，这里照字面执行
+auto_assign_enabled() { [ "${AUTO_ASSIGN_REQUESTER:-}" = true ]; }
 # 开关关着时一个请求都不发（子进程都不起）
 auto_assign_tick() {
     auto_assign_enabled || return 0

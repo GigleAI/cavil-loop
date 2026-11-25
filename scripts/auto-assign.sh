@@ -23,6 +23,10 @@
 # ── 三种结果分开（L36）──
 #   找到 / 确定没有 / 判不了。判不了 = 任何一次读取失败、字段缺失：这一轮不写、不记，下一轮重来。
 #   条目本身读回 404 / 410 而同一时刻仓库本身读得到 = 已不在（被删 / 转走）；其他错误都是判不了。
+#   读到了也要认得：判定用到的每个字段先过 AA_ISSUE_OK / AA_PULL_OK——开关状态只认 open / closed、
+#   账号类型只认 GitHub 的四种、正文键必须在（值可以是 null = 空正文）、PR 的来源仓库键必须在（null = 来源
+#   仓库已删）；缺字段、不认识的值 = 判不了，不当成「已关闭」「不是真人」「没有来源」。
+#   PR 的开关以 PR 详情为准：详情里 closed 或 merged 也算已关闭。
 #
 # ── 按编号续读（issue 与 PR 共用一套递增编号）──
 #   $STATE_DIR/auto-assign.json：{"cursor": N, "done": {"<n>": "<结果>"}, "pending": {"<n>": 连续判不了的轮数}}
@@ -125,6 +129,20 @@ aa_get() {   # <仓库> <路径>
     return 1
 }
 
+# 判定用到的字段，读到的形状必须完整、值必须认得（L36：不认识 ≠ 否）
+AA_ISSUE_OK='(.number|type)=="number" and (.state == "open" or .state == "closed")
+    and (.user.login|type)=="string" and (.user.login|length) > 0
+    and (.user.type == "User" or .user.type == "Bot" or .user.type == "Organization" or .user.type == "Mannequin")
+    and (.assignees|type)=="array" and all(.assignees[]; (.login|type)=="string")
+    and (.created_at|type)=="string" and ((.created_at | fromdateiso8601?) != null)
+    and has("body") and ((.body|type)=="string" or .body == null)
+    and ((.parent_issue_url // "")|type)=="string"'
+AA_PULL_OK='(.state == "open" or .state == "closed") and (.merged == true or .merged == false)
+    and (.head.ref|type)=="string" and (.head.sha|type)=="string" and (.head.sha|length) > 0
+    and (.base.ref|type)=="string" and (.head|has("repo"))
+    and (.head.repo == null or ((.head.repo.full_name|type)=="string" and (.head.repo.full_name|length) > 0))
+    and has("body") and ((.body|type)=="string" or .body == null)'
+
 age_of() { jq -rn --arg t "$1" '($t | fromdateiso8601) as $c | (now | floor) - $c' 2>/dev/null || echo 0; }
 
 # ── 判定：AA_RES = found|none|unknown|gone|closed|assigned_already；AA_WHO；AA_DOC = 判定依据 ──
@@ -139,10 +157,7 @@ aa_resolve() {
         AA_DOC+=$'\n'"$repo#$num gone"; return
     fi
     [ "$rc" = 0 ] || { AA_RES=unknown; return; }
-    if ! printf '%s' "$ij" | jq -e '(.number|type)=="number" and (.state|type)=="string" and (.user.login|type)=="string"
-            and (.user.type|type)=="string" and (.assignees|type)=="array" and (.created_at|type)=="string"' >/dev/null 2>&1; then
-        AA_RES=unknown; return
-    fi
+    if ! printf '%s' "$ij" | jq -e "$AA_ISSUE_OK" >/dev/null 2>&1; then AA_RES=unknown; return; fi
     author=$(printf '%s' "$ij" | jq -r '.user.login'); atype=$(printf '%s' "$ij" | jq -r '.user.type')
     isPR=$(printf '%s' "$ij" | jq -r 'if .pull_request then "pr" else "issue" end')
     state=$(printf '%s' "$ij" | jq -r '.state'); created=$(printf '%s' "$ij" | jq -r '.created_at')
@@ -163,9 +178,10 @@ aa_resolve() {
         if [ "$repo" != "$REPO" ]; then AA_RES=none; return; fi
         rc=0; pj=$(aa_get "$repo" "pulls/$num") || rc=$?
         [ "$rc" = 0 ] || { AA_RES=unknown; return; }
-        if ! printf '%s' "$pj" | jq -e '(.head.ref|type)=="string" and (.head.sha|type)=="string" and (.base.ref|type)=="string"
-                and (.head.repo == null or (.head.repo.full_name|type)=="string")' >/dev/null 2>&1; then
-            AA_RES=unknown; return
+        printf '%s' "$pj" | jq -e "$AA_PULL_OK" >/dev/null 2>&1 || { AA_RES=unknown; return; }
+        AA_DOC+=" pr_state=$(printf '%s' "$pj" | jq -r '"\(.state)/merged=\(.merged)"')"
+        if [ "$depth" = 0 ] && ! printf '%s' "$pj" | jq -e '.state == "open" and .merged == false' >/dev/null; then
+            AA_RES=closed; return
         fi
         ref=$(printf '%s' "$pj" | jq -r '.head.ref'); sha=$(printf '%s' "$pj" | jq -r '.head.sha')
         hrepo=$(printf '%s' "$pj" | jq -r '.head.repo.full_name // ""'); base=$(printf '%s' "$pj" | jq -r '.base.ref')
