@@ -125,8 +125,13 @@ bundle_conf() {
 # Notarize and staple a dmg (the app inside was notarized by the bundler, APPLE_API_* below).
 notarize() {
   [ "$NOTARIZE" = true ] || { say "⏭ notarization not set up (no NOTARY_KEY_*): skipped"; return 0; }
-  xcrun notarytool submit "$1" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+  # the verdict is read, never the exit code: `submit --wait` can exit 0 on an Invalid submission
+  local out
+  out="$(xcrun notarytool submit "$1" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait 2>&1)" || true
+  printf '%s\n' "$out"
+  grep -qE '^[[:space:]]*status: Accepted[[:space:]]*$' <<<"$out" || die "notarization of $(basename "$1") was not accepted (see above; xcrun notarytool log <id> tells why)"
   xcrun stapler staple "$1"
+  xcrun stapler validate "$1"
 }
 
 # Build, sign and check both Macs of <commit> as <version> into $OUT. $1 = commit, $2 = version,
@@ -213,20 +218,28 @@ verify() {
   done
 }
 
+# The one lock on the checkout: a round and a hand-run build never share it (each switches it to
+# another commit). → 0 taken (removed on exit), 1 another one holds it.
+take_lock() {
+  local lock="$WORK_DIR/round.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    if kill -0 "$(cat "$lock/pid" 2>/dev/null || echo 0)" 2>/dev/null; then return 1; fi
+    rm -rf "$lock" && mkdir "$lock"
+  fi
+  echo $$ > "$lock/pid"
+  # expanded now: the EXIT trap runs after this function's locals are gone
+  # shellcheck disable=SC2064
+  trap "rm -rf '$lock'" EXIT
+}
+
 # One round: the draft waiting for the Macs, built, checked, published.
 round() {
   load_conf
   if in_quiet_hours; then say "⏭ quiet hours ($QUIET_HOURS)"; return 0; fi
   local busy
   if busy="$(busy_job)"; then say "⏭ $busy is building: this round yields"; return 0; fi
-  # one round at a time (launchd starts the next one on time even if this one is still going)
-  local lock="$WORK_DIR/round.lock"
-  if ! mkdir "$lock" 2>/dev/null; then
-    if kill -0 "$(cat "$lock/pid" 2>/dev/null || echo 0)" 2>/dev/null; then say "⏭ a round is still going"; return 0; fi
-    rm -rf "$lock" && mkdir "$lock"
-  fi
-  echo $$ > "$lock/pid"
-  trap 'rm -rf "$lock"' EXIT
+  # one at a time (launchd starts the next round on time even if this one, or a hand-run build, still goes)
+  take_lock || { say "⏭ a round or a build is still going"; return 0; }
   secret_ok "${GITHUB_TOKEN_FILE:-}" GITHUB_TOKEN_FILE
   local job
   # handover.mjs reads the release list (drafts are visible only to a token that can write)
@@ -292,6 +305,7 @@ case "$cmd" in
   build)
     [ -n "${1:-}" ] || die "usage: mac-release.sh build <commit> [<version>]"
     load_conf
+    take_lock || die "a round or another build is going; try again when it is done"
     sha="$1"
     checkout "$sha"
     sha="$(git -C "$WORK_DIR/repo" rev-parse HEAD)"
