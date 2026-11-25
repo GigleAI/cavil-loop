@@ -212,7 +212,8 @@ test('what cannot be changed here has no input: arithmetic and a line inside a c
     await expect(row(page, name)).toHaveAttribute('data-editable', 'false');
     await expect(input(page, name)).toHaveCount(0);
   }
-  await expect(row(page, 'LABEL_AUTOPILOT').getByTestId('config-readonly')).toHaveText('关');
+  // GitHub#691: the template now writes LABEL_AUTOPILOT="autopilot" (on by default)
+  await expect(row(page, 'LABEL_AUTOPILOT').getByTestId('config-readonly')).toHaveText('开，标签 autopilot');
   await expect(row(page, 'LABEL_PENDING_BLOCKED').getByTestId('config-readonly')).toHaveText('开，标签 pending/blocked');
   await expect(row(page, 'DISPATCH_MODE').getByTestId('config-readonly')).toHaveText('只派打了标签的（label）');
   await row(page, 'DISPATCH_MODE').scrollIntoViewIfNeeded();
