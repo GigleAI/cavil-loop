@@ -1058,6 +1058,16 @@ export function BoardView({
           {tKey(board.notice)}
         </div>
       )}
+      {/* GitHub#689: 「只看我的」 is in effect and nothing passes — say so (in every layout), or an empty list
+          reads as data gone; the switch is kept across restarts, so this can be the first thing seen */}
+      {mineOn && items.length === 0 && data.items.length > 0 && !guide && (
+        <div className="banner info" data-testid="mine-empty">
+          {t('已开「只看我的」：没有当前账号提出或被指派、并且符合其余筛选条件的条目。')}
+          <button className="link" data-testid="mine-empty-off" onClick={() => void Promise.resolve(api().setMineFilter({ on: false })).catch(() => undefined)}>
+            {t('关掉「只看我的」')}
+          </button>
+        </div>
+      )}
       {guide && (
         <div className="center-guide" data-testid="empty">
           <EmptyGuide guide={guide} state={state} labelOf={nameOf} onSettings={onSettings} />

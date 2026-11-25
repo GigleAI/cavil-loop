@@ -128,6 +128,7 @@ test('GitHub#689: 「只看我的」 narrows every layout and the view-bar numbe
   await page.getByTestId('mine-on').check();
   await expect(button(page)).toHaveAttribute('data-on', 'yes');
   await expect.poll(() => rowKeys(page)).toEqual(keys(mineAny));
+  await expect(page.getByTestId('mine-empty')).toHaveCount(0); // items listed: no empty note
   const mineAll = all.filter((i) => byMe(i) || toMe(i));
   await expect(tally(page, 'running').getByTestId('tally-count')).toHaveText(String(mineAll.filter(running).length));
   await expect(tally(page, 'human').getByTestId('tally-count')).toHaveText(String(mineAll.filter(human).length));
@@ -184,5 +185,41 @@ test('GitHub#689: 「只看我的」 narrows every layout and the view-bar numbe
   await expect(button(page)).toHaveAttribute('data-on', 'no');
   await expect.poll(() => rowKeys(page)).toEqual(keys(open_));
   await expect(tally(page, 'running').getByTestId('tally-count')).toHaveText(String(all.filter(running).length));
+  await app.close();
+});
+
+test('GitHub#689 (PR #698 review round 1): an account with nothing of its own — every layout says 「只看我的」 is why the list is empty, and one click turns it off', async () => {
+  env.fake.state.viewer = 'nobody-with-items';
+  const app = await launchApp(env);
+  const page = app.page;
+  await ready(page);
+  const all = await items(page);
+  const open_ = all.filter((i) => i.state === 'open');
+  // not vacuous: the account really has nothing, and there is something to hide
+  expect(all.filter((i) => lc(i.author) === 'nobody-with-items' || i.assignees.some((a) => lc(a) === 'nobody-with-items'))).toEqual([]);
+  expect(open_.length).toBeGreaterThan(0);
+
+  // off: rows, no note
+  await expect.poll(() => rowKeys(page)).toEqual(keys(open_));
+  await expect(page.getByTestId('mine-empty')).toHaveCount(0);
+
+  await open(page);
+  await page.getByTestId('mine-on').check();
+  await page.getByTestId('mine-on').press('Escape');
+  await expect.poll(() => rowKeys(page)).toEqual([]);
+  for (const l of ['table', 'board', 'graph']) {
+    await layout(page, l);
+    await expect(page.getByTestId('mine-empty'), l).toBeVisible();
+    await expect(page.getByTestId('mine-empty'), l).toContainText('已开「只看我的」');
+  }
+  await shot(page, 'mine-03-empty-graph');
+
+  // the note's own button: off, everything back, the note gone
+  await layout(page, 'table');
+  await page.getByTestId('mine-empty-off').click();
+  await expect(button(page)).toHaveAttribute('data-on', 'no');
+  await expect.poll(() => rowKeys(page)).toEqual(keys(open_));
+  await expect(page.getByTestId('mine-empty')).toHaveCount(0);
+  await expect.poll(() => mineState(page)).toEqual({ on: false, author: true, assignee: true });
   await app.close();
 });

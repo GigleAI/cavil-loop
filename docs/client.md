@@ -163,6 +163,7 @@ The search box uses GitHub's web syntax and filters the synced data locally as y
 - The whole window keeps one: the board, the table and the dependency graph all follow it, and the top-bar numbers (and the preview under Settings → "顶栏计数") count only those items. Switching layouts, clicking a top-bar number or importing a Project's web view leaves it as it is, and it is remembered across restarts.
 - It adds to the search box and the "显示已关闭" switch: an item is listed only when all of them let it through. With only "我提出的" ticked the list is what `author:@me` in the search box lists; with only "指派给我", what `assignee:@me` lists.
 - Items brought along faded with a match (the issue of a matched PR, sub-issues under a matched issue in the table, related items in the dependency graph) are shown by the same rules as for a search: they are not matches and are not counted in the top-bar numbers.
+- When "只看我的" is on and leaves nothing to list, a note under the view bar says so ("已开「只看我的」") with a "关掉「只看我的」" (turn it off) button, in all three layouts — so an empty list is not mistaken for missing data (the switch is kept across restarts).
 - While the signed-in account is not known yet the button is greyed out and nothing is narrowed; the switch stays saved and applies once the account is known. System notifications and the Dock badge are not affected; which items remind is set under Settings → "提醒哪些条目".
 
 </details>
