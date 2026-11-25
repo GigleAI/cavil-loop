@@ -17,7 +17,6 @@
 # 一旦退化成「没有要人处理的事」（只看动作），就会误伤「无需动手但影响判断」的真实限制，这里专门拦。
 # 两份 worker 模板的硬规则核对表也要求整张折叠。
 # 所以按拼好的成品对拍：每处都在、逐字一致；旧的「测试结果写进正文」说法已改掉。
-# （原来每个写入点各一份的负对照已按 GitHub#234 删去。）
 
 # ── Comment layout: rules moved here from the root agent guide (GitHub#658); read before changing ──
 # Comment layout (only what the human needs outside folds, everything else folded; ❌ / ✅ / ⚠️ markers,

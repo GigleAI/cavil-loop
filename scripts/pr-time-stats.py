@@ -27,8 +27,7 @@
                    Tests 按汇总那一步日志里的 `Selection:` 行分「全量 / 按改动挑选 / 挑选方式未知」。
   · 本地小计     = 整套测试并集 + 单跑合计；CI 小计 = 所有尝试的时间段并集；
     测试总耗时   = 本地小计 + CI 小计（两边时间上可能重叠，偏高）。
-  · 「完整测试」= 带负对照的整套运行（维护者在 #593 的定义），只有每晚的负对照工作流这么跑，属于主干、
-    PR 流程里不跑：每 PR 为 0，报告另给它窗口内每次运行多久。发版流水线、客户端完整测试单列「其他主干测试」。
+  · 主干测试参考 = 发版流水线、客户端完整测试（每周定时、发版标签）：不属于某个 PR，报告另给它们窗口内每次运行多久。
 
 缺数据怎么记（不把「不知道」当 0）：
   · 一个 PR 一条 footer 都没有 → AI / 单跑「无记录」，不进平均；本地小计和测试总耗时也说不出（缺单跑那部分），
@@ -77,9 +76,7 @@ LOCAL_CATS = ("smoke", "quick", "kind", "related", "all", "other")
 CAT_NAME = {"smoke": "冒烟", "quick": "快速", "kind": "按种类", "related": "相关改动",
             "all": "全部", "other": "其他"}
 CI_WORKFLOWS = {"tests.yml": "shell", "client.yml": "client"}
-# 「完整测试」= 带负对照的整套运行（维护者在 #593 的定义），只有每晚的负对照工作流这么跑；
-# 发版流水线和客户端完整测试另列「其他主干测试」参考，不叫完整测试
-FULL_WORKFLOW = "negative-controls.yml"
+# 主干测试参考：发版流水线和客户端完整测试，不属于某个 PR
 OTHER_WORKFLOWS = ("release.yml", "client.yml")
 TEST_FLAGS = ("adhoc_untimed", "cmd_unparsed", "suite_unlinked", "suite_unlogged", "suite_unfinished")
 
@@ -484,10 +481,10 @@ def collect(a, since, until):
             rows.append(row)
             prev_merge = hi
 
-    full, other = full_reference(repo, a.since, since, until)
+    other = {wf: workflow_durations(repo, wf, a.since, until) for wf in OTHER_WORKFLOWS}
     summary = summarize(rows)
     return {"repo": repo, "since": a.since, "until": a.until, "prs": rows, "summary": summary,
-            "full_tests": full, "other_main_tests": other, "ci_unassigned": ci_unassigned, "skipped_nonbot_footers": skipped_nonbot,
+            "other_main_tests": other, "ci_unassigned": ci_unassigned, "skipped_nonbot_footers": skipped_nonbot,
             "excluded_too_early": sorted(too_early), "runs_log_bad_lines": bad_lines}
 
 
@@ -565,7 +562,7 @@ def pr_row(a, p, n, ds, runs_by_wt, ci, lo, hi, shared):
         "local_total_secs": local_total,
         "ci_secs": ci_secs, "ci_attempts": ci_count, "ci_cancelled": cancelled, "ci_total_secs": ci_total,
         "test_total_secs": (local_total + ci_total) if local_total is not None else None,
-        "full_secs": 0, "flags": flags,
+        "flags": flags,
     }
 
 
@@ -578,8 +575,7 @@ COLUMNS = [("ai", "AI 耗时", lambda r: r["ai_secs"]),
            ("ci_shell_unknown", "CI shell·挑选方式未知", lambda r: r["ci_secs"]["shell_unknown"]),
            ("ci_client", "CI 客户端·快速", lambda r: r["ci_secs"]["client"]),
            ("ci_total", "CI 小计", lambda r: r["ci_total_secs"]),
-           ("test_total", "测试总耗时", lambda r: r["test_total_secs"]),
-           ("full", "完整测试", lambda r: r["full_secs"])]
+           ("test_total", "测试总耗时", lambda r: r["test_total_secs"])]
 
 
 def summarize(rows):
@@ -596,84 +592,11 @@ def summarize(rows):
 
 def workflow_durations(repo, wf, since_s, until):
     runs = ci_runs(repo, wf, since_s)
-    if wf == "client.yml":     # 只要完整测试那几种：每周定时、发版标签
+    if wf == "client.yml":     # 只要跑完整测试的那几种：每周定时、发版标签
         runs = [r for r in runs if r.get("event") == "schedule" or (r.get("head_branch") or "").startswith("client/v")]
     durs = [ts(r.get("updated_at")) - ts(r.get("run_started_at") or r.get("created_at"))
             for r in runs if r.get("status") == "completed" and ts(r.get("created_at")) < until]
     return stat(durs) or {"n": 0}
-
-
-NC_TEST_JOB = re.compile(r"negative controls (?!summary$)")   # 跑负对照的作业：shell 分片、autopilot 各部分、客户端
-NC_TEST_STEP = re.compile(r"negative controls", re.I)         # 这些作业里真正跑负对照的那一步（其余是检出、装依赖、上传）
-
-
-def nc_verdict(jobs, total):
-    """一次负对照运行有没有真的跑负对照，只看「负对照那一步」自己的结论（三种作业同一条规则）：
-      ran      至少一个负对照步骤跑完（success / failure；跑红照样算）
-      not_run  作业列表读全、每个负对照作业都在，且所有负对照步骤都明确 skipped（或作业整个 skipped）：
-               只做了准备就收尾、或准备步骤失败后负对照没开始——都不算完整测试
-      unknown  其余一切：列表没读全、认不出作业、作业里找不到负对照那一步、步骤状态是取消 / 空 / 不认识的词
-    整条运行显示 completed、作业显示 failure 都不能说明负对照跑过（准备步骤失败时作业也是 failure）。"""
-    if not isinstance(jobs, list) or total != len(jobs):
-        return "unknown"
-    tests = [j for j in jobs if NC_TEST_JOB.match(j.get("name") or "")]
-    if not tests:
-        return "unknown"
-    states = []
-    for j in tests:
-        if j.get("conclusion") == "skipped":
-            states.append("skipped")
-            continue
-        steps = [st for st in (j.get("steps") or []) if NC_TEST_STEP.search(st.get("name") or "")]
-        if not steps:
-            states.append("unknown")
-            continue
-        for st in steps:
-            c = st.get("conclusion")
-            states.append("ran" if c in ("success", "failure") else "skipped" if c == "skipped" else "unknown")
-    if "ran" in states:
-        return "ran"
-    if all(x == "skipped" for x in states):
-        return "not_run"
-    return "unknown"
-
-
-def nc_ran(repo, run):
-    """读一次负对照运行的作业（含步骤）并判定，见 nc_verdict。读不到 = unknown，不缓存、下次重读。"""
-    att = run.get("run_attempt") or 1
-    key = f"nc2:{run['id']}:{att}"     # 判定规则改过就换前缀，旧结论不再用
-    if key in CACHE:
-        return CACHE[key]
-    try:
-        d = gh(f"repos/{repo}/actions/runs/{run['id']}/attempts/{att}/jobs?per_page=100")
-    except Fail:
-        return "unknown"
-    v = nc_verdict(d.get("jobs"), d.get("total_count"))
-    if v != "unknown":
-        CACHE[key] = v
-    return v
-
-
-def full_runs(repo, since_s, until):
-    """完整测试 = 负对照工作流里真的跑了负对照的那几次（跑红的也算，照实计时）。"""
-    runs = [r for r in ci_runs(repo, FULL_WORKFLOW, since_s)
-            if r.get("status") == "completed" and ts(r.get("created_at")) < until]
-    kinds = {"ran": [], "not_run": 0, "unknown": 0}
-    for r in runs:
-        k = nc_ran(repo, r)
-        if k == "ran":
-            kinds["ran"].append(ts(r.get("updated_at")) - ts(r.get("run_started_at") or r.get("created_at")))
-        else:
-            kinds[k] += 1
-    out = stat(kinds["ran"]) or {"n": 0}
-    out.update(not_run=kinds["not_run"], unknown=kinds["unknown"])
-    return out
-
-
-def full_reference(repo, since_s, since, until):
-    """(完整测试 = 真的跑了负对照的那几次运行, {其他主干测试工作流: 每次运行})"""
-    return (full_runs(repo, since_s, until),
-            {wf: workflow_durations(repo, wf, since_s, until) for wf in OTHER_WORKFLOWS})
 
 
 def ref_row(wf, st):
@@ -722,13 +645,7 @@ def render(res):
                     str(s[key]["stat"]["n"] if s[key]["stat"] else 0), str(s[key]["excluded"])]
                    for key, name, _ in COLUMNS])
     L += ["", "标注：" + "，".join(f"{k} {v} 个" for k, v in s["flagged"].items()), "",
-          "「完整测试」= 带负对照的整套运行，只在主干上每晚跑，不属于某个 PR（每 PR 一栏为 0）：", ""]
-    L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(FULL_WORKFLOW, res["full_tests"])])
-    ft = res["full_tests"]
-    if ft.get("not_run") or ft.get("unknown"):
-        L += ["", f"另有 {ft.get('not_run', 0)} 次负对照没真跑（只做了准备就收尾，或准备步骤失败后负对照没开始），"
-                  f"{ft.get('unknown', 0)} 次说不清负对照那一步有没有跑（作业或步骤读不到、状态认不出），都没算进上表。"]
-    L += ["", "其他主干测试参考（不是完整测试，也不进每 PR）：", ""]
+          "主干测试参考（不进每 PR）：", ""]
     L += md_table(["工作流", "次数", "平均", "中位数"], [ref_row(wf, st) for wf, st in res["other_main_tests"].items()])
     L += [""] + md_table([h for h, _ in PR_COLS], [[f(r) for _, f in PR_COLS] for r in res["prs"]])
     extra = [f"本次向 GitHub 发了 {res.get('gh_calls', '?')} 次请求"]

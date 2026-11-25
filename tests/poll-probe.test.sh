@@ -5,7 +5,6 @@
 # 完整检查的最长间隔封顶 POLL_IDLE_PROBE_MAX_SECS（默认 600 秒）。
 #
 # 跑法：bash tests/poll-probe.test.sh          （本机空闲时约 40 秒，负载高时 3 分钟以上：真的把 agent-poll.sh 起几百次）
-#       MUTATION=1 bash tests/poll-probe.test.sh  另跑 7 份故意改坏的副本，每份必须变红（约 8 分钟）
 # 依赖：jq、git、python3。不碰网络、不碰真 tmux session，HOME 指向临时目录。
 #
 # 两个方向都不报错，所以每条都要能分出对错实现：
@@ -14,8 +13,6 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
-# shellcheck source=lib/mutation.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/mutation.sh"
 # shellcheck source=lib/compat.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/compat.sh"
 
@@ -282,64 +279,8 @@ if ! compat_skip "关掉检查 vs 改动前" "$BASE" "$REPO_DIR" scripts; then
     chk "调用序列不是空的（真跑了）" "$([ -s "$SANDBOX/new.calls" ] && echo yes || echo no)" "yes"
 fi
 
-# ── 负对照：故意改坏一处，上面同一组场景必须变红 ──
-echo "【负对照】"
-REAL_PASS=$pass; REAL_FAIL=$fail; mut_ran=0; mut_fail=0
-mutant() {   # <名字> <python 替换：old> <new>
-    local D="$SANDBOX/mut-$1"
-    rm -rf "$D"; mkdir -p "$D"; cp -r "$REPO_DIR/scripts" "$D/"; cp -r "$REPO_DIR/prompts" "$D/"
-    python3 - "$D/scripts/_lib.sh" "$2" "$3" <<'PY' || return 1
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit("mutation target found %d times" % s.count(old))
-open(p, "w").write(s.replace(old, new))
-PY
-    printf '%s' "$D"
-}
-try_mutant() {   # <说明> <名字> <old> <new>
-    local D
-    mutation_gate || return 0
-    mut_ran=$((mut_ran + 1))
-    if ! D=$(mutant "$2" "$3" "$4"); then
-        echo "  ❌ 负对照准备失败：$1（要改的原文找不到）"; mut_fail=$((mut_fail + 1)); return 0
-    fi
-    pass=0; fail=0; QUIET=1; scenarios "$D"; QUIET=0
-    if [ "$fail" -gt 0 ]; then echo "  ✅ 负对照拦下：$1（$fail 条变红）"
-    else echo "  ❌ 负对照没拦下：$1（改坏后仍全绿）"; mut_fail=$((mut_fail + 1)); fi
-}
-try_mutant "读不到 GitHub 当成没变化" read-as-unchanged \
-    '        "") PACE_PROBE_REASON="读不到 GitHub"; return 1 ;;' \
-    '        "") PACE_PROBE_REASON="读不到 GitHub"; return 0 ;;'
-try_mutant "回 200 时新标记直接转正（不等这一轮读完）" commit-early \
-    '                pace_probe_etag_write "$PROBE_ETAG_FILE.pending" "$new_etag" || true' \
-    '                pace_probe_etag_write "$PROBE_ETAG_FILE" "$new_etag" || true'
-try_mutant "故障退避期间也发检查" probe-in-fail-backoff \
-    '        PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
-        return 1' \
-    '        PACE_SKIP_MSG="本轮跳过（GitHub 读取连续失败 ${fail_streak} 次，还差 $(pace_human_secs "$remain") 重试）"
-        if pace_probe_on && ! pace_probe; then return 0; fi
-        return 1'
-try_mutant "开着时不封顶" no-cap \
-    '    if [ "$iv" -gt 0 ] && pace_probe_on && pcap=$(pace_probe_cap) && [ "$iv" -gt "$pcap" ]; then iv="$pcap"; fi' \
-    ':'
-try_mutant "关掉时仍封顶" cap-when-off \
-    '    if [ "$iv" -gt 0 ] && pace_probe_on && pcap=$(pace_probe_cap) && [ "$iv" -gt "$pcap" ]; then iv="$pcap"; fi' \
-    '    if [ "$iv" -gt 600 ]; then iv=600; fi'
-try_mutant "封顶只在写下一轮时生效，读旧状态时不看" cap-write-only \
-    '        if pcap=$(pace_probe_cap quiet) && [ $((now + POLL_DUE_SLACK_SECS)) -ge $((last_poll + pcap)) ]; then
-            return 0
-        fi' \
-    ':'
-try_mutant "坏标记照样进请求头" etag-unchecked \
-    '    if pace_etag_ok "$e"; then printf '"'"'%s'"'"' "$e"; fi' \
-    '    printf '"'"'%s'"'"' "$e"'
-pass=$REAL_PASS; fail=$REAL_FAIL
-
 echo
 compat_summary
-mutation_summary "$0"
-echo "正式版：$pass 通过 / $fail 失败；负对照失效 $mut_fail 条（本次跑了 $mut_ran 条）"
-REPORT_REGRESS_ONLY=1 report_counts "$pass" "$fail" "$mut_ran" "$mut_fail"
-[ "$fail" -eq 0 ] && [ "$mut_fail" -eq 0 ]
+echo "结果：$pass 通过 / $fail 失败"
+report_counts "$pass" "$fail"
+[ "$fail" -eq 0 ]

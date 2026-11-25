@@ -9,7 +9,7 @@
 # 校验漏一条，模型就能悄悄改掉一条规则的意思、把别的错的次数挪过来、或凭空升级——
 # 而这些都不会报错，只会让下一个 PR 被一条不该存在的规则拦下。
 #
-# 用例全绿即通过。（原来逐项关掉检查、改坏主程序的负对照已按 GitHub#234 删去。）
+# 用例全绿即通过。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"

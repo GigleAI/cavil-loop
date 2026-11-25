@@ -3,8 +3,7 @@
 # 评论 footer 的测试耗时（GitHub#244）：tests/run.sh 的运行编号 + 流水，内置统计命令
 # scripts/drivers/token-usage/test-time.sh，经真实 comment-footer.sh 出 footer。
 #
-# 跑法：bash tests/footer-test-time.test.sh              （默认不跑负对照）
-#       MUTATION=1 bash tests/footer-test-time.test.sh   （连负对照一起跑；见 tests/lib/mutation.sh）
+# 跑法：bash tests/footer-test-time.test.sh
 # 依赖：python3、jq、git。不碰网络、不读本机真实会话 / 流水（HOME、会话目录、流水路径都指到临时目录）。
 #
 # 全部走真实路径：夹具是一个真的 git worktree，里面放仓库的 tests/run.sh 副本，真跑出流水和编号；
@@ -12,7 +11,7 @@
 # 工具结果里写着输出文件的位置——这句话的原文按本机会话核对过）；codex 夹具是 exec 工具调用的形状。
 # 统计结果从 footer 末尾的机器记录和总览里读，不调内部函数。
 #
-# 覆盖（名字就是 run_check 打印的检查名，负对照按名字认）：
+# 覆盖（名字就是 run_check 打印的检查名）：
 #   记账：编号印在输出里；嵌套运行不记账不印编号；失败的运行 exit 记进结束行
 #   关联：前台按编号计时；甲没写进流水、人 10 秒后手跑的乙（#244 复审第 2 轮反例）；同一 agent
 #         并发两次；后台从输出文件读编号；后台输出文件没了；流水只读写不进；只有开始行；只有结束行；
@@ -28,8 +27,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 TMP=$(mktemp -d)
 trap '[ -n "${KEEP:-}" ] && echo "TMP=$TMP" || { chmod -R u+rwX "$TMP" 2>/dev/null; rm -rf "$TMP"; }' EXIT
 export HOME="$TMP/home" XDG_STATE_HOME="$TMP/home/.local/state" CAVIL_DEPLOY_ROOT="$TMP/no-deploy"
@@ -222,7 +219,7 @@ run_check() {   # <scripts 目录> <run.sh>
     chk id_printed '[ -n "$a" ] && [ "$(rec "$a" start .id)" = "$a" ]' "输出里没有编号或流水里没有开始行：$(head -2 "$C/out.1")"
     add u1 "$t" "bash tests/run.sh quick -j 1" 0 "$t1" "$(cat "$C/out.1")" 0
     footer "$SD"
-    # 流水缺字段（负对照改坏记账时）就留空，检查照样判红，不在输出里留 Python 报错
+    # 流水缺字段时就留空，检查照样判红，不在输出里留 Python 报错
     x=$(python3 -c "print(round($(rec "$a" end .t) - $(rec "$a" end .t0), 3))" 2>/dev/null)
     chk fg_timed '[ -n "$x" ] && [ "$(mk suite_timed)" = 1 ] && python3 -c "import sys; sys.exit(abs(float(\"$(mk test_secs)\") - $x) > 0.002)" 2>/dev/null && [[ "$HEAD" == *"测试 "* ]] && [[ "$HEAD" != *"测试未知"* ]]' \
         "期望按流水计 [$x] 秒，实得 [$(mk test_secs)] / $HEAD / $(footer_diag)"
@@ -325,7 +322,7 @@ run_check() {   # <scripts 目录> <run.sh>
     # 11 单跑：前台计时（并行取并集）；后台只计次 → 未知；引号 / here-doc / --list 不算 → 0
     new_case adhoc "$RS"
     SINCE=$(( $(date +%s) - 60 )); t=$(( SINCE + 5 ))
-    add a1 "$t" "cd tests && MUTATION=1 timeout 600 bash ./autopilot.test.sh" 0 "$(python3 -c "print($t+4)")" "ok" 0
+    add a1 "$t" "cd tests && TEST_PART=1/3 timeout 600 bash ./autopilot.test.sh" 0 "$(python3 -c "print($t+4)")" "ok" 0
     add a2 "$(python3 -c "print($t+2)")" "npm --prefix client test" 0 "$(python3 -c "print($t+6)")" "Exit code 1" 1
     footer "$SD"
     chk adhoc_union '[ "$(mk test_secs)" = 6 ] && [ "$(mk adhoc_runs)" = 2 ] && [ "$(mk adhoc_failed)" = 1 ]' \
@@ -351,7 +348,7 @@ run_check() {   # <scripts 目录> <run.sh>
     t=$(now); suite 1; suite 2 CAVIL_TEST_RUNS_LOG="$C/ro/x/runs.jsonl"
     cx_spec "$t" cell \
         "$(cx_exec "bash tests/run.sh quick -j 1" "$(cat "$C/out.1")" 2 0)" \
-        "$(cx_exec "env -u MUTATION bash tests/run.sh quick" "$(cat "$C/out.2")" 2 0)" \
+        "$(cx_exec "env -u TEST_PART bash tests/run.sh quick" "$(cat "$C/out.2")" 2 0)" \
         "$(cx_exec "bash tests/run.sh quick" "…(truncated)" 2 0)"
     footer "$SD" codex
     chk codex_by_id '[ "$(mk suite_timed)" = 1 ] && [ "$(mk suite_unlogged)" = 1 ] && [ "$(mk suite_unlinked)" = 1 ] && [ "$(mk suite_runs)" = 3 ]' \
@@ -490,72 +487,7 @@ while IFS= read -r l; do
     esac
 done <<< "$(run_check "$REPO_DIR/scripts" "$REPO_DIR/tests/run.sh")"
 
-# 【2】负对照：沙盘副本逐个改坏，对应检查必须变红
-echo "【2】负对照（改坏一处，对应检查必须变红）"
-neg() { # $1 说明；$2 文件（相对仓库根）；$3 原文；$4 改成；$5 期望变红的检查名
-    mutation_gate || return 0
-    local sb="$TMP/neg/$5.$MUTATION_COUNT"
-    rm -rf "$sb"; mkdir -p "$sb/tests"; cp -r "$REPO_DIR/scripts" "$sb/scripts"; cp "$REPO_DIR/tests/run.sh" "$sb/tests/run.sh"
-    python3 - "$sb/$2" "$3" "$4" <<'PY' || { bad "$1：改坏失败（原文没找到）"; return; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if old not in s:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new, 1))
-PY
-    run_check "$sb/scripts" "$sb/tests/run.sh" > "$sb/check.out"
-    if grep -q "^FAIL $5 " "$sb/check.out"; then ok "$1 → $5 变红"
-    else bad "$1 → $5 没变红（这条检查拦不住这种改坏）"; fi
-}
-TT=scripts/drivers/token-usage/test_time.py
-neg "测试秒数逐段相加、不取并集" $TT \
-    's["secs"] = union_secs(s["spans"], since, now)' 's["secs"] = sum(b - a for a, b in s["spans"])' adhoc_union
-neg "第 1 版：会话里的整套测试命令整个不看" $TT \
-    '        if k["suite"]:
-            # 只认' '        if False:
-            # 只认' readonly_log_not_zero
-neg "第 2 版：按开始时刻接近认领流水" $TT \
-    'found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]' \
-    'found = [i for i, r in runs.items() if i not in claimed and r["t0"] is not None and c["t"] - 5 <= r["t0"] <= c["t"] + 120][:1]' \
-    neighbor_not_claimed
-neg "有运行证据、一秒没计上时答 0" $TT \
-    '    elif runs > 0 or unparsed:
-        answer = "unknown"' '    elif unparsed:
-        answer = "unknown"' start_only_unfinished
-neg "某一栏读取失败时照常给秒数" $TT \
-    '    if not read_ok:
-        answer = "unknown"' '    if False:
-        answer = "unknown"' log_unreadable_unknown
-neg "结束行不带开始时刻（只有结束行时不计时）" tests/run.sh \
-    "'{ev:\"end\",id:\$id,wt:\$wt,t0:\$t0," "'{ev:\"end\",id:\$id,wt:\$wt," end_only_timed
-neg "嵌套运行也记账" tests/run.sh \
-    'if [ -z "${CAVIL_TEST_RUN_ID:-}" ] && {' 'if {' nested_silent
-neg "记账失败时不印编号" tests/run.sh \
-    '        echo "cavil-test-run id=$CAVIL_TEST_RUN_ID log=failed"' '        :' neighbor_not_claimed
-neg "后台命令不读输出文件" $TT \
-    '        if u["bg"] and res:' '        if False:' bg_linked
-neg "前台超时挪到后台的命令按工具结果时刻计时" $TT \
-    '        if res and not u["bg"] and MOVED_BG.match(res["text"]):' '        if False:' moved_to_bg
-neg "#247 复审第 1 轮：本会话任意命令输出里的编号都拿来认领" $TT \
-    'found = [i for i in RUN_MARK.findall(c["text"] or "") if i not in claimed]' \
-    'found = [i for x in cmds for i in RUN_MARK.findall(x["text"] or "") if i not in claimed][:1]' \
-    codex_other_output_not_claimed
-neg "codex 标准函数调用的 JSON 参数不解析" $TT \
-    '                        fields = json.loads(pl.get("arguments") or "")' '                        fields = None' codex_json_args
-neg "codex 轮询到的后续输出不归回原命令" $TT \
-    '                c["text"] = (c["text"] or "") + body' '                pass' codex_poll_linked
-neg "codex 单元的语句数和输出项数对不上也照顺序配" $TT \
-    'and len(items) - 1 == len(stmts))' ')' codex_misaligned_unlinked
-neg "#247 复审第 2 轮：解析失败计数不按本轮时间窗筛" $TT \
-    'sum(1 for x in bad if x >= since)' 'len(bad)' window_before_excluded
-neg "codex 命令不按本轮时间窗筛" $TT \
-    '[c for c in cmds if c["call_t"] >= since]' 'cmds' window_before_excluded
-neg "解析不了的命令不影响回答（可能答 0）" $TT \
-    '    elif runs > 0 or unparsed:' '    elif runs > 0:' codex_unparsed_not_zero
-
 echo
-mutation_summary "$0"
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]

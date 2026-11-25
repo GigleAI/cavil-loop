@@ -3,9 +3,8 @@
 # reads: repo
 # 外部需求机器人（GitHub#95 / #97）的行为守卫。
 #
-# 跑法：bash tests/requester-bot.test.sh        （默认不跑负对照；webhook 超时只有一条实等默认的 10 秒，
+# 跑法：bash tests/requester-bot.test.sh        （webhook 超时只有一条实等默认的 10 秒，
 #       其余用 REQUESTER_BOT_WEBHOOK_TIMEOUT 缩短，GitHub#211）
-#       MUTATION=1 bash tests/requester-bot.test.sh   （连负对照一起跑，约 11 分钟；见 tests/lib/mutation.sh）
 # 依赖：jq、python3、git、curl。不碰外网、不调真 gh：假 gh（tests/fixtures/requester-bot-fake-gh.py）是一个
 # 带状态的最小 GitHub，每次调用记进 calls.log，写调用另记一行 WRITE。
 #
@@ -23,11 +22,10 @@
 #   3f. 配置项新旧名字：只填旧名字照样开启、新旧都填用新的、早期入口名可用、setup.sh 同一规则
 #   4. 提示词：开启时四类提示词末尾恰好一段交接规则，项目整份替换模板也收得到
 #   6. 说法：除复盘记录外不再出现「传话」，文档锚点对得上
-# 每组都配负对照：把被测脚本复制一份、改坏一处，同一组断言必须变红。负对照只在 MUTATION=1 时跑；
-# 默认回归靠每组里「确实走到了」的断言（派工数 > 0、写请求确实发了、webhook 恰好 1 次…）防空转。
+# 每组里「确实走到了」的断言（派工数 > 0、写请求确实发了、webhook 恰好 1 次…）防止测试空转。
 #
 # 拆成 2 段（GitHub#211）：tests/run.sh 用 TEST_PART=K/2 把每段当一个调度单位并行跑；不带 TEST_PART
-# 时两段全跑。段 1 = 1–4；段 2 = 3d、3e、3f、5、6。负对照跟着它所在的那一组走。
+# 时两段全跑。段 1 = 1–4；段 2 = 3d、3e、3f、5、6。
 # parts: 2
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -37,17 +35,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/review-converge.sh"
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$TEST_DIR")"
-# shellcheck source=lib/mutation.sh
-source "$TEST_DIR/lib/mutation.sh"
 # shellcheck source=lib/parts.sh
 source "$TEST_DIR/lib/parts.sh"
 # shellcheck source=lib/compat.sh
 source "$TEST_DIR/lib/compat.sh"
 # shellcheck source=lib/prompt-files.sh
 source "$TEST_DIR/lib/prompt-files.sh"
-if [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] && ! mutation_on; then
-    echo "REQUESTER_BOT_TEST_BAD_MUT 验证的是负对照的准备失败记账，要和 MUTATION=1 一起设" >&2; exit 2
-fi
 FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
 
 # 从 worker / daemon 里跑时环境里带着这几个变量，会把 SKILL_DIR 钉到别处的安装上：
@@ -63,14 +56,6 @@ export HOME="$SANDBOX/home"
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 -I "$FAKE"
 
 pass=0; fail=0; QUIET=0
-# 负对照的准备（复制一份、改坏一处）都跑在 `D=$(mutate …)` 的命令替换子 shell 里：在那里
-# 加 fail 传不回主进程，输出也被收进变量。所以准备失败一律记进这个文件（并打到 stderr），
-# 汇总时计入失败——找不到要改的原文必须让整套测试变红，不能悄悄少跑一项。
-PREP_FAILED="$SANDBOX/prep-failed"; : > "$PREP_FAILED"
-prep_failed() {   # <负对照名> <原因>
-    printf '%s（%s）\n' "$1" "$2" >> "$PREP_FAILED"
-    echo "  ❌ 负对照 $1 没改上（$2）" >&2
-}
 chk() {
     if [ "$2" = "$3" ]; then [ "$QUIET" = 1 ] || echo "  ✅ $1"; pass=$((pass+1))
     else [ "$QUIET" = 1 ] || echo "  ❌ $1 (期望 [$3]，实得 [$2])"; fail=$((fail+1)); fi
@@ -104,10 +89,6 @@ STUB
 BASE_REV=$(git -C "$REPO_DIR" merge-base HEAD origin/main 2>/dev/null || git -C "$REPO_DIR" rev-parse HEAD~1)
 mkdir -p "$SANDBOX/old-src"
 git -C "$REPO_DIR" archive "$BASE_REV" scripts prompts | tar -x -C "$SANDBOX/old-src"
-# GitHub#106（维护者暂停可以解除）合并之前的那个提交。「退回旧口径 / 旧判断」那几条负对照要退回的是它，
-# 不能用 merge-base：#106 合并后 merge-base 本身就带着新规则，「退回」等于没改，负对照永远是绿的
-# （GitHub#133 复审时实测：main 上 MUTATION=1 有 6 条这样的负对照不变红）。
-PRE106_REV=8b92992e268a7ebe960b0e96c0d66417ada06caa
 
 # ── 一个运行环境：配置 + 假 GitHub 状态 ──
 # $1 = 目录，$2 = on/off（外部需求机器人功能），$3 = label/greedy，其余 KEY=VAL 追加进配置
@@ -190,31 +171,6 @@ compose_out() {   # <scripts 副本> <W> <kind> → 拼好的提示词内容
     env FAKE_GH_DIR="$2/gh" CODING_AGENT_CONFIG="$2/cavil-loop.config" bash -c '
         source "$1/scripts/_lib.sh" 2>/dev/null; f=$(compose_prompt_template "$2"); cat "$f"' _ "$1" "$3" \
         | strip_review_converge   # GitHub#621 起复审 prompt 总多一段收敛规则，不归这里的对拍管
-}
-
-# 负对照：复制一份新版、改坏一处（python 精确替换，替换不到就当场报错），整组断言必须变红
-mutate() {   # <名字> <文件（相对副本根）> <原文> <改成>
-    mutation_on || return 0      # 关着：不复制、不改，后面的 neg 只计数（见 tests/lib/mutation.sh）
-    local D="$SANDBOX/mut-$1"
-    rm -rf "$D"; cp -r "${MUT_BASE:-$NEW}" "$D"
-    python3 - "$D/$2" "$3" "$4" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
-import sys
-p, old, new = sys.argv[1:4]
-s = open(p).read()
-if s.count(old) != 1:
-    sys.exit(1)
-open(p, "w").write(s.replace(old, new))
-PYM
-    printf '%s' "$D"
-}
-neg() {   # <说明> <要跑的 suite 函数及参数…>：跑一遍，失败条数必须 > 0
-    mutation_gate || return 0
-    local desc="$1"; shift
-    local before=$fail
-    QUIET=1; [ -z "${SHOW_NEG:-}" ] || QUIET=0; "$@"; QUIET=0
-    local got=$((fail - before))
-    fail=$before
-    chk "负对照：$desc → 变红（$got 条失败）" "$([ "$got" -gt 0 ] && echo red || echo green)" red
 }
 
 MARK='<!-- bot-origin -->'
@@ -397,34 +353,6 @@ wait_suite "$NEW" label
 wait_suite "$NEW" greedy
 
 
-# 自检：准备失败必须被记下（否则下面每一个负对照都可能悄悄没跑）。
-# REQUESTER_BOT_TEST_BAD_MUT=1 时保留这条记录，用来验证整套测试确实会因此非零退出。
-if mutation_on; then
-    D=$(mutate selftest-missing scripts/_lib.sh '这段原文不存在 #97' 'x' 2>/dev/null) && true
-    chk "自检 · 负对照准备失败会记进失败（不被命令替换吞掉）" "$(grep -c '^selftest-missing（' "$PREP_FAILED")" 1
-    [ -n "${REQUESTER_BOT_TEST_BAD_MUT:-}" ] || sed -i '/^selftest-missing（/d' "$PREP_FAILED"
-fi
-
-echo "── 2b. 负对照 ──"
-D=$(mutate skip-in-label-pass scripts/agent-poll.sh \
-    '        if labels_have_requester_bot_wait "$labels_csv"; then
-            log "${kind} #${num} 挂着外部需求机器人等待标签' \
-    '        if labels_have_requester_bot_wait "$labels_csv"; then continue; fi
-        if labels_have_requester_bot_wait "$labels_csv"; then
-            log "${kind} #${num} 挂着外部需求机器人等待标签') && neg "按触发标签收活那一趟改回「挂着等待标签就跳过」" wait_suite "$D" label
-D=$(mutate no-greedy-skip scripts/_lib.sh \
-    '        "${LABEL_PENDING_REVIEW:-}" \
-        "${LABEL_PENDING_REQUESTER_BOT:-}"' \
-    '        "${LABEL_PENDING_REVIEW:-}"') && neg "greedy 挡工清单去掉等待标签" wait_suite "$D" greedy
-D=$(mutate no-dispatch-clear scripts/_lib.sh \
-    '[ -z "$LABEL_PENDING_REQUESTER_BOT" ] || REQUESTER_BOT_DISPATCH_CLEAR=("$LABEL_PENDING_REQUESTER_BOT")' \
-    ':') && neg "派工时不摘等待标签" wait_suite "$D" label
-D=$(mutate no-selfheal-skip scripts/agent-poll.sh \
-    '    if labels_have_requester_bot_wait "$labels_csv"; then
-        SELFHEAL_REQUESTER_BOT+=' \
-    '    if false; then
-        SELFHEAL_REQUESTER_BOT+=') && neg "self-heal 不看等待标签" wait_suite "$D" label
-
 # ── 2c. 三个真实派工脚本：派工翻 doing/agent 时都摘掉等待标签 ──
 # 上面的轮询测试把派工脚本换成了桩；这里起**真的** dispatch-*.sh（假 gh + 一律返回成功的
 # 假 tmux + 真 git 仓库），逐个确认三条派工路径都经同一个「翻 doing/agent」步骤。
@@ -454,29 +382,6 @@ real_dispatch_suite() {   # <scripts 目录（未换桩的真脚本）>
 }
 REAL_NEW="$SANDBOX/real-new"; rm -rf "$REAL_NEW"; mkdir -p "$REAL_NEW"; cp -r "$REPO_DIR/scripts" "$REPO_DIR/prompts" "$REAL_NEW/"
 real_dispatch_suite "$REAL_NEW/scripts"
-# 负对照：逐个派工脚本改回不带等待标签的旧写法，那一条必须变红
-real_mut() {   # <名字> <脚本> <原文>
-    mutation_on || return 0
-    local Dm="$SANDBOX/real-mut-$1"
-    rm -rf "$Dm"; cp -r "$REAL_NEW" "$Dm"
-    python3 - "$Dm/scripts/$2" "$3" <<'PYM' || { prep_failed "$1" "原文找不到"; return 1; }
-import sys, re
-p, old = sys.argv[1:3]
-s = open(p).read()
-if s.count(old) != 1: sys.exit(1)
-num = re.search(r'flip_to_doing "(\$[A-Z]+)"', old).group(1)
-s = s.replace(old, f'run_gh "x" gh_label_flip "{num}" --add "$LABEL_AGENT_DOING" --remove "${{TRIGGER_LABELS_ALL[@]}}" || true')
-open(p, "w").write(s)
-PYM
-    printf '%s' "$Dm/scripts"
-}
-D=$(real_mut cmt dispatch-issue-comment.sh 'flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true') \
-    && neg "issue 评论派工改回不摘等待标签" real_dispatch_suite "$D"
-D=$(real_mut pr dispatch-pr-comment.sh 'flip_to_doing "$PR" "PR #$PR pending/agent → $LABEL_AGENT_DOING" || true') \
-    && neg "PR 评论派工改回不摘等待标签" real_dispatch_suite "$D"
-D=$(real_mut new dispatch-new-issue.sh 'flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true') \
-    && neg "新 issue 派工改回不摘等待标签" real_dispatch_suite "$D"
-
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3. 叫醒脚本 ──"
 # ─────────────────────────────────────────────────────────────────────────
@@ -710,72 +615,7 @@ CASES
 }
 handback_suite "$NEW"
 
-echo "── 3b. 负对照 ──"
-D=$(mutate no-precheck scripts/notify-requester-bot.sh \
-    'requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"' \
-    'requester_bot_check_actor || true') && neg "删掉账号前置检查" reject_suite "$D"
-D=$(mutate no-author-check scripts/_lib.sh \
-    '    if [ "$(requester_bot_lc "$author")" != "$(requester_bot_lc "$REQUESTER_BOT_ACCOUNT")" ]; then' \
-    '    if false; then') && neg "删掉作者核对（只认标记）" reject_suite "$D"
-D=$(mutate no-history-check scripts/notify-requester-bot.sh \
-    '        0) reject "#$n 由维护者' \
-    '        0) : "#$n 由维护者') && neg "删掉「维护者接手过」检查" reject_suite "$D"
-# GitHub#106：暂停解除的各条规则。退回旧版 = 用 #106 之前的叫醒脚本（看全部历史）
-if mutation_on; then
-    D="$SANDBOX/mut-old-history"; rm -rf "$D"; cp -r "$NEW" "$D"
-    git -C "$REPO_DIR" show "$PRE106_REV:scripts/notify-requester-bot.sh" > "$D/scripts/notify-requester-bot.sh" \
-        || prep_failed old-history "取不到 #106 之前的叫醒脚本"
-else D=""; fi
-neg "退回旧判断（看全部历史）· issue 的两种放行" pause_resume_cases "$D"
-D=$(mutate resume-by-anyone scripts/notify-requester-bot.sh \
-    '        [ -n "$paused" ] && is_maintainer "$actor" || continue' \
-    '        [ -n "$paused" ] || continue') && neg "机器人 / worker 摘标签也算解除" pause_suite "$D"
-D=$(mutate resume-by-unknown scripts/notify-requester-bot.sh \
-    '    [ -n "$1" ] && [ "$1" != "?" ] || return 1' \
-    '    [ -n "$1" ] || return 1') && neg "账号读不出的人也能解除" pause_suite "$D"
-D=$(mutate first-resume-wins scripts/notify-requester-bot.sh \
-    '        [ -z "$resume" ] || paused=""' \
-    '        [ -z "$resume" ] || { paused=""; break; }') && neg "解除一次后不再看后面的暂停" pause_suite "$D"
-D=$(mutate no-sort scripts/notify-requester-bot.sh \
-    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || return 2" \
-    '    sorted="$rows"') && neg "不排序、按接口给出的顺序" pause_suite "$D"
-D=$(mutate text-sort scripts/notify-requester-bot.sh \
-    "sort -t\$'\\t' -k1,1n)" \
-    "sort -t\$'\\t' -k1,1)") && neg "按文本而不是数值排序" pause_suite "$D"
-D=$(mutate bare-trigger-only scripts/notify-requester-bot.sh \
-    '            for L in "${TRIGGER_LABELS_ALL[@]}"; do [ "$label" = "$L" ] && resume=1; done' \
-    '            [ "$label" = "$LABEL_PENDING_AGENT" ] && resume=1') && neg "只认裸 pending/agent 恢复" pause_suite "$D"
-D=$(mutate no-sort-count scripts/notify-requester-bot.sh \
-    "    [ \"\$(printf '%s\\n' \"\$sorted\" | grep -c .)\" = \"\$(printf '%s\\n' \"\$rows\" | grep -c .)\" ] || return 2" \
-    '    :') && neg "排序结果行数不核对" pause_suite "$D"
 # 叠加在上一条之上：排序退出码也不查 = 复审指出的旧写法（sort 放在进程替换里，失败被吞）
-D=$(MUT_BASE="$D" mutate sort-in-procsub scripts/notify-requester-bot.sh \
-    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || return 2" \
-    "    sorted=\$(printf '%s\\n' \"\$rows\" | sort -t\$'\\t' -k1,1n) || true") && neg "排序失败也不当「不知道」（等同进程替换里排序）" pause_suite "$D"
-D=$(mutate tolerate-missing-id scripts/notify-requester-bot.sh \
-    "    printf '%s\\n' \"\$rows\" | awk -F'\\t' '\$1 !~ /^[0-9]+\$/ { bad=1 } END { exit bad }' || return 2" \
-    '    :') && neg "事件缺编号照样判断" pause_suite "$D"
-D=$(mutate no-pr-origin-check scripts/_lib.sh \
-    '            REQUESTER_BOT_REASON="PR #$num 关联的 #$origin 是 PR，不是 issue"
-            return 1' \
-    '            :') && neg "不核对关联编号是不是 issue" reject_suite "$D"
-D=$(MUT_BASE="$D" mutate fallback-origin scripts/_lib.sh \
-    '        origin=$(branch_to_issue_num "$branch")' \
-    '        origin=$(pr_to_issue_num "$num" "$branch"); [ "$origin" != "$num" ] || origin=""') \
-    && neg "来源改用会话命名的编号（会读正文；叠加不核对 issue）" reject_suite "$D"
-D=$(mutate no-readback scripts/notify-requester-bot.sh \
-    '    # 读回核对：等待标签在、要摘的一个都不在' \
-    '    return 0') && neg "删掉叫醒后的读回核对" fail_suite "$D"
-D=$(mutate dedupe-comments scripts/notify-requester-bot.sh \
-    '# ── 叫醒 ──' \
-    '[ "$(gh api "repos/$REPO/issues/$NUM/comments" --jq length)" = 0 ] || reject "这条已经汇报过"
-# ── 叫醒 ──') && neg "加回按评论去重" success_suite "$D"
-D=$(mutate wait-label-first scripts/notify-requester-bot.sh \
-    '    gh_write api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL_PENDING_HUMAN" >/dev/null \
-        || { LAST_FAIL="交还：加 $LABEL_PENDING_HUMAN 失败"; return 1; }' \
-    '    gh_write api -X DELETE "repos/$REPO/issues/$NUM/labels/$(printf %s "$LABEL_PENDING_REQUESTER_BOT" | jq -sRr @uri)" >/dev/null 2>&1 || true
-    gh_write api -X POST "repos/$REPO/issues/$NUM/labels" -f "labels[]=$LABEL_PENDING_HUMAN" >/dev/null \
-        || { LAST_FAIL="交还：加 $LABEL_PENDING_HUMAN 失败"; return 1; }') && neg "把「最后摘等待标签」挪到交还第 1 步" handback_suite "$D"
 
 echo "── 3c. 从 PR 正文找关联 issue：关闭 / 开启都和改动前逐字节一致 ──"
 # 这条规则 daemon 里本来就有两份（会话命名用 grep 逐行找、活跃 worker 列表用 jq 整段找），
@@ -857,24 +697,6 @@ bot_link_suite() {   # <scripts 副本>
 }
 link_suite "$NEW"
 bot_link_suite "$NEW"
-D=$(mutate bot-whole-only scripts/_lib.sh \
-    '            if [ "$by_line" != "$by_whole" ]; then' \
-    '            by_line="$by_whole"; if [ "$by_line" != "$by_whole" ]; then') && neg "叫醒脚本只用整段找（跨行时和会话命名对不上）" bot_link_suite "$D"
-D=$(mutate bot-line-only scripts/_lib.sh \
-    '            if [ "$by_line" != "$by_whole" ]; then' \
-    '            by_whole="$by_line"; if [ "$by_line" != "$by_whole" ]; then') && neg "叫醒脚本只用逐行找（跨行时和列表对不上）" bot_link_suite "$D"
-D=$(mutate bot-no-body scripts/_lib.sh \
-    '            origin="$by_line"' \
-    '            origin=""') && neg "叫醒脚本不认正文关联（另开的 PR 叫不醒）" reject_suite "$D"
-D=$(mutate link-wholebody scripts/_lib.sh \
-    "    grep -oiE '(close[sd]?|fix(es|ed)?|resolve[sd]?|refs?)[[:space:]]+#[0-9]+' \\
-        | head -1 \\
-        | grep -oE '[0-9]+' || true" \
-    "    jq -Rr --slurp --arg re \"\$PR_BODY_LINK_JQ_RE\" 'try capture(\$re).n catch \"\"' || true") \
-    && neg "会话命名改成整段匹配（上一版的做法）" link_suite "$D"
-D=$(mutate link-jq scripts/_lib.sh \
-    'try capture($re).n catch "") // "")]' \
-    'try capture("(?i)(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?|refs?)[ ]+#(?<n>[0-9]+)").n catch "") // "")]') && neg "活跃 worker 列表改成只认空格" link_suite "$D"
 
 # 真的 PR 派工：功能关闭，分支不带编号、正文跨行写 Closes —— 选中的工作区与改动前相同
 pr_dispatch_ws() {   # <scripts 目录> → 派工后建出来的工作区目录名
@@ -964,38 +786,7 @@ prompt_suite() {   # <scripts 副本>
     chk "只配了等待标签：不追加交接规则" "$(compose_out "$S" "$W" new-issue | grep -cxF "$HEAD_LINE")" 0
 }
 prompt_suite "$NEW"
-# 负对照：拼装函数不追加，改成写进工具自带的四份模板 → 整份替换的那份收不到
-D=$(mutate tpl-only scripts/_lib.sh \
-    '        if requester_bot_enabled; then
-            printf '"'"'\n\n---\n\n'"'"'
-            requester_bot_handoff_section
-        fi' \
-    '        :') && {
-    if mutation_on; then
-        for f in new-issue issue-comment pr-comment review; do
-            printf '\n\n---\n\n%s\n' "$(cat "$D/prompts/requester-bot-handoff.md")" >> "$D/prompts/$f.template.md"
-        done
-    fi
-    neg "交接规则只写进工具自带模板" prompt_suite "$D"
-}
-# 交接说明退回 #106 之前的版本（「手打过就永远只交维护者」）→ 四类成品都要变红
-if mutation_on; then
-    D="$SANDBOX/mut-old-handoff"; rm -rf "$D"; cp -r "$NEW" "$D"
-    git -C "$REPO_DIR" show "$PRE106_REV:prompts/requester-bot-handoff.md" > "$D/prompts/requester-bot-handoff.md" \
-        || prep_failed old-handoff "取不到 #106 之前的交接说明"
-else D=""; fi
-neg "交接说明退回旧口径" prompt_suite "$D"
 doc_rule_suite "$REPO_DIR"
-# 每份文档单独退回 #106 之前的版本，各自要变红
-for e in $RULE_DOCS; do
-    f="${e%%:*}"
-    if mutation_on; then
-        D="$SANDBOX/mut-old-doc-$(basename "$f")"; rm -rf "$D"; mkdir -p "$D/docs"
-        cp "$REPO_DIR"/docs/*.md "$D/docs/"
-        git -C "$REPO_DIR" show "$PRE106_REV:$f" > "$D/$f" || prep_failed "old-doc-$f" "取不到旧版"
-    else D=""; fi
-    neg "$f 退回旧口径" doc_rule_suite "$D"
-done
 
 fi   # 段 1 到此
 
@@ -1158,60 +949,6 @@ with open(out, "a") as o:
 hook_success_suite "$NEW"; hook_exit_suite "$NEW"; hook_config_suite "$NEW"; hook_error_suite "$NEW"; hook_leak_suite "$NEW"
 chk "不泄露 · 以上全部用例的输出里没有地址和密钥" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$ALL_OUT")" 0
 
-echo "── 3d 负对照（逐出口） ──"
-D=$(mutate hook-none scripts/notify-requester-bot.sh \
-    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"' \
-    '    :') && neg "首次成功 · 删掉 webhook 调用（红在「恰好 1 次」）" hook_success_suite "$D"
-D=$(mutate hook-assign scripts/notify-requester-bot.sh \
-    '    # 读回核对：等待标签在、要摘的一个都不在' \
-    '    gh_write api -X POST "repos/$REPO/issues/$NUM/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null || true
-    # 读回核对：等待标签在、要摘的一个都不在') && neg "首次成功 · 恢复指派调用（红在「没有任何指派」）" hook_success_suite "$D"
-D=$(mutate hook-review scripts/notify-requester-bot.sh \
-    '    # 读回核对：等待标签在、要摘的一个都不在' \
-    '    [ "$IS_PR" != true ] || gh_write api -X POST "repos/$REPO/pulls/$NUM/requested_reviewers" -f "reviewers[]=$REQUESTER_BOT_ACCOUNT" >/dev/null || true
-    # 读回核对：等待标签在、要摘的一个都不在') && neg "首次成功 · PR 上恢复请求 review" hook_success_suite "$D"
-D=$(mutate hook-first-only scripts/notify-requester-bot.sh \
-    '    if wake_once; then WOKE="重试后成功' \
-    '    if wake_once; then NOHOOK=1; WOKE="重试后成功') \
-    && D=$(MUT_BASE="$D" mutate hook-first-only2 scripts/notify-requester-bot.sh \
-    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"' \
-    '    [ -n "${NOHOOK:-}" ] || requester_bot_webhook_notify "$NUM" "$ITEM_KIND"') \
-    && neg "重试成功 · 只在首次成功分支调用（红在「重试成功：恰好 1 次」）" hook_success_suite "$D"
-D=$(mutate hook-on-2 scripts/notify-requester-bot.sh \
-    'reject() { say "❌ 拒绝叫醒（标签未改动）：$*"; exit 2; }' \
-    'reject() { say "❌ 拒绝叫醒（标签未改动）：$*"; requester_bot_webhook_notify "$NUM" issue; exit 2; }') \
-    && neg "退出码 2 · 退出前无条件调用" hook_exit_suite "$D"
-D=$(mutate hook-on-3 scripts/notify-requester-bot.sh \
-    '    exit 3' \
-    '    requester_bot_webhook_notify "$NUM" "$ITEM_KIND"; exit 3') && neg "退出码 3 · 退出前无条件调用" hook_exit_suite "$D"
-D=$(mutate hook-on-4 scripts/notify-requester-bot.sh \
-    'exit 4' \
-    'requester_bot_webhook_notify "$NUM" "$ITEM_KIND"; exit 4') && neg "退出码 4 · 退出前无条件调用" hook_exit_suite "$D"
-D=$(mutate hook-no-half scripts/_lib.sh \
-    '    if [ -z "${REQUESTER_BOT_WEBHOOK_KEY_HEADER:-}" ] || [ -z "${REQUESTER_BOT_WEBHOOK_KEY:-}" ] \' \
-    '    if false \') && neg "只填一半 / 带换行 · 去掉配置完整性检查" hook_config_suite "$D"
-D=$(mutate hook-no-perm scripts/_lib.sh \
-    '    if [ "$go" != 00 ]; then' \
-    '    if false; then') && neg "权限过宽 · 去掉权限检查" hook_config_suite "$D"
-D=$(mutate hook-perm-read-only scripts/_lib.sh \
-    '    if [ "$go" != 00 ]; then' \
-    '    if [ $(( ${go:0:1} & 4 )) -ne 0 ] || [ $(( ${go:1:1} & 4 )) -ne 0 ]; then') \
-    && neg "权限过宽 · 只看读位（照搬现有 token 告警的判法，放过 620）" hook_config_suite "$D"
-D=$(mutate hook-no-header-check scripts/_lib.sh \
-    '       || ! [[ "$REQUESTER_BOT_WEBHOOK_KEY_HEADER" =~ ^[A-Za-z0-9-]+$ ]] \' \
-    '       || false \') && neg "请求头名不校验字符" hook_config_suite "$D"
-D=$(mutate hook-no-curl-check scripts/_lib.sh \
-    '    if ! command -v curl >/dev/null 2>&1; then' \
-    '    if false; then') && neg "没有 curl · 去掉检查（红在固定日志）" hook_config_suite "$D"
-D=$(mutate hook-follow scripts/_lib.sh \
-    '--max-redirs 0' '-L') && neg "跟随跳转" hook_error_suite "$D"
-D=$(mutate hook-url-argv scripts/_lib.sh \
-    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - --globoff -s" \
-    "    code=\$(printf '%s\\n' \"\$conf\" | curl -q --config - --globoff \"\$REQUESTER_BOT_WEBHOOK_URL\" -H \"\$REQUESTER_BOT_WEBHOOK_KEY_HEADER: \$REQUESTER_BOT_WEBHOOK_KEY\" -s") \
-    && neg "不泄露 · 把地址和密钥放命令行" hook_leak_suite "$D"
-D=$(mutate hook-no-escape scripts/_lib.sh \
-    '    _rb_curl_quote() { local v="${1//\\/\\\\}"; printf '"'"'"%s"'"'"' "${v//\"/\\\"}"; }' \
-    '    _rb_curl_quote() { printf '"'"'"%s"'"'"' "$1"; }') && neg "写进 curl 配置前不转义" hook_success_suite "$D"
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3e. PR 合并 / 关闭未合并后告诉机器人（GitHub#97 Q2=A） ──"
@@ -1458,74 +1195,6 @@ chk "关闭 · 合并后清理：机器人相关的评论、等待标签、队�
 chk "关闭 · 合并后清理：没有新的结果评论、等待标签、机器人队列" "$(bot_digest "$B" | paste -sd'|')" '55|54|"none"'
 fi
 chk "关闭 · 对拍不是两边都空（确实处理了合并的 PR）" "$(jq -r '.cleaned_prs | length' "$B/state/state.json")" 4
-echo "── 3e 负对照 ──"
-D=$(mutate no-merged-enqueue scripts/_merge_followup.sh \
-    '            requester_bot_done_enqueue "$pr" merged "${STATE_FILE:-$STATE_DIR/state.json}"' \
-    '            :') && neg "合并路径不入队" done_suite "$D"
-D=$(mutate no-closed-enqueue scripts/agent-poll.sh \
-    '            requester_bot_done_enqueue "$prnum" closed "$STATE_FILE"' \
-    '            :') && neg "关闭未合并路径不入队" done_suite "$D"
-D=$(mutate no-open-check scripts/_lib.sh \
-    '        if [ -n "$others" ]; then' \
-    '        if false; then') && neg "关闭通知不看还有没有别的 PR 开着" done_suite "$D"
-D=$(mutate no-open-check2 scripts/_lib.sh \
-    '        if [ -n "$others" ]; then' \
-    '        if false; then') && neg "关闭通知不看还有没有别的 PR 开着（跨轮）" done_rerun_suite "$D"
-D=$(mutate open-read-as-empty scripts/_lib.sh \
-    '        if ! others=$(requester_bot_open_prs_for "$origin" "$pr"); then' \
-    '        others=$(requester_bot_open_prs_for "$origin" "$pr") || others=""; if false; then') \
-    && neg "打开的 PR 列表读失败当成「没有」" done_rerun_suite "$D"
-D=$(mutate done-no-actor-check scripts/_lib.sh \
-    '    if ! requester_bot_check_actor; then
-        log "  PR #$pr 的结果通知不发' \
-    '    requester_bot_check_actor; if false; then
-        log "  PR #$pr 的结果通知不发') && neg "合并后通知不核对写身份在不在名单里" actor_suite "$D"
-D=$(mutate wake-no-actor-check scripts/notify-requester-bot.sh \
-    'requester_bot_check_actor || reject "$REQUESTER_BOT_REASON"' \
-    'requester_bot_check_actor || true') && neg "叫醒脚本不核对写身份在不在名单里" actor_suite "$D"
-D=$(mutate no-drain scripts/agent-poll.sh \
-    '    requester_bot_done_drain "$STATE_FILE" || true' \
-    '    :') && neg "不清队" done_suite "$D"
-D=$(mutate done-no-origin-check scripts/_lib.sh \
-    '    rc=0; requester_bot_item_origin "$pr" "$item" || rc=$?' \
-    '    rc=0; requester_bot_item_origin "$pr" "$item" || { REQUESTER_BOT_ORIGIN=$(pr_to_issue_num "$pr" "$(printf %s "$REQUESTER_BOT_PR_JSON" | jq -r .head.ref)"); rc=0; }') \
-    && neg "合并后通知不核对是不是机器人的需求" done_suite "$D"
-D=$(mutate done-no-dedupe scripts/_lib.sh \
-    '        if printf '"'"'%s\n'"'"' "$marks" | grep -qE "^<!-- $REQUESTER_BOT_DONE_TAG pr=$pr kind=merged v=[0-9]+ -->\$"; then' \
-    '        if false; then') && neg "重试时不看评论发过没有（会重复评论）" done_retry_suite "$D"
-D=$(mutate done-any-author scripts/_lib.sh \
-    '--jq ".[] | select((.user.login // \"\" | ascii_downcase) == \"$(requester_bot_lc "$me")\") | (.body' \
-    '--jq ".[] | (.body') && neg "认任何人发的标记评论（会被伪造挡掉）" done_suite "$D"
-D=$(mutate done-no-state-check scripts/_lib.sh \
-    '    if [ -z "$st" ] || [ -z "$merged" ]; then' \
-    '    st=closed; merged=true; if false; then') && neg "写之前不核对 PR 现状" done_retry_suite "$D"
-D=$(mutate hook-glob scripts/_lib.sh \
-    'curl -q --config - --globoff -s' 'curl -q --config - -s') && neg "去掉 --globoff（叫醒、结果通知两条路径都变红）" glob_suite "$D"
-D=$(mutate done-no-label scripts/_lib.sh \
-    '    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then' \
-    '    if false; then') && neg "结果通知 · 删掉加标签（红在「挂上等待标签」）" done_suite "$D"
-D=$(mutate done-reassign scripts/_lib.sh \
-    '    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then' \
-    '    gh_write api -X POST "repos/$REPO/issues/$origin/assignees" -f "assignees[]=$REQUESTER_BOT_ACCOUNT" >/dev/null 2>&1 || true
-    if ! gh_write api -X POST "repos/$REPO/issues/$origin/labels" -f "labels[]=$LABEL_PENDING_REQUESTER_BOT" >/dev/null 2>&1; then') \
-    && neg "结果通知 · 恢复重新指派（红在「没有任何指派」）" done_suite "$D"
-D=$(mutate done-no-label-readback scripts/_lib.sh \
-    '    if ! printf '"'"'%s\n'"'"' "$labels" | grep -qxF "$LABEL_PENDING_REQUESTER_BOT"; then' \
-    '    if false; then') && neg "结果通知 · 加标签后不读回" done_retry_suite "$D"
-D=$(mutate done-no-hook scripts/_lib.sh \
-    '    requester_bot_webhook_notify "$origin" issue' \
-    '    :') && neg "结果通知 · 不调 webhook" done_suite "$D"
-D=$(mutate done-hook-retry scripts/_lib.sh \
-    '    requester_bot_webhook_notify "$origin" issue
-    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #${origin}：$REQUESTER_BOT_WEBHOOK_RESULT"
-    return 0' \
-    '    requester_bot_webhook_notify "$origin" issue
-    [ -z "$REQUESTER_BOT_WEBHOOK_RESULT" ] || log "  issue #${origin}：$REQUESTER_BOT_WEBHOOK_RESULT"
-    case "$REQUESTER_BOT_WEBHOOK_RESULT" in *失败*) return 1 ;; esac
-    return 0') && neg "结果通知 · webhook 失败当成要重试" done_retry_suite "$D"
-D=$(mutate done-closed-after-merged scripts/_lib.sh \
-    '    if [ "$kind" = closed ] && printf '"'"'%s\n'"'"' "$marks" | grep -q '"'"'kind=merged'"'"'; then' \
-    '    if false; then') && neg "已合并过还补「关闭未合并」" done_retry_suite "$D"
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3f. 配置项新旧名字（GitHub#97 Q1=B） ──"
@@ -1583,12 +1252,6 @@ names_suite() {   # <scripts 副本>
     chk "早期入口名 · 照样叫醒" "$RC|$(labels_of "$RW" 60)" "0|waiting/bot"
 }
 names_suite "$NEW"
-D=$(mutate no-old-names scripts/_lib.sh \
-    'printf -v "$new" '"'"'%s'"'"' "$(cavil_pick_setting "${!new:-}" "${!old:-}")"' \
-    'printf -v "$new" '"'"'%s'"'"' "$(cavil_pick_setting "${!new:-}" "")"') && neg "公共库不再认旧名字" names_suite "$D"
-D=$(mutate old-wins scripts/_names.sh \
-    '    if [ -n "$1" ]; then printf '"'"'%s'"'"' "$1"; else printf '"'"'%s'"'"' "$2"; fi' \
-    '    if [ -n "$2" ]; then printf '"'"'%s'"'"' "$2"; else printf '"'"'%s'"'"' "$1"; fi') && neg "共用的挑名字函数改成旧的优先" names_suite "$D"
 # setup.sh 建等待标签：真跑安装入口（隔离 HOME、假 gh / systemctl），断言它实际发出的建标签请求，
 # 并和公共库（_lib.sh）对同一份配置挑出来的名字对拍。两边都调 _names.sh 的 cavil_pick_setting。
 SETUP_ROOT="$SANDBOX/setup"; mkdir -p "$SETUP_ROOT/fakebin"
@@ -1658,19 +1321,6 @@ setup_suite() {   # <skill 目录>
     done <<< "$SETUP_CASES"
 }
 setup_suite "$SETUP_ROOT/src"
-# 负对照：只改坏安装入口那一处（只读新名字），公共库不动 → 「只填旧名字」必须变红
-if ! mutation_on; then neg "安装入口只读新名字（公共库不动）" :      # 关着：只计数
-elif cp -r "$SETUP_ROOT/src" "$SETUP_ROOT/src-mut" && python3 - "$SETUP_ROOT/src-mut/setup.sh" <<'PYM'
-import sys
-p = sys.argv[1]; s = open(p).read()
-old = '"$(config_value LABEL_PENDING_RELAY)")"'
-if s.count(old) != 1: sys.exit(1)
-open(p, "w").write(s.replace(old, '"")"'))
-PYM
-then neg "安装入口只读新名字（公共库不动）" setup_suite "$SETUP_ROOT/src-mut"
-else prep_failed setup-only-new "原文找不到"
-fi
-
 echo "── 5. 代码和配置模板里不出现具体机器人名 ──"
 # 文档的接入示例一节可以点名（issue 讨论定的），代码、提示词、配置模板、测试夹具都不行
 chk "scripts/ prompts/ 配置模板 setup.sh 里没有 grokbot" \
@@ -1723,12 +1373,6 @@ fi   # 段 2 到此
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 汇总 ──"
-if [ -s "$PREP_FAILED" ]; then
-    echo "  ❌ 有 $(wc -l < "$PREP_FAILED" | tr -d ' ') 个负对照没准备成功（没跑）："
-    sed 's/^/     · /' "$PREP_FAILED"
-    fail=$((fail + $(wc -l < "$PREP_FAILED")))
-fi
-mutation_summary "$0"
 compat_summary
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

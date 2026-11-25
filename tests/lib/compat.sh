@@ -10,13 +10,12 @@
 #       … run old and new, chk that they match …
 #   fi
 #
-# It compares exactly the two trees the comparison would run (`diff -r`, ignoring __pycache__), so a
-# negative control that hands in a broken copy is never "same" and always runs; uncommitted and
+# It compares exactly the two trees the comparison would run (`diff -r`, ignoring __pycache__); uncommitted and
 # untracked edits count, because the working tree is what gets copied. Same → prints an indented
 # "⏭ 同版本，对比已跳过：<what>" line (tests/run.sh lists those, it does not count them as passes)
 # and returns 0. Different → returns 1. No cache across runs: every run decides afresh.
 #
-# compat_summary prints one line with both counts; call it next to mutation_summary.
+# compat_summary prints one line with both counts; call it before report_counts.
 
 COMPAT_RAN=0
 COMPAT_SKIPPED=0

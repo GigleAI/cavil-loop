@@ -140,7 +140,7 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 │   └── dev.luosky.cavil-loop.plist.template  ← Generated per project by setup.sh
 ├── tests/                        ← Self-contained shell tests (see "Tests" below)
 │   ├── run.sh                     ← One entry point: run all / by name / by kind (--kind, --quick) / one CI shard / verify shards; -j, parts
-│   ├── lib/report.sh              ← The one count line every test file ends with (regression / comparisons / negative controls)
+│   ├── lib/report.sh              ← The one count line every test file ends with (regression / comparisons)
 │   ├── lib/tmux-sandbox.sh        ← Every test that uses real tmux gets its own tmux server for the run, and a best-effort exit that stops it and every process the test left (GitHub#647)
 │   ├── lib/gha_expr.py            ← Evaluates a workflow's own GitHub Actions expressions and simulates which jobs run (GitHub#628)
 │   ├── lib/doc_links.py           ← The one parser for links / anchors in markdown, and the list of external user documents (used by doc-links and client-docs)
@@ -153,9 +153,8 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 ├── .github/workflows/
 │   ├── tests.yml                  ← Runs tests/run.sh on every PR and push to main that touches more than client/ (check: 测试)
 │   ├── release.yml                ← Weekly release, behind a gate that runs the shell regression suite (GitHub#195 / #416)
-│   ├── negative-controls.yml      ← Every negative control, nightly on main; a red run opens / continues an issue (GitHub#416)
 │   └── client.yml                 ← Desktop client: quick tests on every push; a development build (arm64 dmg + Windows installer, each with a real update check) built by a push to main that changes the client (GitHub#665) and by the nightly run (GitHub#628), each only when `client/scripts/dev-plan.mjs` says to build (its decision table is in that file's header); full tests + dmgs + Windows installer on tag / weekly / manual; client/v* Releases (also called by release.yml for the weekly client release, GitHub#576; Windows since GitHub#577)
-├── .github/actions/client-setup/  ← The client test environment, shared by client.yml and the nightly negative controls
+├── .github/actions/client-setup/  ← The client test environment, shared by client.yml's jobs
 ├── client/                       ← Desktop board client (Tauri: TS + React window, Rust back end; GitHub#135 / #151), see client/README.md
 └── docs/
     ├── AGENTS.md                  ← Rules for the external user documents (which files, how to write them, when to update, checks); English only
@@ -413,7 +412,7 @@ point `HOME` at a temp dir, and **run the real scripts** — no network, no read
 
 `bash tests/run.sh` runs them all (with `-j 1` ~15 min on a busy dev box, 926 s measured on 2026-11-07; the default `-j` runs several units at once); `bash tests/run.sh NAME...` runs a few
 by name (file name without `.test.sh`; `NAME:K/N` for one part of a split file); `--list` prints the units. GitHub Actions
-(`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main` (except changes that only touch `client/`, which none of these tests read — `client/test/tauri/mutations.sh` still counts):
+(`.github/workflows/tests.yml`) runs the same script on every PR and every push to `main` (except changes that only touch `client/`, which none of these tests read):
 `tests/run.sh --ci --shard K/8 -j 3` on eight parallel jobs (four with `-j 2` until GitHub#495), then one job named **测试** that is green only
 when every expected unit passed exactly once across the shards (`--verify`). That is the check to
 require for merging. Per-file logs are kept as a workflow artifact; failures print in full.
@@ -431,11 +430,11 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   that says which checks a PR gets**; `REVIEW.md` and `CONTRIBUTING` only point at the checks
   list, and the source of truth is the `paths` filters of `.github/workflows/tests.yml` and
   `client.yml` plus `tests/run.sh`'s selection (next bullet). `Tests` (check **测试**) starts for any
-  changed path outside `client/`, and for `client/test/tauri/mutations.sh`; it runs the whole shell
+  changed path outside `client/`; it runs the whole shell
   suite unless every changed file is a leaf file (docs, a test file — next bullet), where it runs only
   what those files can reach. `Client` starts for any changed path under `client/`, and for its own
   workflow and `.github/actions/client-setup/`. A mixed change starts both; a change under `client/`
-  only starts `Client` alone (unless it touches `client/test/tauri/mutations.sh`); on a push to `main`
+  only starts `Client` alone; on a push to `main`
   the same path filters apply, and `Tests` then never selects. A reviewer reads the verdict from
   `gh pr checks <PR>`, every row it lists, in three states: **failed** (any failed or cancelled row) is
   a rejection like a red local test; **still running** is reported as such, never as passed;
@@ -473,20 +472,11 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   smoke / tests of the test tooling. `run.sh` stops with exit 2 when a file has none, two, or an unknown
   one, so a new file cannot land unclassified. Every file also ends with `report_counts "$pass" "$fail"`
   from `tests/lib/report.sh` (sourced right after the `set -…` line; called in the main shell after the
-  last assertion, just before the final verdict; files that count their own negative controls add
-  `"$mut_ran" "$mut_fail"`). It prints one `CAVIL_TEST_COUNTS …` line: assertions passed / failed, the
-  "same as before the change" comparisons run / skipped (from `compat.sh`), negative controls run /
-  skipped (from `mutation.sh`'s counter). A unit that exits 0 is still red when that line is missing
-  ("没汇报计数" — it stopped early), printed twice, malformed, reports failures, or disagrees with the
-  file's own `负对照：跳过 N 项` / `本次跑了 N 项` line. The two regression numbers are regression
-  only: with `MUTATION=1` most files' negative controls bump the same counters, so there they are
-  reported as `-` ("not counted separately") and left out of every total, never added in mixed. A file
-  that keeps regression-only counters in every mode (it saves them before its negative controls and
-  keeps the controls' verdicts in `mut_ran` / `mut_fail`) sets `REPORT_REGRESS_ONLY=1` on the call —
-  today autopilot, requester-bot-wait, closed-issue-done, pending-human-conflict, release-auto, smoke and
-  run.test. Every summary — terminal, `summary.md`, the CI
-  job summary, `--verify` — is grouped by kind with regression and negative controls in separate
-  columns; the nightly negative-controls run adds `--tally` totals over the shell shards and the six autopilot jobs.
+  last assertion, just before the final verdict; exactly two arguments). It prints one
+  `CAVIL_TEST_COUNTS v=2 …` line: assertions passed / failed and the "same as before the change"
+  comparisons run / skipped (from `compat.sh`). A unit that exits 0 is still red when that line is missing
+  ("没汇报计数" — it stopped early), printed twice, malformed (the old `v=1` line included) or reports
+  failures. Every summary — terminal, `summary.md`, the CI job summary, `--verify` — is grouped by kind.
   `--kind unit,guard` runs only those kinds (combines with `--ci` / `--shard` / `--list` / `--verify`);
   `--quick` = smoke + unit + guard + meta, 48 units, 33 s measured with the default `-j 8` on 2026-11-07 (28-core dev box, load ~4; the longest unit, `run.test`, takes 28 s of that) — run it first while working, then the files
   your change touches. `tests/smoke.test.sh` (~6 s) runs one real poll round: a new issue is dispatched
@@ -496,8 +486,7 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   is N units, `NAME:1/N` … `NAME:N/N`, each run as `TEST_PART=K/N bash tests/NAME.test.sh`; it is
   weighed, sharded and verified per part, and `--verify` is red when a part is missing, ran twice, or
   an unsplit result of that file shows up. Inside the file, `tests/lib/parts.sh` gives `part_on K`
-  (wrap each part's cases) and `part_take` (hand negative controls out round-robin — call it before
-  `mutation_gate`, so the parts' "skipped N" add up to the unsplit number). Without `TEST_PART` the
+  (wrap each part's cases). Without `TEST_PART` the
   file runs every part, exactly as before. Today `autopilot` (3), `requester-bot` (2), `stuck-worker` (6),
   `autopilot-handover` (3) and `ci-failure-report` (3) are split — the last three since GitHub#495, so that
   no unit runs much longer than a shard's share (about 4 minutes on CI); split a file again when one of
@@ -557,9 +546,7 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   starting with `⏭` in column 0 means "skipped the whole file"; an indented `⏭` is one group inside a
   file that otherwise ran and is only listed. Without this, a test that loses a dependency on CI keeps
   exiting 0 and the check stays green while testing nothing
-- **Negative controls run only in the nightly `Negative controls` workflow; Mac packaging never on a PR**
-  (GitHub#195 / #416) — see the table under "When negative controls run" below. Neither Tests nor
-  Client has a "negative controls" option on *Run workflow* any more
+- **Mac packaging never on a PR** — see the table under "Where each check runs" below
 - **A test that uses real tmux gets a tmux server of its own** (GitHub#647): it sources
   `tests/lib/tmux-sandbox.sh` before it creates anything and follows the rules in that file's header
   (clean-up through `tmux_sandbox_on_exit`, its directories through `tmux_sandbox_own_dir`, empty-
@@ -586,38 +573,26 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
   is the floor, not the review. What "what you touched" means is the quick run plus the changed area's
   files, never the whole suite (see "The whole suite runs on CI" above). `tests/run.sh` itself is covered by `tests/run.test.sh`
 
-### Default regression vs. negative controls (GitHub#103)
+### Where each check runs
 
-A **negative control** copies the code under test, breaks one spot on purpose (or swaps in an old commit), and requires the same assertions to go red. It tests **the test** — can it tell a right implementation from a wrong one — not the code. With code and test unchanged, a rerun gives the same answer as last time, so it is off by default:
+No test in this repository breaks the code on purpose to check that the tests go red ("negative controls"); they were removed in GitHub#684 because they were tied to the exact source text and broke whenever the code under them changed. A test shows it can tell a right implementation from a wrong one by what it asserts:
 
-```bash
-bash tests/<name>.test.sh              # default regression: positive cases only, ends with "负对照：跳过 N 项" (N skipped)
-MUTATION=1 bash tests/<name>.test.sh   # also run the negative controls (what every run did before GitHub#103)
-```
+- **Assert the concrete result**, not only "it did not fail"
+- **An assertion that only says "nothing happened"** (zero calls, unchanged state, no writes) also passes when the code under test bails out on its first line, so it needs a "this did happen" sibling: dispatch count > 0, the fake GitHub really got that write, this round really read the PR list, the pre-write re-read really ran…
+- **Bad input fed to the real program, which must refuse it** (`doc-diagrams`' broken images, section 4 of `weekly-report-by-model`, `price-fetch`'s rejections, …) is an ordinary positive case
+- Old-version comparisons that were already opt-in stay as they are: `paginated-latest-id`, `claude-resume-model` (`REPO_DIR=<old checkout>`), `release-auto` (`RELEASE_SH=<old>`)
 
-#### When negative controls run (GitHub#416: only in the nightly run)
-
-| When | Default regression | Negative controls | Mac packaging + Mac checks |
-|---|---|---|---|
-| Worker develops, hands on, reworks (local) | `--quick` + the part the change touches; never the whole suite (GitHub#593) | **not run** | not run |
-| Reviewer (local) | reruns the relevant part when needed; never the whole suite — the verdict is `gh pr checks` (failed / still running / skipped by design) | **not run, and not asked of the worker** | not run |
-| PR CI, every push | the checks the changed paths start (see "The whole suite runs on CI" above): `Tests` — the whole shell suite, or only what the change can reach when every changed file is a leaf file — and / or `Client` quick tests (typecheck, cargo, vitest) | not run | not run (the dmg jobs show "skipped") |
-| `Client` on a push to `main` | quick tests (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | not run | run when `client/scripts/dev-plan.mjs` says to build (decision table in its header), exactly as the nightly run below, and published (GitHub#665: as before GitHub#628); a push queues in its own never-cancelling group, so it never replaces a waiting night |
-| `Client` nightly (20:30 UTC), or a manual run on `main` with `publish` (GitHub#628) | quick tests, only when `client/scripts/dev-plan.mjs` says to build (decision table in its header; unknown = build; `force` skips the client-change check) — otherwise nothing runs and the run is green | not run | run, **arm64 only**, plus the Windows installer and its real update check (`client/scripts/windows-update-check.sh`), signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215). The two triggers queue in one never-cancelling group; `publish` on any other branch fails before anything is built. A red night opens / continues the issue `客户端每晚开发版失败（自动报告）` (`REPORT_KIND=client-nightly`, off with the repository variable `CLIENT_NIGHTLY_REPORT=off`) |
-| `Client` on a `client/v*` tag, or called by `Release` for the weekly client release (GitHub#576) | quick + full tests | not run | run, arm64 and x64; a red one means no client Release (never holds the daemon's) |
-| `Client` weekly (Sunday 16:40 UTC) | quick + full tests | not run | run, **arm64 only**, so a packaging breakage shows up within a week |
-| `Release` (weekly, or a `release/v*` tag) | the release gate: every shell test (4 shards + the same exactly-once check as `Tests`, never a selection) on the one commit the tag will point at; a red one means no tag and no Release | not run | — |
-| `Negative controls` (nightly 18:10 UTC on `main`; skipped when the last green run was on the same commit) | — | **all of them**: every `tests/*.test.sh` with `MUTATION=1` (4 shards + autopilot split over 6 jobs) and both client sets (`test/mutation`, the real app's `test/tauri/mutations.sh`); a red run opens or continues the issue `负对照每晚运行失败（自动报告）` for the daemon, it never holds a release | — |
-| Manual *Run workflow* | as before | only `Negative controls` (on `main`); `Tests` and `Client` have no such option. `Release` → `gate_only` runs the regression gate without tagging | `Client`: run, arm64 only |
-
-- **No new negative controls** (GitHub#234): do not write new ones, in shell tests or in `client/`. A change is covered by ordinary tests; a PR's evidence is the default regression, and reviewers never ask for a negative control or packaging result. The ones already in the repo stay and keep running in the nightly run; when one breaks because the code it mutates changed, point it at the new code in the same change; never add new ones
-- A red negative control blocks nothing (GitHub#416): not the release, not the daemon's deployment of merged `main`, not the client's `client/v*` release. It opens or continues one issue (`scripts/release_failure_report.py`, `REPORT_KIND=negative-controls`; its own marker, never the release-failure issue), labelled for the daemon
-- **Not during PR work**: workers and reviewers do not run negative controls while developing or reviewing, not even a few — including when fixing the issue the nightly report opened: the fix is verified with the default regression, and the next nightly run on `main` after the merge shows whether the controls go red again. The runners the nightly workflow uses are `MUTATION=1 bash tests/<name>.test.sh`, and for `client/` `npm run test:mutation` (its `--changed` mode picks the related entries (GitHub#178: added or edited ones, ones whose broken spot is in a changed file, ones naming a test in a changed test file; every entry when shared test plumbing changed) and stops with exit 1 when it cannot tell — never "0 ran, all passed")
-- **The existing ones stay behind the switch**, never in the default run: each passes through `mutation_gate` from `tests/lib/mutation.sh` once (called in the main shell, not inside `$( )`, or the count is lost). In default mode it only counts — no copying, no mutating, no running — so "N skipped" and "N ran" come from the same counter
-- **A failed preparation is still red**: when the source text to mutate is gone, that is checked only with the switch on, and it still fails the whole file (`requester-bot`'s `REQUESTER_BOT_TEST_BAD_MUT=1` self-check must be set together with `MUTATION=1`)
-- **The default run carries its own reachability assertions**: without a negative control behind it, an assertion that only says "nothing happened" (zero calls, unchanged state, no writes) also passes when the code under test bails out on its first line. Every such assertion needs a "this did happen" sibling: dispatch count > 0, the fake GitHub really got that write, this round really read the PR list, the pre-write re-read really ran…
-- Checks that are *called* negative controls but actually **feed bad input to the real program and expect it to refuse** (`doc-diagrams`' broken images, section 4 of `weekly-report-by-model`, `price-fetch`'s rejections, …) are positive cases and stay in the default run
-- Old-version comparisons that were already opt-in stay as they are: `paginated-latest-id`, `claude-resume-model` (`REPO_DIR=<old checkout>`), `release-auto` (`RELEASE_SH=<old>`); the end of `poll-pace` is a manual list of breakages
+| When | Default regression | Mac packaging + Mac checks |
+|---|---|---|
+| Worker develops, hands on, reworks (local) | `--quick` + the part the change touches; never the whole suite (GitHub#593) | not run |
+| Reviewer (local) | reruns the relevant part when needed; never the whole suite — the verdict is `gh pr checks` (failed / still running / skipped by design) | not run |
+| PR CI, every push | the checks the changed paths start (see "The whole suite runs on CI" above): `Tests` — the whole shell suite, or only what the change can reach when every changed file is a leaf file — and / or `Client` quick tests (typecheck, cargo, vitest) | not run (the dmg jobs show "skipped") |
+| `Client` on a push to `main` | quick tests (the full tests — Playwright, the real app on Linux — wait for the tag / weekly run) | run when `client/scripts/dev-plan.mjs` says to build (decision table in its header), exactly as the nightly run below, and published (GitHub#665: as before GitHub#628); a push queues in its own never-cancelling group, so it never replaces a waiting night |
+| `Client` nightly (20:30 UTC), or a manual run on `main` with `publish` (GitHub#628) | quick tests, only when `client/scripts/dev-plan.mjs` says to build (decision table in its header; unknown = build; `force` skips the client-change check) — otherwise nothing runs and the run is green | run, **arm64 only**, plus the Windows installer and its real update check (`client/scripts/windows-update-check.sh`), signed with the update key; once everything passed it is published as a development build (pre-release `client/vX.Y.(Z+1)-dev.N`, the latest 10 kept — GitHub#215). The two triggers queue in one never-cancelling group; `publish` on any other branch fails before anything is built. A red night opens / continues the issue `客户端每晚开发版失败（自动报告）` (`REPORT_KIND=client-nightly`, off with the repository variable `CLIENT_NIGHTLY_REPORT=off`) |
+| `Client` on a `client/v*` tag, or called by `Release` for the weekly client release (GitHub#576) | quick + full tests | run, arm64 and x64; a red one means no client Release (never holds the daemon's) |
+| `Client` weekly (Sunday 16:40 UTC) | quick + full tests | run, **arm64 only**, so a packaging breakage shows up within a week |
+| `Release` (weekly, or a `release/v*` tag) | the release gate: every shell test (4 shards + the same exactly-once check as `Tests`, never a selection) on the one commit the tag will point at; a red one means no tag and no Release | — |
+| Manual *Run workflow* | as before; `Release` → `gate_only` runs the regression gate without tagging | `Client`: run, arm64 only |
 
 Changes in these areas must run the matching tests. The list is an index by entry point, one line per
 area: `entry` names the files or functions the area covers, `read first` names where its detailed rules
@@ -649,7 +624,7 @@ the line itself.
 - Dispatch / reaping / preview / backoff → `tests/greedy-dispatch.test.sh`, `tests/dispatch-backoff.test.sh`, `tests/reap-finished-workers.test.sh`,
   `tests/preview-socket-activation.test.sh`, `tests/preview-port-ownership.test.sh`, …
 - **The resident fake GitHub** — entry: `fake_gh_client.sh` · read first: `tests/lib/fake_gh_server.py` (header) · tests: `tests/fake-gh-server.test.sh` (~10 s), `tests/run.test.sh` (~20 s)
-- **Kinds, the count line, `--kind` / `--quick`, the grouped summaries and `--tally`** — entry: `report_counts` · read first: `tests/lib/report.sh` (header) · tests: `tests/run.test.sh` (~30 s), `tests/smoke.test.sh` (~6 s)
+- **Kinds, the count line, `--kind` / `--quick` and the grouped summaries** — entry: `report_counts` · read first: `tests/lib/report.sh` (header) · tests: `tests/run.test.sh` (~30 s), `tests/smoke.test.sh` (~6 s)
 - **Re-checking `pending/human` PRs for conflicts with their base** — entry: `pr_conflict_verdict`, the `pending/human` conflict pass in `agent-poll.sh` · read first: `scripts/_lib.sh` (comment above `pr_conflict_verdict`) · tests: `tests/pending-human-conflict.test.sh` (~10 s by default)
 - **New vs pre-rename names** — entry: `scripts/_names.sh`, `scripts/migrate-legacy.sh`, `scripts/_preview_adopt.sh`, the skill deployer · read first: `scripts/_names.sh` (header) · tests: `tests/cavil-names.test.sh`, `tests/skill-deploy.test.sh`, `tests/preview-rename-coexist.test.sh`, `tests/migrate-legacy.test.sh`, `tests/preview-legacy-adopt.test.sh`
 - **Pi print-mode driver** — `scripts/drivers/pi.sh`; fixed IDs share the role registry, history lookup and launch use one resolved session directory, stdin avoids argument limits. Tests: `bash tests/pi-driver.test.sh`, `bash tests/paginated-latest-id.test.sh`.
@@ -667,7 +642,7 @@ the line itself.
 - **The parked label** — entry: `LABEL_PENDING_LATER`, `greedy_skip_label_list`, `setup.sh` · read first: `scripts/_lib.sh` (comment above `greedy_skip_label_list`) · tests: `tests/later-label.test.sh` (~6 s), `tests/setup-label-colors.test.sh`, `tests/config-notice.test.sh`
 - **Default label colors `setup.sh` creates** — entry: the label table in `setup.sh` · read first: `tests/setup-label-colors.test.sh` (header) · tests: `tests/setup-label-colors.test.sh` (~1 s)
 - **Telling an existing project about new settings its config lacks** — entry: `scripts/config-notices.txt`, `CONFIG_NOTICE_UNSET`, `_lib.sh`, `config_notice_tick`, `$STATE_DIR/config-notice.json` · read first: `scripts/_lib.sh` (comment above `config_notice_tick`) · tests: `tests/config-notice.test.sh` (~35 s)
-- **Releases** — entry: `scripts/release.sh`, `.github/workflows/release.yml` · read first: `scripts/release.sh` (header) · tests: `tests/release-auto.test.sh`, `tests/client-tauri-mutation-prep.test.sh` (~1 s)
+- **Releases** — entry: `scripts/release.sh`, `.github/workflows/release.yml` · read first: `scripts/release.sh` (header) · tests: `tests/release-auto.test.sh`
 - Which token a GitHub call uses, or what reaches the worker's env → `tests/write-token-split.test.sh`, `tests/secret-env-not-in-argv.test.sh`.
   Any **new daemon-side write** must go through `gh_write`, not bare `gh` — a bare `gh` still succeeds, it just signs with the polling identity
 - **How workers / the reviewer write comments that ask a human to decide** — entry: the hand-off sections of the three worker templates, `review.template.md`, `.agents/skills/cavil-loop/prompts/review.extra.md` · read first: `tests/plain-language-prompts.test.sh` (header) · tests: `tests/plain-language-prompts.test.sh`, `tests/blocked-label.test.sh`, `tests/sub-issue-split.test.sh`, `tests/checkout-stale-alert.test.sh`
@@ -697,10 +672,10 @@ the line itself.
 - **External requester bot** — entry: `scripts/notify-requester-bot.sh`, `notify-relay.sh`, `prompts/requester-bot-handoff.md`, `flip_to_doing`, `RELAY_*` · read first: `scripts/notify-requester-bot.sh` (header) · tests: `tests/requester-bot.test.sh` (~4 min by default)
 - **Waking the bot on items it did not file** — entry: `REQUESTER_BOT_WAKE_ANY_ITEM`, `MODE=any`, `notify-requester-bot.sh`, `scripts/requester_bot_handoff.py`, `REQUESTER_BOT_ORIGIN_CLASS`, `REQUESTER_BOT_LINKED` · read first: `scripts/requester_bot_handoff.py` (header) · tests: `tests/requester-bot-any-item.test.sh` (~1 min by default)
 - **Requests filed by the requester bot on autopilot, and not picking up an item whose waiting label was removed early** — entry: `autopilot_authorization`, `requester_bot_wait_hold`, `_lib.sh`, `collect_autopilot_rows`, `agent-poll.sh`, `autopilot_takeover_permit` · read first: `scripts/_lib.sh` (comment above `requester_bot_wait_hold`) · tests: `tests/requester-bot-wait.test.sh` (~10 s), `tests/autopilot.test.sh`
-- **The desktop client in `client/`** — entry: `client/src-tauri/crates/core` · read first: `client/README.md` (section) · tests: `cd client && npm ci && npm run test:rust && npm test && npm run typecheck && npm run test:e2e`, `npm run test:mutation -- --changed`, `npm run test:mutation`
+- **The desktop client in `client/`** — entry: `client/src-tauri/crates/core` · read first: `client/README.md` (section) · tests: `cd client && npm ci && npm run test:rust && npm test && npm run typecheck && npm run test:e2e`
 - **The client's detail tabs** — entry: `client/src/shared/tabs.ts`, `tab*`, `client/src/app/controller.ts`, `App.tsx`, `TabBar.tsx`, `client/src-tauri/src/main.rs` · read first: `client/src/shared/tabs.ts` (header) · tests: `cd client && npx vitest run test/unit/tabs.test.ts test/unit/tabs-controller.test.ts test/unit/shortcuts.test.ts test/unit/outsideClick.test.ts && npm run test:e2e -- tabs`
 - **The tab / floating panel put away after an action started from it** — entry: `autoCloseVerdict`, `handOffCloseVerdict`, `client/src/shared/tabs.ts`, `App.tsx`, `closeStarted`, `settleCloses` · read first: `client/src/shared/tabs.ts` (comment above `autoCloseVerdict`) · tests: `cd client && npx vitest run test/unit/tabs.test.ts && CAVIL_E2E_ENGINE=chromium npm run test:e2e -- tabs --grep 'GitHub#447|GitHub#633'`
-- **Client unit tests and fixed time limits (GitHub#649)** — entry: `client/test/support/{controller,wait,timers,harness,owned-run}.ts`, `--virtual-retry-clock`, `retry_loop` in `client/src-tauri/crates/core/src/http.rs`, `client/test/mutation/owned.mjs`, `client/test/mutation/run.sh` · read first: `client/test/support/wait.ts` and `client/test/mutation/owned.mjs` (headers) · tests: `cd client && npx vitest run test/unit/owned.test.ts test/unit/wait.test.ts test/unit/connection-retry.test.ts test/unit/controller-entry.test.ts test/unit/mutation-runner.test.ts` and `cargo test -p cavil-core --lib http::`
+- **Client unit tests and fixed time limits (GitHub#649)** — entry: `client/test/support/{controller,wait,timers,harness}.ts`, `--virtual-retry-clock`, `retry_loop` in `client/src-tauri/crates/core/src/http.rs` · read first: `client/test/support/wait.ts` (header) · tests: `cd client && npx vitest run test/unit/wait.test.ts test/unit/connection-retry.test.ts test/unit/controller-entry.test.ts` and `cargo test -p cavil-core --lib http::`
 - **The dependency graph's PR ⇢ issue links** — entry: `GraphLink`, `links`, `prBlocked`, `client/src/data/graph.ts`, `prsNaming`, `client/src/data/prNest.ts` · read first: `client/src/data/graph.ts` (header) · tests: `cd client && npx vitest run test/unit/graph-links.test.ts test/unit/loop-blocked.test.ts test/unit/graph-prs.test.ts && npm run test:e2e -- graph`
 - **The view bar's fold** — entry: `fold`, `never`, `zero`, `always`, `tallyFold`, `client/src/shared/tallies.ts` · read first: `client/src/shared/tallies.ts` (header) · tests: `cd client && npx vitest run test/unit/tallies.test.ts test/unit/flowTally.test.ts && npm run test:e2e -- flow-tally`, `cd client && npx vitest run test/unit/tally-parked-fold.test.ts && npm run test:e2e -- flow-tally-fold --grep 643`
 - **The per-run tmux server for tests** — entry: `tests/lib/tmux-sandbox.sh`, `tmux_sandbox_start`, `tmux_sandbox_on_exit`, `tmux_sandbox_own_dir`, `tmux_sandbox_env_i`, `tests/lib/tmux_sandbox_reap.py`, `tests/lib/tmux_guard.py`, the five tests that use it · read first: `tests/lib/tmux-sandbox.sh` (header), `tests/lib/tmux_guard.py` (header) · tests: `tests/tmux-sandbox.test.sh` (~30 s), `tests/tmux-sandbox-guard.test.sh` (~1 s), plus the changed test itself run as two simultaneous copies

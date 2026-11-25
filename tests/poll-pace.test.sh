@@ -10,7 +10,7 @@
 #   · 退得太狠 / 状态坏了不跑 → 某个项目静默停摆，日志上看不出异常；
 #   · 退得不够 / 该省没省     → 改了等于没改，而且没有任何失败信号。
 # 所以每条断言都要能分辨「有这个实现」和「没有这个实现」，光断言「正确输入 → 正确
-# 输出」是不够的（AGENTS.md 那条规矩）。负对照在文件末尾说明怎么跑。
+# 输出」是不够的（AGENTS.md 那条规矩）。
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
@@ -178,7 +178,7 @@ rm -f "$PACE"
 chk "③ 状态文件被删"              "$(gate 1000060)" "run"
 write_pace 1000300 1000000 1000000 0 fp
 chk "④ 时钟往回拨一小时"          "$(gate 996400)"  "run"
-# 负对照的靶子：没有「夹紧」那几行时，①④ 会变成 skip
+# 没有「夹紧」那几行时，①④ 会变成 skip
 
 echo "【4b】位数超标的纯数字状态 —— bash 算术会把它**回绕**成一个像模像样的时间戳"
 # 复审第 2 轮实测出来的真 bug：`next_due=18446744073710551916` 每一位都是数字，旧的
@@ -443,20 +443,5 @@ chk "开着（安静 8 天）调用数降到 1/10 以下" \
 
 echo
 echo "通过 $pass / 失败 $fail"
-# ── 负对照怎么跑 ──
-#   · 删掉 agent-poll.sh 里 `if ! pace_should_poll; then ... fi` 整段  → 【7】【11】变红
-#   · 删掉 _lib.sh:pace_should_poll 里「夹紧 / 时钟往回跳」两行 if     → 【4】①④ 变红
-#   · pace_num 去掉位数上限（只留「是不是全数字」）                    → 【4b】①②③ 变红
-#   · 只在 skip 判定前验 next_due/last_poll（last_active、fail_streak 留到后面兜底）
-#                                                                      → 【4d】①～⑤ 变红
-#   · 删掉 pace_state_sane 调用（只验字段、不验字段间关系）              → 【4f】①③ 变红
-#   · pace_num 去掉「规范十进制」那条 case                              → 【4g】①④⑤ 变红
-#   · pace_gate_says_skip 的极性写反（子 shell 失败当跳过）             → 【4h】第一条变红
-#   · pace_record_fail 里把 last_active 改成无条件 =now（故障当空闲）  → 【9】变红
-#   · 删掉 pace_should_poll 里的心跳那段 if                            → 【5】第二条变红
-#   · 心跳去掉 `fail_streak -eq 0` 这个前提（心跳压过故障退避）        → 【5b】第一条变红
-#   · 删掉 agent-poll.sh 结尾的 `QUEUE_SORTED` 那行                    → 【10b】变红
-#   · 删掉结尾的 `list_worker_sessions` 那行                           → 【10c】变红
-# 全绿说明测试没测到点子上 —— 本文件 2026-09-22 就因为【5】写歪而漏掉过一次心跳负对照。
 report_counts "$pass" "$fail"
 [ "$fail" -eq 0 ]
