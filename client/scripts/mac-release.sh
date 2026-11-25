@@ -226,7 +226,9 @@ round() {
     rm -rf "$lock" && mkdir "$lock"
   fi
   echo $$ > "$lock/pid"
-  trap 'rm -rf "$lock"' EXIT
+  # expanded now: the EXIT trap runs after this function's locals are gone
+  # shellcheck disable=SC2064
+  trap "rm -rf '$lock'" EXIT
   secret_ok "${GITHUB_TOKEN_FILE:-}" GITHUB_TOKEN_FILE
   local job
   # handover.mjs reads the release list (drafts are visible only to a token that can write)
