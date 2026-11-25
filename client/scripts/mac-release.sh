@@ -35,6 +35,8 @@
 #   WORK_DIR=…            checkout, logs, state (default ~/.local/share/cavil-mac-release)
 #   DMGBUILD_BIN=…        directory holding dmgbuild, when it is not on PATH
 #   QUIET_HOURS=HH:MM-HH:MM   no new round starts in this window (the Mac's other scheduled jobs)
+#   YIELD_TO="label …"    launchd jobs of this user that build too: while one of them runs, no new
+#                         round starts (the next one tries again), so two builds never share the Mac
 #   INTERVAL=600          seconds between rounds (install)
 # Every secret file must be mode 0600 and owned by this user, or nothing starts. No secret is ever
 # printed: the token reaches only the publish step (never npm ci or the build), the update key only
@@ -90,6 +92,15 @@ in_quiet_hours() {
   local from="${QUIET_HOURS%-*}" to="${QUIET_HOURS#*-}" now
   now="$(date +%H:%M)"
   if [[ "$from" < "$to" ]]; then [[ ! "$now" < "$from" && "$now" < "$to" ]]; else [[ ! "$now" < "$from" || "$now" < "$to" ]]; fi
+}
+
+# Another build on this Mac running now (YIELD_TO)? → its label, or nothing.
+busy_job() {
+  local l
+  for l in ${YIELD_TO:-}; do
+    launchctl print "gui/$(id -u)/$l" 2>/dev/null | grep -q '^[[:space:]]*state = running' && { echo "$l"; return 0; }
+  done
+  return 1
 }
 
 # The checkout this builds from: a clone of its own, put on exactly <commit>, nothing else left in it.
@@ -206,6 +217,8 @@ verify() {
 round() {
   load_conf
   if in_quiet_hours; then say "⏭ quiet hours ($QUIET_HOURS)"; return 0; fi
+  local busy
+  if busy="$(busy_job)"; then say "⏭ $busy is building: this round yields"; return 0; fi
   # one round at a time (launchd starts the next one on time even if this one is still going)
   local lock="$WORK_DIR/round.lock"
   if ! mkdir "$lock" 2>/dev/null; then
