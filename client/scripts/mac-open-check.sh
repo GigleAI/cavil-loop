@@ -28,6 +28,11 @@ app_src="$(find "$mnt" -maxdepth 1 -name '*.app' | head -n1)"
 [ -n "$app_src" ] || { echo "❌ no .app in $dmg"; exit 1; }
 app="$work/Cavil Loop.app"
 cp -R "$app_src" "$app"
+# a second copy that is never started, for the "downloaded" check (step 3): macOS protects a
+# notarized app it has launched, and marking that copy as downloaded is then refused
+fresh="$work/fresh/Cavil Loop.app"
+mkdir -p "$work/fresh"
+cp -R "$app_src" "$fresh"
 bin="$app/Contents/MacOS/Cavil Loop"
 
 echo "== 0. dmg window: background + the copyable first-open instructions"
@@ -88,11 +93,11 @@ fi
 # Notarized (CAVIL_EXPECT_NOTARIZED=true): Gatekeeper accepts the downloaded app. Otherwise it must
 # reject it, or the first-open instructions in the dmg would be wrong.
 echo "== 3. quarantined copy: Gatekeeper's verdict"
-xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$app"
+xattr -w com.apple.quarantine "0083;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$fresh"
 if [ "${CAVIL_EXPECT_NOTARIZED:-}" = true ]; then
-  spctl --assess --type execute -vv "$app" 2>&1 || { echo "❌ Gatekeeper rejected a notarized app"; exit 1; }
+  spctl --assess --type execute -vv "$fresh" 2>&1 || { echo "❌ Gatekeeper rejected a notarized app"; exit 1; }
   echo "✅ accepted (notarized)"
-elif spctl --assess --type execute -vv "$app" 2>&1; then
+elif spctl --assess --type execute -vv "$fresh" 2>&1; then
   echo "❌ Gatekeeper accepted a quarantined app that is not notarized — the first-open instructions would be wrong"
   exit 1
 else
@@ -100,10 +105,10 @@ else
 fi
 
 echo "== 4. documented step: xattr -dr com.apple.quarantine, then open like a double-click"
-xattr -dr com.apple.quarantine "$app"
-if xattr -p com.apple.quarantine "$app" >/dev/null 2>&1; then echo "❌ quarantine mark still there"; exit 1; fi
+xattr -dr com.apple.quarantine "$fresh"
+if xattr -p com.apple.quarantine "$fresh" >/dev/null 2>&1; then echo "❌ quarantine mark still there"; exit 1; fi
 marker="$work/smoke-open.txt"
-open -n -W "$app" --args --smoke-test "--smoke-out=$marker" &
+open -n -W "$fresh" --args --smoke-test "--smoke-out=$marker" &
 pid=$!
 for _ in $(seq 1 60); do [ -s "$marker" ] && break; sleep 1; done
 kill "$pid" 2>/dev/null || true
