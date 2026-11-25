@@ -3190,6 +3190,16 @@ split_parent_of() {
 #           缺的那项由 git 照常从仓库共用配置 / 全局配置取，所以不会拼出「新姓名 + 旧负责人邮箱」
 #   unknown 任何一次读取失败（条目、账号类型、权限、账号编号）→ 什么都不改，保留上一次的结果；这个 worktree
 #           还从没写过身份时按 none 处理（第一次建 worktree 也要用上配置的兜底身份）
+# 每个输入怎么进结论（「判不了」= unknown，「不合格」= 跳过看下一个，走到底才是 none）：
+#   | 输入                              | 判不了（unknown）                          | 不合格（跳过）                    | 合格 |
+#   | 链上条目（issues/<N>）            | 读不到、编号对不上、负责人不是数组、       | —                                 | —    |
+#   |                                   | 任一负责人 / 提出者记录不完整（见下一行）  |                                   |      |
+#   | 账号记录 login + type             | login 不是非空字符串；type 不是 User /     | type 是 Bot / Organization /      | 见下 |
+#   |                                   | Bot / Organization / Mannequin 之一        | Mannequin                         |      |
+#   | 角色（outsider_role，仅 User）    | 读不到写入账号、权限读不到 / 读不懂        | loop 账号、外部需求机器人、外部账号 | 维护者 |
+#   | 父 issue 地址                     | 地址读不懂                                 | 没有父 / 父在别的仓库 = 链到头    | —    |
+#   | 账号编号（users/<login>，选中后） | 读不到、id 不是数字、回来的 login 对不上   | —                                 | 写入 |
+# 只要链上出现一个「判不了」，整个结论就是 unknown（不能拿它后面的人顶替：前面那个人可能才是该署的）。
 # worktree 自己这一层的 user.name / user.email 只由这里写，删掉它不会误删人的设置；仓库共用配置和全局配置
 # 一概不碰。仓库共用配置里有 core.bare=true 或 core.worktree 时打开每个 worktree 单独配置会改变主 checkout
 # 的行为（git 文档），这种仓库不打开它，退回旧做法：把配置的兜底身份写进共用配置，不按条目署名。
@@ -3203,10 +3213,15 @@ commit_identity_from_item_on() {
     return 1
 }
 
-# 这个账号合不合格：0 = 合格；1 = 明确不合格；2 = 判不了（读不到）
+# 这个账号合不合格：0 = 合格；1 = 明确不合格；2 = 判不了。类型只认 GitHub 的四种（取链上条目时已校验过）
 _commit_identity_eligible() {   # <login> <账号类型>
     local rc=0
-    outsider_role "$1" "${2:-User}" || rc=$?
+    case "$2" in
+        User) ;;
+        Bot|Organization|Mannequin) return 1 ;;
+        *) return 2 ;;
+    esac
+    outsider_role "$1" User || rc=$?
     [ "$rc" = 0 ] || return 2
     [ "$OS_ROLE" = maintainer ] && return 0
     return 1
@@ -3227,16 +3242,18 @@ _commit_identity_fetch() {   # <i>
         # 父 issue 在别的仓库：本仓库的权限管不到那边的人，当作链到头（和 issue_parent_num 同一口径）
         case "$url" in
             */repos/"$REPO"/issues/*) num="${url##*/}" ;;
-            *) return 1 ;;
+            */repos/*/*/issues/*) return 1 ;;
+            *) CI_WHY="读不懂父 issue 的地址"; return 2 ;;
         esac
-        [[ "$num" =~ ^[0-9]+$ ]] || return 2
+        [[ "$num" =~ ^[0-9]+$ ]] || { CI_WHY="读不懂父 issue 的地址"; return 2; }
     fi
     case " ${_CI_NUMS[*]:-} " in *" $num "*) return 1 ;; esac
     j=$(gh api "repos/$REPO/issues/$num" 2>/dev/null) || { CI_WHY="读不到 #$num"; return 2; }
-    # 参与选择的每个账号记录都要完整：账号名是非空字符串、类型是字符串。缺字段、类型不对 = 读不全，
+    # 参与选择的每个账号记录都要完整：账号名是非空字符串、类型是 GitHub 的四种之一。缺字段、空串、不认识的类型 = 读不全，
     # 不能跳过它或补成真人（跳过会把「读不全」当成「没有合格的人」，撤掉已有的署名）
     printf '%s' "$j" | jq -e --argjson n "$num" '
-        def acct: type == "object" and (.login | type) == "string" and .login != "" and (.type | type) == "string";
+        def acct: type == "object" and (.login | type) == "string" and .login != ""
+            and (.type | IN("User", "Bot", "Organization", "Mannequin"));
         (.number == $n) and ((.assignees | type) == "array") and all(.assignees[]; acct) and (.user | acct)' >/dev/null 2>&1 \
         || { CI_WHY="#$num 的负责人或提出者资料读不全"; return 2; }
     _CI_JSON+=("$j"); _CI_NUMS+=("$num")
@@ -3321,7 +3338,13 @@ commit_identity_apply() {   # <worktree> <条目编号> [绑定的 issue 编号]
     fi
     commit_identity_resolve "$item" "$bound" || rc=$?
     if [ "$rc" = 0 ]; then
-        id=$(gh api "users/$CI_LOGIN" --jq '.id' 2>/dev/null) || id=""
+        # 回来的账号名要和选中的对上（不分大小写），编号是数字，否则判不了
+        id=$(gh api "users/$CI_LOGIN" --jq '[(.id | tostring), (.login // "")] | @tsv' 2>/dev/null) || id=""
+        if [ "$(printf '%s' "${id#*$'\t'}" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$CI_LOGIN" | tr '[:upper:]' '[:lower:]')" ]; then
+            id="${id%%$'\t'*}"
+        else
+            id=""
+        fi
         if [[ "$id" =~ ^[0-9]+$ ]]; then
             if run_git "写工作目录的提交姓名" git -C "$wt" config --worktree user.name "$CI_LOGIN" \
                && run_git "写工作目录的提交邮箱" git -C "$wt" config --worktree user.email "${id}+${CI_LOGIN}@users.noreply.github.com"; then

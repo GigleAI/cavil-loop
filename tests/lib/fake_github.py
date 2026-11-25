@@ -15,7 +15,8 @@ Invoked as `gh` (via a tiny wrapper on PATH). State lives in $FAKE_GH_DIR:
                   查询里写 issueOrPullRequest 时 issue 的也按编号从这里取，GitHub#391）
   review_comments.json / reviews.json  {"<pr>": [...]}  PR 行内评论 / review（GitHub#391；没有 = 空）
   perms.json 里写 "__404__" = 这个账号不存在
-  users.json      {"<login>": {id, type} | "__404__"}  GET users/<login>（GitHub#699）；没写的账号给固定编号、类型 User
+  users.json      {"<login>": {id, type, login?} | "__404__"}  GET users/<login>（GitHub#699）；没写的账号给固定编号、类型 User，
+                  login 默认就是请求的账号名（写了就原样给，测「回来的账号对不上」）
                   items 里的 assignees 原样带进 issue
   blocked_by.json {"<n>": [<n>, ...]}  原生「Blocked by」关系（GitHub#157）；"<owner/repo>#<n>" 是别的仓库的条目
   subs.json       {"<n>": [<n> | "<owner/repo>#<n>", ...]}  子项（GitHub#233）：/issues/N/sub_issues 和 sub_issues_summary
@@ -451,7 +452,7 @@ if path and path.startswith("users/") and method == "GET":
     _u = dict(_u or {})
     _u.setdefault("id", 100000 + _z.crc32(_lg.encode()) % 900000)
     _u.setdefault("type", "User")
-    _u["login"] = _lg
+    _u.setdefault("login", _lg)
     emit(_u)
 
 if path is None or not path.startswith("repos/" + REPO):

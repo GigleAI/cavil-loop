@@ -282,6 +282,18 @@ cross "负责人列表为空、提出者资料是空对象 → 仍是 alice（�
 cross "负责人列表里有一条空记录（提出者是明确的外部账号）→ 仍是 alice（不撤）" "$(id_of alice)" patch_item '{"assignees": [{}]}'
 cross "负责人记录缺账号类型 → 仍是 alice（不补成真人、不撤）" "$(id_of alice)" patch_item '{"assignees": [{"login": "bob"}]}'
 cross "提出者账号名是空字符串 → 仍是 alice（不撤）" "$(id_of alice)" patch_item '{"assignees": [], "user": {"login": "", "type": "User"}}'
+cross "负责人账号类型是空串（另一个账号 bob）→ 仍是 alice（不换成 bob）" "$(id_of alice)" patch_item '{"assignees": [{"login": "bob", "type": ""}]}'
+cross "负责人账号类型不认识 → 仍是 alice（不当成不合格、不撤）" "$(id_of alice)" patch_item '{"assignees": [{"login": "alice", "type": "UnknownAccount"}]}'
+cross "父 issue 地址读不懂（负责人已撤）→ 仍是 alice（不当成链到头）" "$(id_of alice)" patch_item '{"assignees": [], "parent_issue_url": "garbage"}'
+perm_weird() { jq '.alice = "weird"' "$GD/perms.json" > "$GD/p.t" && mv "$GD/p.t" "$GD/perms.json"; }
+cross "alice 的权限读回不认识的值 → 仍是 alice" "$(id_of alice)" perm_weird
+user_patch() { jq --argjson v "$1" '.alice = (.alice + $v)' "$GD/users.json" > "$GD/u.t" && mv "$GD/u.t" "$GD/users.json"; }
+cross "账号信息回来的账号名对不上 → 仍是 alice（不写别人的编号）" "$(id_of alice)" user_patch '{"login": "mallory"}'
+cross "账号编号不是数字 → 仍是 alice" "$(id_of alice)" user_patch '{"id": "x"}'
+# 对照：类型明确是机器人 / 组织 → 不合格、跳过；链上再没有合格的人就撤回（不是「判不了」）
+cross "负责人类型明确是 Bot → 跳过，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [{"login": "alice", "type": "Bot"}]}'
+cross "负责人类型明确是 Organization → 跳过，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [{"login": "alice", "type": "Organization"}]}'
+cross "父 issue 在别的仓库（负责人已撤）→ 链到头，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [], "parent_issue_url": "https://api.github.com/repos/other/repo/issues/5"}'
 
 echo
 echo "结果：$pass 通过 / $fail 失败"

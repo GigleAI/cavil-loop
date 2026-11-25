@@ -177,6 +177,8 @@ LABEL_PENDING_LATER=""
 LABEL_AUTOPILOT=""
 # 往返记录 GitHub#669 起没写就开；同样写成空值
 ENABLE_ROUND_LOG=""
+# 提交署名跟着条目上的人走 GitHub#699 起没写就开（每次派工多读几次 GitHub）；这里比的是它关着的状态，写成空值
+WORKTREE_GIT_USER_FROM_ITEM=""
 LABEL_PENDING_PR="pending/PR"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
