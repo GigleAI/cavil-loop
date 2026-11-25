@@ -85,6 +85,7 @@ OUTPUT_LANGUAGE | 评论 | enum:en=English,zh=中文,ja=日本語,ko=한국어,f
 COMMENT_FOOTER | 评论 | bool:on:off | on | edit | 评论末尾附用量 | 每轮最后一条交人评论附耗时 / token 一行 | | main
 ENABLE_CONCURRENT_WORK_HINT | 评论 | bool:true:false | false | edit | 告诉 worker 还有哪些条目在进行 | 派工时列出其他进行中条目的改动摘要和涉及的目录，供 worker 留意冲突（不写进评论） | | more
 ENABLE_ROUND_LOG | 评论 | bool:true:false | true;empty=false | edit | agent 之间的来回写进同一条评论 | 每次交给 agent 的交付追加到同一条往返记录，交给人的评论照旧单独发；配置里没写这一行 = 开，写 false 或空值 = 关 | | more
+AUTO_ASSIGN_REQUESTER | 评论 | bool:true:false | false | edit | 新建的 issue / PR 自动指派提出者 | 还没有 assignee 的新条目指派给提出需求的人：agent 开的 PR 指派它关闭的 issue 的提出者，拆出的子 issue 指派父 issue 的提出者；已有 assignee 的不动，人删掉的不会被加回来 | | more
 CONCURRENT_WORK_MAX_BYTES | 评论 | int:2000:20000 | 6000 | edit | 进行中条目清单最多多少字节 | 上一项开着时，那份清单最多占这么多字节，超出只列前几条并写明还剩几条；只管清单，不管整份提示词 | | more
 PENDING_HUMAN_CONFLICT_CHECK | 等人期间 | bool:true:false | true | edit | 等人的 PR 和主干冲突时提醒 | 关 = 不检查 | | main
 PENDING_HUMAN_CONFLICT_AUTOFIX_DAYS | 等人期间 | int:0:30 | 2 | edit | 冲突的 PR 几天内自动交回 agent 解 | PR 最近这么多天内更新过才自动交回；0 = 只提醒 | | more

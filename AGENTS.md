@@ -102,6 +102,7 @@ documents the same idea is "core outside, details folded" ([docs/AGENTS.md](docs
 │   ├── pr-time-stats.py           ← Read-only: AI and test time per merged PR, averaged (estimate: footers added up, run log by arguments, CI attempts; GitHub#593)
 │   ├── repair-unit-links.sh       ← Repoint systemd unit links at the stable skill entry + restart timers that vanished (GitHub#109); run every poll round, by the deployer before cleanup, by setup / migration after enable
 │   ├── project-auto-add.sh        ← Add this repo's issues / PRs to the GitHub Projects in AUTO_ADD_PROJECTS (GitHub#116; one child process per poll, off when empty)
+│   ├── auto-assign.sh             ← Assign a new issue / PR with no assignee to whoever asked for it (GitHub#690; one child process per poll, AUTO_ASSIGN_REQUESTER)
 │   ├── ci-failure-report.sh       ← Base-branch test workflow failed → open / continue a report issue (GitHub#345; called every poll under the poll lock, off when empty); also `--list` / `--restart`
 │   ├── ci_failure_report.py       ← The logic behind it: discover runs, judge "same cause" / "failed fix", guarded writes, hand-over, log cleaning
 │   ├── notify-requester-bot.sh    ← Wake the external requester bot (worker-side, off unless configured; GitHub#95 / #97); notify-relay.sh is the early name, forwarding to it
@@ -640,6 +641,7 @@ the line itself.
 - Price gap-fill (markers / `price_fetch.py` / the fetched trust bucket) → `tests/price-fetch.test.sh`
 - **GitHub token redaction** — entry: `scripts/redact_tokens.py`, `scripts/_redact.sh`, `log()`, `start_session_logging`, `session_log_pipe_ensure`, `redact_scan_tick` · read first: `scripts/redact_tokens.py` (header) · tests: `tests/token-redaction.test.sh` (~35 s), `tests/migrate-legacy.test.sh`
 - **Auto-adding the repo's issues / PRs to GitHub Projects** — entry: `AUTO_ADD_PROJECTS`, `scripts/project-auto-add.sh`, `project_auto_add_tick`, `$STATE_DIR/project-auto-add.json` · read first: `scripts/project-auto-add.sh` (header) · tests: `tests/project-auto-add.test.sh` (~1 min by default)
+- **Assigning new issues / PRs to whoever asked for them** — entry: `AUTO_ASSIGN_REQUESTER`, `scripts/auto-assign.sh`, `auto_assign_tick`, `auto_assign_enabled`, `$STATE_DIR/auto-assign.json` · read first: `scripts/auto-assign.sh` (header) · tests: `tests/auto-assign.test.sh` (~20 s), `tests/project-config.test.sh` §7, `tests/config-notice.test.sh`
 - **Reporting a failed test workflow on the base branch** — entry: `CI_FAILURE_REPORT_WORKFLOWS`, `_BRANCH`, `_DISPATCH`, `_MAX_FIX_ATTEMPTS`, `scripts/ci-failure-report.sh`, `scripts/ci_failure_report.py` · read first: `scripts/ci_failure_report.py` (header) · tests: `tests/ci-failure-report.test.sh`
 - **Poll pace / idle + failure backoff** — entry: `agent-poll.sh` · read first: `scripts/_lib.sh` (comment above `pace_num`) · tests: `tests/poll-pace.test.sh` (~40s), `tests/poll-probe.test.sh` (~40 s idle box)
 - **Poll run log** — entry: `scripts/_runlog.sh`, `scripts/poll-history.sh`, `runlog_*`, `agent-poll.sh`, `poll-entry.sh`, `runlog_probe_note` · read first: `scripts/_runlog.sh` (header) · tests: `tests/poll-runlog.test.sh` (~1.5 min)
