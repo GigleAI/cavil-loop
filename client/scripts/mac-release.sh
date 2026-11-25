@@ -160,9 +160,10 @@ build_all() {
   node scripts/size-gate.mjs release/*.dmg --expect arm64,x64
   node scripts/size-gate.mjs release/*.app.tar.gz --expect arm64,x64
   verify release/*.dmg
+  # no window screenshot: scripting Finder asks for a permission nobody is there to grant
   for arch in "${ARCHES[@]}"; do
     CAVIL_EXPECT_SIGNER="$SIGNING_IDENTITY" CAVIL_EXPECT_NOTARIZED="$NOTARIZE" \
-      bash scripts/mac-open-check.sh "release/Cavil-Loop-$version-$arch.dmg" "$WORK_DIR/log/dmg-window-$arch.png"
+      bash scripts/mac-open-check.sh "release/Cavil-Loop-$version-$arch.dmg"
   done
   # a real update of an installed app, as CI did (a test build of its own, ad-hoc signed)
   (

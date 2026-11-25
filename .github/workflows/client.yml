@@ -630,7 +630,7 @@ jobs:
   # yet (pushed with this job's token, so it starts no other run), and checked again right before the
   # page is created.
   release:
-    name: publish client release
+    name: hand the client release to the Mac
     needs: [mode, test, e2e, package, package-windows, size]
     if: needs.mode.outputs.tag != ''
     # One client release publishes at a time, whatever its version or how it started (a pushed tag,
@@ -648,32 +648,21 @@ jobs:
         with:
           ref: ${{ needs.mode.outputs.sha }}
           fetch-depth: 0
+      # the Macs are built and signed on the maintainers' Mac (scripts/mac-release.sh): only Windows here
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*
+          pattern: Cavil-Loop-*-windows-x64.exe*
           path: client/dist-release
           merge-multiple: true
-      - name: The build is the tag's version, both Macs and Windows
+      - name: The Windows build is the tag's version
         env:
           V: ${{ needs.mode.outputs.version }}
         run: |
           ls -la dist-release
           [ -n "$V" ] || { echo "::error::no version for this release build"; exit 1; }
-          for arch in arm64 x64; do
-            for f in "Cavil-Loop-$V-$arch.dmg" "Cavil-Loop-$V-$arch.app.tar.gz" "Cavil-Loop-$V-$arch.app.tar.gz.sig"; do
-              [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing: the build is not $V for both Macs"; exit 1; }
-            done
-          done
           for f in "Cavil-Loop-$V-windows-x64.exe" "Cavil-Loop-$V-windows-x64.exe.sig"; do
             [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing: the build is not $V for Windows"; exit 1; }
           done
-      # GitHub#184: what installed apps read to update themselves. Refuses unless every update package
-      # (both Macs, Windows) is there and their signatures verify with the app's public key (tauri.conf.json) and are bound
-      # to this version.
-      - name: Update manifest (latest.json)
-        env:
-          V: ${{ needs.mode.outputs.version }}
-        run: node scripts/update-manifest.mjs --version "$V" --dir dist-release --conf src-tauri/tauri.conf.json --notes RELEASE_NOTES.md --out dist-release/latest.json
       # The remote's tag: absent → create it on the tested commit; on that commit → keep; anywhere
       # else, or unreadable → stop, no page.
       - name: Tag the tested commit
@@ -696,13 +685,15 @@ jobs:
             echo "::error::$TAG is on $now, not on the tested $SHA — no Release"
             exit 1
           fi
-      # Not marked latest: the daemon's weekly release stays "Latest". --verify-tag: gh never creates
-      # a missing tag on the default branch's tip, a commit nothing here tested.
-      - name: Create Release
+      # A draft with the Windows files, for the Mac to add both Macs and latest.json and publish
+      # (scripts/handover.mjs; on the Mac, scripts/mac-release.sh). Not marked latest when it comes out:
+      # the daemon's weekly release stays "Latest". The tag must already be on the tested commit.
+      - name: Hand over to the Mac (a draft with the Windows files)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.mode.outputs.tag }}
           SHA: ${{ needs.mode.outputs.sha }}
+          V: ${{ needs.mode.outputs.version }}
         run: |
           set -o pipefail
           refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
@@ -713,12 +704,7 @@ jobs:
           fi
           # and once more right before the page: no newer client tag appeared meanwhile
           node scripts/release-version.mjs check "$TAG" --at "$SHA" >/dev/null
-          gh release create "$TAG" dist-release/*.dmg dist-release/*.app.tar.gz dist-release/*.app.tar.gz.sig dist-release/*-windows-x64.exe dist-release/*-windows-x64.exe.sig dist-release/latest.json \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "Cavil Loop 客户端 ${TAG#client/}" \
-            --notes-file RELEASE_NOTES.md \
-            --latest=false
+          node scripts/handover.mjs create --channel stable --version "$V" --sha "$SHA" --dir dist-release --notes-file RELEASE_NOTES.md --repo "$GITHUB_REPOSITORY"
 
   # GitHub#215 / #628: the development build, for installed apps on the development channel: a
   # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), published by a push to main (GitHub#665),
@@ -731,8 +717,19 @@ jobs:
   # `concurrency`: the night and manual runs, and pushes to main); this job has one group of its own
   # for all of them, so two publishes never overlap. It waits for no other run inside that slot, and
   # with one run per group at most two ever reach it together.
+  # GitHub#215 / #628: the development build, for installed apps on the development channel: a
+  # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), from a push to main (GitHub#665), the
+  # nightly run and a manual run on main with "publish" (mode: publish), when there is something new
+  # (mode: build), only after the quick tests, the Mac build and its real-update check, the Windows build
+  # and its real-update check (GitHub#577 / #628), and the size gate passed.
+  # The Macs' packages are built and signed with the Developer ID on the maintainers' Mac, not here
+  # (scripts/mac-release.sh): this job hands the build over as a draft carrying the Windows files
+  # (scripts/handover.mjs create — the same checks scripts/dev-release.mjs makes before it creates a
+  # build); the Mac adds both Macs and latest.json and publishes it through dev-release.mjs (complete
+  # or not at all, never over a newer one, the latest 10 kept). Runs that publish queue in two groups
+  # (the workflow's `concurrency`); this job has one group of its own for all of them.
   dev-release:
-    name: publish development build
+    name: hand the development build to the Mac
     if: needs.mode.outputs.publish == 'true' && needs.mode.outputs.build == 'true' && needs.mode.outputs.tag == ''
     needs: [mode, test, package, package-windows, size]
     concurrency:
@@ -757,22 +754,9 @@ jobs:
           echo "development build $V"
       - uses: actions/download-artifact@v8.0.2
         with:
-          pattern: Cavil-Loop-*
+          pattern: Cavil-Loop-*-windows-x64.exe*
           path: client/dist-release
           merge-multiple: true
-      - name: The Mac and Windows builds are that version
-        env:
-          V: ${{ steps.v.outputs.version }}
-        run: |
-          ls -la dist-release
-          # the files a development build carries, from the one list (scripts/dev-release.mjs devFiles);
-          # latest.json is written by the next step
-          files="$(node scripts/dev-release.mjs --files "$V")"
-          [ -n "$files" ] || { echo "::error::no file list for $V"; exit 1; }
-          while IFS= read -r f; do
-            [ "$f" = latest.json ] && continue
-            [ -f "dist-release/$f" ] || { echo "::error::dist-release/$f is missing"; exit 1; }
-          done <<<"$files"
       - name: Release notes
         env:
           V: ${{ steps.v.outputs.version }}
@@ -784,17 +768,32 @@ jobs:
             echo "只有在客户端设置里把「更新渠道」选成「开发版」的 App 会自动装它；可能不稳定。正式版见不带 -dev 的 client/v… 发版。"
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
-      # refuses unless the Apple silicon and the Windows packages are there and verify with the app's public key
-      - name: Update manifest (latest.json, development channel)
-        env:
-          V: ${{ steps.v.outputs.version }}
-        run: node scripts/update-manifest.mjs --channel dev --version "$V" --dir dist-release --conf src-tauri/tauri.conf.json --notes "$RUNNER_TEMP/notes.md" --out dist-release/latest.json
-      - name: Publish (pre-release), keep the latest 10
+      - name: Hand over to the Mac (a draft with the Windows files)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.v.outputs.version }}
           SHA: ${{ needs.mode.outputs.sha }}
-        run: node scripts/dev-release.mjs --version "$V" --sha "$SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --keep 10 --repo "$GITHUB_REPOSITORY"
+        run: node scripts/handover.mjs create --channel dev --version "$V" --sha "$SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+
+  # A draft handed to the Mac that is still not published after 12 hours means the Mac is not doing its
+  # part (off, logged out, a failing build): the nightly run fails here, and the report below says so.
+  # contents: write only because GitHub lists drafts to writing tokens alone; it writes nothing.
+  mac-handover:
+    name: the Mac published what it was handed
+    if: github.event_name == 'schedule' && github.event.schedule == '30 20 * * *'
+    needs: mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.mode.outputs.sha }}
+      - name: No draft waits longer than 12 hours
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/handover.mjs stale --hours 12 --repo "$GITHUB_REPOSITORY"
 
   # GitHub#628: a failed nightly development build opens an issue labelled for the daemon, or comments
   # on the open one of the same kind (its own marker and title; never the release
@@ -803,7 +802,7 @@ jobs:
   # Turned off by the repository variable CLIENT_NIGHTLY_REPORT=off.
   report-failure:
     name: report failure
-    needs: [mode, test, package, package-windows, size, dev-release]
+    needs: [mode, test, package, package-windows, size, dev-release, mac-handover]
     if: ${{ !cancelled() && github.event_name == 'schedule' && github.event.schedule == '30 20 * * *' && contains(needs.*.result, 'failure') && vars.CLIENT_NIGHTLY_REPORT != 'off' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

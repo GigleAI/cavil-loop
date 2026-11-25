@@ -7,6 +7,9 @@ export interface DevRelease {
 }
 export declare function devReleases(list: unknown[]): DevRelease[];
 export declare function devFiles(version: string): string[];
+export declare function macFiles(version: string): string[];
+export declare function windowsFiles(version: string): string[];
+export declare function devTitle(version: string, sha: string): string;
 export declare const NOT_UPLOADED: string[];
 export declare function buildState(release: unknown, files: string[]): { state: 'complete' | 'incomplete' | 'unknown'; bad: string[]; unknown: string[] };
 export declare function decide(list: unknown[], version: string, files: string[]): { action: 'skip'; why: string } | { action: 'done' } | { action: 'create' } | { action: 'fill' } | { action: 'keep'; bad: string[]; was?: boolean; tagSha?: string | null } | { action: 'unknown'; files: string[]; why: string };

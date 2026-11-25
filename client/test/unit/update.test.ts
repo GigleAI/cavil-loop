@@ -484,9 +484,9 @@ describe('GitHub#473: the updater words its own part in the window\'s language, 
   it('English on a machine with no development builds: why, and the refusal; Chinese as before', async () => {
     const b = harness();
     await b.call('setLanguage', { lang: 'en' });
-    const st: any = await start(b, { devSupported: false, target: 'darwin-x86_64' });
-    expect(st.devUnavailable).toBe('Development builds exist for Apple silicon only; this Mac can only use Release');
-    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: 'Development builds exist for Apple silicon only; this Mac can only use Release' });
+    const st: any = await start(b, { devSupported: false, target: 'windows-aarch64' });
+    expect(st.devUnavailable).toBe('No development builds exist for this machine; it can only use Release');
+    expect(await b.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: 'No development builds exist for this machine; it can only use Release' });
     await b.call('setLanguage', { lang: 'zh' });
     expect(((await b.call('test.update.status')) as any).devUnavailable).toBe('开发版只有 Apple 芯片的包，这台 Mac 只能用正式版');
   });
@@ -657,11 +657,11 @@ describe('choosing the channel (GitHub#215)', () => {
     await b.close();
     open.splice(0);
     srv.log = [];
-    const intel = harness();
-    const st: any = await start(intel, { devSupported: false, target: 'darwin-x86_64' });
+    const other = harness();
+    const st: any = await start(other, { devSupported: false, target: 'windows-aarch64' });
     expect(st).toMatchObject({ channel: 'stable', devUnavailable: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
-    expect(await intel.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
-    expect(await intel.call('test.update.check')).toMatchObject({ channel: 'stable', last: { ok: true, message: '已是最新' } });
+    expect(await other.call('test.update.setChannel', { channel: 'dev' })).toEqual({ ok: false, error: '开发版只有 Apple 芯片的包，这台 Mac 只能用正式版' });
+    expect(await other.call('test.update.check')).toMatchObject({ channel: 'stable', last: { ok: true, message: '已是最新' } });
     expect(srv.manifestRequests()).toEqual([]);
   });
 
