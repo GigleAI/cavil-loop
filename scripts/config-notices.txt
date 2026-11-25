@@ -73,6 +73,7 @@ WORKTREE_SETUP_CMD | quiet | 模板里的值只是示例，项目按需填
 COPY_TO_WORKTREE | quiet | 模板里的值只是示例，项目按需填
 WORKTREE_GIT_USER_NAME | quiet | 不写这一行时的行为和模板里的值相同
 WORKTREE_GIT_USER_EMAIL | quiet | 不写这一行时的行为和模板里的值相同
+WORKTREE_GIT_USER_FROM_ITEM | quiet | 不写这一行时的行为和模板里的值相同
 WORKER_AGENT | quiet | 不写这一行时的行为和模板里的值相同
 WORKER_MODEL | quiet | 不写这一行时的行为和模板里的值相同
 CLAUDE_EXTRA_FLAGS | quiet | 权限参数：要不要跳过权限确认由维护者自己定，不提示
@@ -119,6 +120,7 @@ PROJECT_OWNER | quiet | 不写这一行时的行为和模板里的值相同
 PROJECT_PRIORITY_FIELD | quiet | 不写这一行时的行为和模板里的值相同
 PROJECT_GH_TOKEN | quiet | 不写这一行时的行为和模板里的值相同
 AUTO_ADD_PROJECTS | quiet | 不写这一行时的行为和模板里的值相同
+AUTO_ASSIGN_REQUESTER | notice | GigleAI/cavil-loop#690 | false | 新建的 issue / PR 自动把提出需求的人设为 assignee：人开的条目指派作者，agent 开的 PR 指派它关闭的 issue 的提出者，agent 拆出的子 issue 指派父 issue 的提出者；已经有 assignee 的不动，每个条目只处理一次（人删掉的不会被加回来），只管打开之后新建的条目。关着时 agent 代开的 PR、子 issue 没有 assignee，按「指派给我的」找不到。
 CI_FAILURE_REPORT_WORKFLOWS | quiet | 不写这一行时的行为和模板里的值相同
 CI_FAILURE_REPORT_BRANCH | quiet | 不写这一行时的行为和模板里的值相同
 CI_FAILURE_REPORT_DISPATCH | quiet | 不写这一行时的行为和模板里的值相同

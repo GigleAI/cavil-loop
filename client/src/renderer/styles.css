@@ -1169,3 +1169,13 @@ table.items tr.repo-blank td { padding-top: 10px; padding-bottom: 10px; }
 table.items tr.repo-blank .link { color: var(--muted); margin-left: 8px; }
 table.items tr.repo-blank .link:hover:not(:disabled) { color: var(--fg); }
 table.items tr.repo-blank .link:disabled { opacity: 0.5; cursor: default; }
+
+/* GitHub#689: 「只看我的」 — a button in the view bar and its small panel */
+.mine-filter { position: relative; display: inline-flex; }
+.mine-filter > button { padding: 0 8px; }
+.mine-filter-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 6px; min-width: 240px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); white-space: nowrap; font-size: 13px; }
+.mine-filter-pop .toggle { color: var(--fg); }
+.mine-filter-boxes { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; }
+.mine-filter-boxes label.check { display: flex; align-items: center; gap: 8px; color: var(--fg); }
+.mine-filter-boxes label.check:has(input:disabled) { color: var(--muted); }
+.mine-filter-hint { color: var(--muted); font-size: 12px; white-space: normal; width: 240px; }

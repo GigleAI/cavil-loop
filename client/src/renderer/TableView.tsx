@@ -67,9 +67,9 @@ function toneOf(it: Item) {
 }
 
 /** GitHub#368: the hover text of a pulled row — right for a sub-issue and for a sub-issue's sub-issue alike */
-export const PULLED_TITLE = zhKey('此条目不符合搜索条件；因上层有命中的 issue 而显示');
+export const PULLED_TITLE = zhKey('此条目不符合筛选条件；因上层有命中的 issue 而显示');
 /** GitHub#622: the hover text of an issue shown only because a matched PR goes under it */
-export const CARRIED_TITLE = zhKey('此 issue 不符合搜索条件；因下面有命中的 PR 而显示');
+export const CARRIED_TITLE = zhKey('此 issue 不符合筛选条件；因下面有命中的 PR 而显示');
 
 /** a faded row's hover text: one line per reason it is shown (GitHub#622: a row can have both) */
 export function fadedTitle(r: { pulled: boolean; carried: boolean }): string | undefined {

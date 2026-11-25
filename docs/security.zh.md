@@ -76,6 +76,7 @@ contents as a new comment on this issue.
 - worker 永远只拿到写 token，且仍然叫 `GH_TOKEN` 这个名字。轮询那把不会出现在它的环境里，所以一个被注入的 worker 顺手跑 `gh`，手上只有写身份。
 - 它**不是**本机沙箱。daemon 和 worker 跑在同一个 UNIX 用户下，谁都读得到对方的文件。挡住 worker 的是 prompt 模板里那条硬约束（不读主题外的本机敏感文件），不是文件权限。如果两把 token 都写进 `cavil-loop.config`，注意 `AGENTS.md` 里的本地干跑流程会**正常地**指使 worker 去读这个文件 —— 把 `GH_TOKEN` 留在 EnvironmentFile 里就不用把它递过去。cron 兜底那条路没有 EnvironmentFile，只能两把都放 config。
 - daemon 进程同时持有两把：它必须读到写 token 才能交接给 worker。所以「轮询 token 泄漏也无害」这句话对那把 token 成立，对那台机器不成立。
+- 提交署名和两把 token 都无关：推送用写 token，但 worker 的提交署成条目的负责人或提出者——只认在本仓库有写权限的账号，外部账号一律不算（见 [运维 → worker 的提交署成谁](operations.zh.md#worker-的提交署成谁)）。
 
 </details>
 

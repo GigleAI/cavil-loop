@@ -21,7 +21,7 @@ mkdirSync(screens, { recursive: true });
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const K = (n: number) => `gigleai/cavil-loop#${n}`;
-const CARRIED_TITLE = '此 issue 不符合搜索条件；因下面有命中的 PR 而显示';
+const CARRIED_TITLE = '此 issue 不符合筛选条件；因下面有命中的 PR 而显示';
 
 let env: AppEnv;
 test.beforeEach(async () => {

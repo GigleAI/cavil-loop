@@ -17,7 +17,7 @@ import { localToday } from './iterationOptions';
 import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
-import { parseFilter } from '../shared/filter';
+import { mineOnly, parseFilter } from '../shared/filter';
 import { api } from './api';
 
 /** GitHub#634: the three ways a number folds, as Settings names them */
@@ -54,7 +54,8 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
   const preview = useMemo(
     () =>
       viewBarTallies(
-        data.items,
+        // GitHub#689: the bar counts what 「只看我的」 lets through; the preview counts the same items
+        mineOnly(data.items, state.mineFilter, state.viewer),
         state.tallies,
         state.handBack,
         { viewer: state.viewer, today, projects: data.projects },
@@ -63,7 +64,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
         parkedScope(state.sources, state.view.selected),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, today, state.sources, state.view.selected],
+    [data.items, data.projects, state.tallies, state.handBack, state.repoLabels, state.viewer, state.mineFilter, today, state.sources, state.view.selected],
   );
   const parked = viewBarParked(state.handBack, (repo) => handBackFor(state, repo), Object.keys(state.repoLabels), scope);
   const save = (next: TallyDef[]) => void api().setTallies(next);
@@ -256,7 +257,7 @@ export function TallySettings({ state, data }: { state: AppState; data: BoardDat
         <span className="muted small">{t('最多 {n} 个', { n: TALLY_MAX })}</span>
       </div>
       <SettingsMore title={t('计数规则')} testid="tally-more">
-        {t('顶栏右侧的每个数各对应上面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目，不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。')}
+        {t('顶栏右侧的每个数各对应上面一行，按这里的顺序、名称和颜色显示；数的是当前勾选来源里的条目（开着「只看我的」时只数自己的），不受搜索框影响。点一下数字，搜索框换成这一行的条件、只看这些，再点一下回到之前的搜索。')}
         <br />
         {tNode('「跟随流程标签」的行按上面「流程标签」里的标签名直接数：跟随「等人处理的标签」的开着的和已关闭的都数（和提醒用同一条规则），其余的只数开着的；标签名改了这里跟着变。自己写的条件和搜索框是同一种写法（例：{a}、{b}）。', {
           a: <code>is:open label:"bug"</code>,

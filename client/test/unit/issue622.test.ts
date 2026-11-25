@@ -237,6 +237,6 @@ describe('GitHub#622 in the window', () => {
     expect(fadedTitle({ pulled: true, carried: true })).toBe(`${PULLED_TITLE}\n${CARRIED_TITLE}`);
     expect(tr(346)).not.toContain('data-carried');
     expect((html.match(/data-testid="carried-tag"/g) ?? []).length).toBe(2);
-    expect(CARRIED_TITLE).toBe('此 issue 不符合搜索条件；因下面有命中的 PR 而显示');
+    expect(CARRIED_TITLE).toBe('此 issue 不符合筛选条件；因下面有命中的 PR 而显示');
   });
 });

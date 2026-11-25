@@ -179,6 +179,8 @@ LABEL_PENDING_REVIEW="pending/review"
 LABEL_PENDING_BLOCKED="pending/blocked"
 # 往返记录 GitHub#669 起没写就开；这里的提示词与催促按它关着时写
 ENABLE_ROUND_LOG=""
+# 提交署名跟着条目上的人走 GitHub#699 起没写就开（每次派工多读几次 GitHub）；这里比的是它关着的状态，写成空值
+WORKTREE_GIT_USER_FROM_ITEM=""
 LABEL_DONE="Done"
 WORKER_AGENT="claude"
 REVIEW_WORKER_AGENT="codex"

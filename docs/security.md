@@ -76,6 +76,7 @@ The split is drawn along **read vs write**, not daemon vs worker, and that is de
 - The worker only ever receives the write token, under the usual name `GH_TOKEN`. The polling token is never placed in its environment, so an injected worker that runs `gh` has only the write identity in hand.
 - It is **not** a local sandbox. The daemon and the worker run as the same UNIX user, so either can read the other's files. What stops the worker is the hard constraint in the prompt templates ("don't read off-topic local files"), not file permissions. If you put both tokens in `cavil-loop.config`, note that `AGENTS.md` routinely points the worker at that file for local dry-runs — keeping `GH_TOKEN` in the EnvironmentFile avoids handing it over. Under the cron fallback there is no EnvironmentFile, so both have to live in the config.
 - The daemon process holds both tokens: it has to read the write token to hand it to the worker. "A leaked polling token is harmless" is true of the token, not of the machine.
+- Commit authorship is separate from both tokens: pushes use the write token, but a worker's commits are signed as the item's assignee or author — only accounts with write access to the repository, never an outside account (see [operations → Who worker commits are signed as](operations.md#who-worker-commits-are-signed-as)).
 
 </details>
 
