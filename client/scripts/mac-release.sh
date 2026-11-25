@@ -125,8 +125,13 @@ bundle_conf() {
 # Notarize and staple a dmg (the app inside was notarized by the bundler, APPLE_API_* below).
 notarize() {
   [ "$NOTARIZE" = true ] || { say "⏭ notarization not set up (no NOTARY_KEY_*): skipped"; return 0; }
-  xcrun notarytool submit "$1" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+  # the verdict is read, never the exit code: `submit --wait` can exit 0 on an Invalid submission
+  local out
+  out="$(xcrun notarytool submit "$1" --key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait 2>&1)" || true
+  printf '%s\n' "$out"
+  grep -qE '^[[:space:]]*status: Accepted[[:space:]]*$' <<<"$out" || die "notarization of $(basename "$1") was not accepted (see above; xcrun notarytool log <id> tells why)"
   xcrun stapler staple "$1"
+  xcrun stapler validate "$1"
 }
 
 # Build, sign and check both Macs of <commit> as <version> into $OUT. $1 = commit, $2 = version,
