@@ -31,6 +31,8 @@ sync_project_checkout
 
 ISSUE="${1:?need issue number}"
 LATEST_COMMENT_ID="${2:-0}"
+# 派工认领（GitHub#700）：认领了没交出就意外退出 → 复原；交任务开始后意外退出 → 结果不明（77）
+dispatch_trap_install "$ISSUE"
 
 # 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）；注入现有会话时用不上
 heavy_launch_prepare "$ISSUE" || exit 1
@@ -93,10 +95,6 @@ Issue #$ISSUE 有新评论。读 \`gh issue view $ISSUE --repo $REPO --comments\
 EOF
 fi
 
-flip_label() {
-    flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true
-}
-
 # fable 标签作用于本次实际 worker 进程；已有 session 的 worker/model/角色不同就不能
 # 直接注入，需进入 Case B 用同一 cwd resume/fresh，并由 Claude driver 带上新模型。
 # session 本身不删：Case B 的 worker_session_launch 在原窗格里换程序，attach 着的
@@ -126,9 +124,11 @@ commit_identity_apply "$WORKTREE" "$ISSUE"
 # Case A: session 还活着且是同一个 worker → 注入 prompt
 if [ "$REUSE_SESSION" = 1 ]; then
     log "issue #$ISSUE -> 注入现有 session $TMUX_SESSION (agent=$WORKER_AGENT)"
+    # 先认领（doing/agent 打上、触发标签摘掉、读回确认），再往会话里送任务（GitHub#700）
+    dispatch_claim "$ISSUE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
+    dispatch_handing
     if inject_prompt_logged "$TMUX_SESSION" "$PROMPT_FILE"; then
-        flip_label
         exit 0
     fi
     log "issue #$ISSUE -> 注入失败，fallback 在原 session 里重起程序 (agent=$WORKER_AGENT)"
@@ -145,7 +145,9 @@ if [ -d "$WORKTREE" ]; then
     # B1: 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-        || { dispatch_prompt_refused "$ISSUE"; exit 0; }
+        || dispatch_refused_exit "$ISSUE"
+    dispatch_claim "$ISSUE"
+    dispatch_handing
     log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
     worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
@@ -155,26 +157,26 @@ if [ -d "$WORKTREE" ]; then
         sleep 2
         _alive=0; worker_alive "$TMUX_SESSION" || _alive=$?
         if [ "$_alive" = 2 ]; then
-            # 读不到程序是否还在：不退休会话记录、不重起（可能正在跑），本轮失败退出，下一轮再判
+            # 读不到程序是否还在：不退休会话记录、不重起（可能正在跑）；结果不明，不再写标签，下一轮再判
             log "issue #$ISSUE -> 读不到 $TMUX_SESSION 里的程序是否还在（tmux 查询失败），不降级、不重起"
-            exit 1
+            exit "$DISPATCH_RC_UNKNOWN"
         fi
         if [ "$_alive" = 1 ]; then
             log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
             agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-                || { dispatch_prompt_refused "$ISSUE"; exit 0; }
+                || dispatch_refused_exit "$ISSUE"
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
 
     # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
     heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
-    agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0
+    dispatch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE"
+    # 任务已交出：之后这一轮不再写本条的流程标签（下面几步出错也只算结果不明）
     agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION" 2>/dev/null || true
-    flip_label
     exit 0
 fi
 
@@ -189,5 +191,7 @@ if session_alive "$TMUX_SESSION"; then
     tmux kill-session -t "=$TMUX_SESSION" 2>/dev/null || true
 fi
 stuck_release_reexport
+dispatch_claim_reexport   # 送进旧会话失败过时已经认领：新 issue 脚本不再认领第二次
+trap - EXIT
 # 已经在条目锁里的话把标记带过去，新脚本不再去等自己手里的锁
 exec env ${ITEM_LOCK_HELD_FOR:+CAVIL_ITEM_LOCK_HELD="$ITEM_LOCK_HELD_FOR"} bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$ISSUE"

@@ -59,6 +59,13 @@ CONF
 cat > "$FAKEBIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_CALLS"
+# 派工前的核对（GitHub#700）要读到这条 PR 开着、还挂着 pending/agent，才会往下走、才会转人工
+if [ $# = 2 ] && [ "$1" = api ]; then
+    case "$2" in
+        repos/example/none/issues/[0-9]*) printf '{"state":"open","pull_request":{},"labels":[{"name":"pending/agent"}]}' ;;
+        repos/example/none/pulls/[0-9]*) printf '{"merged":false,"base":{"ref":"main"},"head":{"sha":"abc","repo":{"full_name":"example/none"}}}' ;;
+    esac
+fi
 exit 0
 FAKEGH
 cat > "$FAKEBIN/tmux" <<'FAKETMUX'
@@ -300,6 +307,10 @@ case "$all" in
         mv "$E2E_LABELS.tmp" "$E2E_LABELS" 2>/dev/null || :
         emit '{}'; exit 0 ;;
     *"/issues/50/comments"*) emit '[]'; exit 0 ;;
+    # 转人工前的核对（GitHub#700）读这一条：开着、标签照 $E2E_LABELS
+    "api repos/example/none/issues/50")
+        lbl=$(jq -R -s 'split("\n") | map(select(length > 0)) | map({name: .})' "$E2E_LABELS")
+        emit "{\"number\":50,\"state\":\"open\",\"labels\":$lbl}"; exit 0 ;;
     *"/pulls"*"state=open"*) emit '[[]]'; exit 0 ;;
     *"/issues"*"state=open"*)
         lbl=$(jq -R -s 'split("\n") | map(select(length > 0)) | map({name: .})' "$E2E_LABELS")

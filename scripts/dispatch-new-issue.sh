@@ -28,6 +28,8 @@ require_secret_env || exit 1
 sync_project_checkout
 
 ISSUE="${1:?need issue number}"
+# 派工认领（GitHub#700）：认领了没交出就意外退出 → 复原；交任务开始后意外退出 → 结果不明（77）
+dispatch_trap_install "$ISSUE"
 
 WORKTREE="$(worktree_path "$ISSUE")"
 TMUX_SESSION="$(tmux_session_name "$ISSUE")"
@@ -143,7 +145,9 @@ fi
 agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-    || { dispatch_prompt_refused "$ISSUE"; exit 0; }
+    || dispatch_refused_exit "$ISSUE"
+# 先认领（doing/agent 打上、触发标签摘掉、读回确认），再起会话交任务（GitHub#700）
+dispatch_claim "$ISSUE"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
@@ -153,6 +157,7 @@ done < <(tmux_env_args)
 # 动用人的恢复指令的派工（GitHub#339）：启动会话之前的最后一次核对，起来之后把本次派工的记号
 # 写在会话上。平时两句都什么都不做。
 stuck_release_gate
+dispatch_handing
 tmux new-session -d -s "$TMUX_SESSION" "${tmux_env[@]}" -c "$WORKTREE" "$CMD" \
     \; set-option -w -t "$TMUX_SESSION" remain-on-exit on
 stuck_release_mark_session
@@ -168,26 +173,23 @@ start_session_logging "$TMUX_SESSION"
 
 # 4.6 探活：fresh 路径没有 has-session-based fallback，worker 偶发秒退时
 #     必须就地 capture 死因（否则 pipe-pane 一挂日志全空），并保持 label 干净
-#     —— 没活起来就不翻 doing/agent，留在 pending/agent 等下轮重试，避免假"进行中"。
+#     —— 起会话前已经认领（doing/agent）；没活起来就转人工（转之前先核对条目没被别人改过）。
 if ! verify_fresh_session "$TMUX_SESSION"; then
     log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 ${LABEL_PENDING_HUMAN}（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
-    notify_bounced_to_human "$ISSUE" \
+    _r=0; dispatch_to_human "$ISSUE" \
         "worker 启动后立刻退出了（常见：agent CLI 正在自动升级、新目录的信任确认弹窗）。死因已截在 daemon 机器的 poll.log 里。" \
-        "偶发的话直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；再秒退就去 poll.log 看截下来的 pane 输出。"
-    run_gh "label 翻转 (issue #$ISSUE 秒退 pending/agent → pending/human)" \
-        gh_label_flip "$ISSUE" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
-    exit 1
+        "偶发的话直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；再秒退就去 poll.log 看截下来的 pane 输出。" \
+        "worker 秒退" || _r=$?
+    DISPATCH_PHASE=done; [ "$_r" != 0 ] || _r=1
+    exit "$_r"
 fi
 
 # 4.65 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
-agent_launch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE" || exit 0
+dispatch_trust_gate "$ISSUE" "$TMUX_SESSION" "$WORKTREE"
 
 # 4.7 启动侧钉不了 session id 的 driver（codex），到这里把它实际用上的 id 捞回来登记
 agent_session_register_launched "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
 
-# 5. 立即翻 label 到 doing/agent（worker 完工时它会自己翻成 pending/human）
-flip_to_doing "$ISSUE" "issue #$ISSUE pending/agent → doing/agent" || true
+# 5. 标签在起会话之前就已认领好（dispatch_claim）；任务已交出，这一轮不再写本条的流程标签
 
 log "dispatch-new-issue done: #$ISSUE -> $TMUX_SESSION"
