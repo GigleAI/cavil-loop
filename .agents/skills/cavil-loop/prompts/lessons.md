@@ -36,9 +36,9 @@
 ### L34
 - 规则：PR 正文里的实测数字（尤其是新测试套到旧版本的通过/失败/未拦下个数）写明命令与口径，交付前复跑核对；独立复审复跑得出不同数字时，以复跑为准并在正文更正。
 - 适用：PR 正文或交人评论引用对拍或测试计数时。
-- 为什么：PR #78 正文称旧 main 上「另有 1 个反例没被拦下」，复审复跑为 4 个；PR #132 正文写负对照 58 份、已跑 12 份，复审实测当前为 55 项；PR #98 两轮正文数字及三项负对照失败条数均与复审复跑不符；PR #174 首版正文的负对照命令写成区间，原样执行即报错；PR #620 首版正文旧解析误报写 6 处（只数了 20 篇）、链接 285 条，复审复跑为 8 处和 307 条；PR #623 正文写快速检查全绿，复审独立复跑为 2166 通过、2 失败；PR #624 正文快速检查 59/60 与回复称 60/60 并存，未标注对应提交与环境；PR #692 首版验收表有 12 个文件的通过数取自脚本改动前的运行，当时新旧版本对比被同版本跳过，复审在同一提交复跑多出断言。
-- 这样做是对的：PR #83、#85、#87、#131、#163、#121、#695 正文的通过/失败数经复审复跑完全一致（如 https://github.com/GigleAI/cavil-loop/pull/87#issuecomment-6392752532）。PR #170 终轮正文的用例与负对照数经复审复跑一致。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开。PR #176 正文每个数字都写了命令。PR #620 返工后正文写明文件范围与两条复跑命令，后续复审独立复跑一致。PR #692 返工后 52 个改过的测试文件在所审提交上一次重跑、整表重写，列出对比跑了几组与跳过几组，并与 CI 逐个比对，复审复跑一致。
-- Seen 8×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153 · #692 https://github.com/GigleAI/cavil-loop/pull/692#issuecomment-7150442236
+- 为什么：PR #78 正文称旧 main 上「另有 1 个反例没被拦下」，复审复跑为 4 个；PR #132 正文写负对照 58 份、已跑 12 份，复审实测当前为 55 项；PR #98 两轮正文数字及三项负对照失败条数均与复审复跑不符；PR #174 首版正文的负对照命令写成区间，原样执行即报错；PR #620 首版正文旧解析误报写 6 处（只数了 20 篇）、链接 285 条，复审复跑为 8 处和 307 条；PR #623 正文写快速检查全绿，复审独立复跑为 2166 通过、2 失败；PR #624 正文快速检查 59/60 与回复称 60/60 并存，未标注对应提交与环境；PR #692 首版验收表有 12 个文件的通过数取自脚本改动前的运行，复审在同一提交复跑多出断言；PR #693 首版正文的复跑命令带省略号，原样执行不了。
+- 这样做是对的：PR #83、#85、#87、#131、#163、#121、#170、#695 正文的通过/失败数经复审复跑一致。PR #171 正文的 189 注明是不依赖后台的子集，与复审全量 351 口径分开。PR #620 返工后正文写明文件范围与两条复跑命令，复审复跑一致。PR #692 返工后在所审提交上一次重跑 52 个改过的测试文件并整表重写，与 CI 逐个比对，复审复跑一致。PR #693 返工后写明目录与完整命令，复审复跑一致。
+- Seen 9×: #78 https://github.com/GigleAI/cavil-loop/pull/78#issuecomment-6355389753 · #132 https://github.com/GigleAI/cavil-loop/pull/132#issuecomment-6619558657 · #98 https://github.com/GigleAI/cavil-loop/pull/98#issuecomment-6541045282 · #174 https://github.com/GigleAI/cavil-loop/pull/174#issuecomment-6677419671 · #620 https://github.com/GigleAI/cavil-loop/pull/620#issuecomment-7053672694 · #623 https://github.com/GigleAI/cavil-loop/pull/623#issuecomment-7056728022 · #624 https://github.com/GigleAI/cavil-loop/pull/624#issuecomment-7055510153 · #692 https://github.com/GigleAI/cavil-loop/pull/692#issuecomment-7150442236 · #693 https://github.com/GigleAI/cavil-loop/pull/693#issuecomment-7150650408
 
 ### L41
 - 规则：daemon 在判定与写 GitHub（评论、翻标签）之间必须重读目标，并把判定所依据的全部身份与状态（是否打开、是否已合并、目标分支、最新提交、来源属性、标签保护）逐项比对；任一项不符或缺字段，本轮不写、不记已处理。
@@ -415,5 +415,6 @@
 ### L80
 - 规则：给 daemon 新增或改名 agent 驱动时，同一提交更新客户端单元测试里写死的 agent 列表预期，并在 client 目录跑 `npm test`；不要因为提交没动 `client/`、客户端检查未触发就当作通过。
 - 适用：client/test/unit/ 里断言 daemon 驱动清单的测试。
-- 为什么：PR #692 查明，主干新增 Pi 驱动（#683）时没动 `client/`，客户端检查未运行，写死的 agent 列表过期；本 PR 改到 `client/` 才在 vitest 里红出 1 个文件。引入缺口的不是本 PR，记的是问题在本 PR 被查明并修复。
+- 为什么：PR #692 查明，主干新增 Pi 驱动（#683）时没动 `client/`，客户端检查未运行，写死的 agent 列表过期；本 PR 改到 `client/` 才在 vitest 里红出 1 个文件。引入缺口的不是本 PR，记的是问题在本 PR 被查明并修复。PR #693 记录同一处过期预期在手动发版时拦住了客户端正式版的发版前快速测试（同一起事件，未重复计次）。
+- 这样做是对的：PR #693 修这处过期预期时只手工把 `pi` 补进期望清单，没有改成按 daemon 目录自动算（那样漏项或多项都测不出），也没有跳过该测试先发版；合并后重新触发发版登记为待办，并写明客户端正式版尚未发出（https://github.com/GigleAI/cavil-loop/pull/693）。
 - Seen 1×: #692 https://github.com/GigleAI/cavil-loop/pull/692 [client/test/unit/]
