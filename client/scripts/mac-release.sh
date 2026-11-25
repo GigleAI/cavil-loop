@@ -96,7 +96,8 @@ in_quiet_hours() {
 checkout() {
   local sha="$1" repo="$WORK_DIR/repo"
   [ -d "$repo/.git" ] || git clone -q "https://github.com/$REPO.git" "$repo"
-  git -C "$repo" fetch -q --tags --force origin '+refs/heads/main:refs/remotes/origin/main'
+  # every branch: a draft's commit is on main, a commit given to `build` may be on any branch
+  git -C "$repo" fetch -q --tags --force --prune origin '+refs/heads/*:refs/remotes/origin/*'
   git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$repo" fetch -q origin "$sha"
   git -C "$repo" checkout -q --force --detach "$sha"
   # the Rust build cache stays (minutes saved per build); everything else is rebuilt
