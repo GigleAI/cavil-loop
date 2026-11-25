@@ -46,7 +46,7 @@
     "macOS": {
       "minimumSystemVersion": "14.0",
       "signingIdentity": "-",
-      "hardenedRuntime": false
+      "hardenedRuntime": true
     }
   },
   "plugins": {
