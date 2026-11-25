@@ -94,6 +94,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setMergeMethod: async (repo, method) => c.setMergeMethod(String(repo), method),
     setTableFold: async (groupBy, key, folded) => c.setTableFold(groupBy, key, folded),
     setLaneFold: async (lane, folded) => c.setLaneFold(lane, folded),
+    setMineFilter: async (patch) => c.setMineFilter(patch),
     setAutopilotConfirm: async (on) => c.setAutopilotConfirm(on),
     setShortcutKey: async (id, spec) => c.setShortcutKey(id, spec),
     resetShortcutKeys: async () => c.resetShortcutKeys(),

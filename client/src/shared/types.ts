@@ -5,7 +5,7 @@ import type { TabInfo } from './tabs';
 import type { MergePrefs } from './mergePrefs';
 import type { BlockedLabels } from './blocked';
 import type { ReadFailure } from './readFailure';
-import type { LaneFolds, TableFolds } from './uiPrefs';
+import type { LaneFolds, MineFilter, TableFolds } from './uiPrefs';
 import type { Lang, LangSetting, Said } from './i18n';
 import type { Theme, ThemeSetting } from './theme';
 import type { OpRecord } from './ops';
@@ -732,6 +732,8 @@ export interface AppState {
   tableFolds: TableFolds;
   /** folded board swimlanes (repositories), kept on this machine (GitHub#297) */
   laneFolds: LaneFolds;
+  /** GitHub#689: 「只看我的」 — one switch for every layout and the view-bar numbers, kept on this machine */
+  mineFilter: MineFilter;
   /** "托管" asks before writing; false = the user ticked "不再提示" (GitHub#231) */
   autopilotConfirm: boolean;
   /** GitHub#487: the shortcut keys changed on this machine (by shortcut id; one key each), already repaired — the table in effect never has a conflict */

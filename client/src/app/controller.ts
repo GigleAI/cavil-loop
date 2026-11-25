@@ -13,7 +13,7 @@ import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettin
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
 import { nestSaid, noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
-import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeMineFilter, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold, setMineFilter } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
@@ -298,6 +298,8 @@ const MERGE_PREFS = 'mergePrefs';
 const TABLE_FOLDS = 'tableFolds';
 /** GitHub#297: folded board swimlanes, its own key for the same reason */
 const LANE_FOLDS = 'laneFolds';
+/** GitHub#689: 「只看我的」, its own key for the same reason (one for the whole window, not per view) */
+const MINE_FILTER = 'mineFilter';
 const AUTOPILOT_CONFIRM = 'autopilotConfirm';
 /** GitHub#487: the shortcut keys changed on this machine, its own key (an imported view never touches it) */
 const SHORTCUT_KEYS = 'shortcutKeys';
@@ -618,6 +620,7 @@ export class Controller {
       mergePrefs: normalizeMergePrefs(this.cache.getSetting<unknown>(MERGE_PREFS, null)),
       tableFolds: normalizeTableFolds(this.cache.getSetting<unknown>(TABLE_FOLDS, null)),
       laneFolds: normalizeLaneFolds(this.cache.getSetting<unknown>(LANE_FOLDS, null)),
+      mineFilter: normalizeMineFilter(this.cache.getSetting<unknown>(MINE_FILTER, null)),
       autopilotConfirm: normalizeAutopilotConfirm(this.cache.getSetting<unknown>(AUTOPILOT_CONFIRM, true)),
       // GitHub#487: what was saved, made usable; reading never writes it back (the next change writes the repaired keys)
       ...((r) => ({ shortcutKeys: r.keys as Record<string, ShortcutKeySpec>, shortcutDropped: r.dropped }))(repairKeys(this.cache.getSetting<unknown>(SHORTCUT_KEYS, null))),
@@ -2058,6 +2061,14 @@ export class Controller {
     if (next === this.state.laneFolds) return;
     this.cache.setSetting(LANE_FOLDS, next);
     this.set({ laneFolds: next });
+  }
+
+  /** GitHub#689: 「只看我的」 changed. Anything but booleans is ignored; unticking the last box is refused. */
+  setMineFilter(patch: unknown): void {
+    const next = setMineFilter(this.state.mineFilter, patch);
+    if (next === this.state.mineFilter) return;
+    this.cache.setSetting(MINE_FILTER, next);
+    this.set({ mineFilter: next });
   }
 
   /** GitHub#369: switching to the window takes back every delivered notification (true) or none (false, the default). Anything but a boolean is ignored. */

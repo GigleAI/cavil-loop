@@ -5,7 +5,7 @@
 Everything an operator needs after `setup.sh`: the settings in `cavil-loop.config`, each optional feature (what it does, whether it is on by default, how to switch it), the commands for running the daemon, and troubleshooting. Each section starts with the short answer; open the folded blocks for rules, edge cases and step-by-step commands. How a project plugs in its own prompts and commands is in [Orchestration](orchestration.md).
 
 - **Set up first**: [Configuration (`cavil-loop.config`)](#configuration-cavil-loopconfig)
-- **Features, one per section**: [Queue order when the pool is full](#queue-order-when-the-pool-is-full) · [Model-selecting trigger labels](#model-selecting-trigger-labels) · [Waiting on another item: `pending/blocked`](#waiting-on-another-item-pendingblocked) · [Parked for later: `pending/later`](#parked-for-later-pendinglater) · [Auto-add issues / PRs to GitHub Projects (optional, off by default)](#auto-add-issues--prs-to-github-projects-optional-off-by-default) · [Optional cross-review gate (off by default)](#optional-cross-review-gate-off-by-default) · [Autopilot label: `autopilot`](#autopilot-label-autopilot) · [External requester bot (optional, off by default)](#external-requester-bot-optional-off-by-default) · [Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`)](#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log) · [Comment usage footer](#comment-usage-footer) · [Codex token value estimates](#codex-token-value-estimates) · [Automatic price gap fill](#automatic-price-gap-fill) · [Agent hit its usage limit: pause that agent, hand the interrupted item to a human](#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human) · [Heavy tests: one at a time (optional, off by default)](#heavy-tests-one-at-a-time-optional-off-by-default) · [Report a failed test workflow on the base branch (off by default)](#report-a-failed-test-workflow-on-the-base-branch-off-by-default) · [GitHub token redaction](#github-token-redaction) · [Post-merge retrospectives](#post-merge-retrospectives) · [On-demand preview (socket activation)](#on-demand-preview-socket-activation) · [Public entry for comment images: images and videos only](#public-entry-for-comment-images-images-and-videos-only) · [Prompt templates](#prompt-templates) · [Cleanup hook (`CLEANUP_HOOK`)](#cleanup-hook-cleanup_hook)
+- **Features, one per section**: [Queue order when the pool is full](#queue-order-when-the-pool-is-full) · [Model-selecting trigger labels](#model-selecting-trigger-labels) · [Waiting on another item: `pending/blocked`](#waiting-on-another-item-pendingblocked) · [Parked for later: `pending/later`](#parked-for-later-pendinglater) · [Auto-add issues / PRs to GitHub Projects (optional, off by default)](#auto-add-issues--prs-to-github-projects-optional-off-by-default) · [Assign new issues / PRs to whoever asked for them](#assign-new-issues--prs-to-whoever-asked-for-them) · [Optional cross-review gate (off by default)](#optional-cross-review-gate-off-by-default) · [Autopilot label: `autopilot`](#autopilot-label-autopilot) · [External requester bot (optional, off by default)](#external-requester-bot-optional-off-by-default) · [Round log: agent ↔ agent back-and-forth in one comment (`ENABLE_ROUND_LOG`)](#round-log-agent--agent-back-and-forth-in-one-comment-enable_round_log) · [Comment usage footer](#comment-usage-footer) · [Codex token value estimates](#codex-token-value-estimates) · [Automatic price gap fill](#automatic-price-gap-fill) · [Agent hit its usage limit: pause that agent, hand the interrupted item to a human](#agent-hit-its-usage-limit-pause-that-agent-hand-the-interrupted-item-to-a-human) · [Heavy tests: one at a time (optional, off by default)](#heavy-tests-one-at-a-time-optional-off-by-default) · [Report a failed test workflow on the base branch (off by default)](#report-a-failed-test-workflow-on-the-base-branch-off-by-default) · [GitHub token redaction](#github-token-redaction) · [Post-merge retrospectives](#post-merge-retrospectives) · [On-demand preview (socket activation)](#on-demand-preview-socket-activation) · [Public entry for comment images: images and videos only](#public-entry-for-comment-images-images-and-videos-only) · [Prompt templates](#prompt-templates) · [Cleanup hook (`CLEANUP_HOOK`)](#cleanup-hook-cleanup_hook)
 - **Running the daemon**: [File layout](#file-layout) · [Scheduler by OS](#scheduler-by-os) · [Running multiple projects](#running-multiple-projects) · [Scripted install, status and disconnect](#scripted-install-status-and-disconnect) · [Edit a project's settings from a script](#edit-a-projects-settings-from-a-script) · [Rename a flow label](#rename-a-flow-label) · [Remote access: let the client on another computer see this machine's daemon](#remote-access-let-the-client-on-another-computer-see-this-machines-daemon) · [Upgrading, migration, rollback, and development mode](#upgrading-migration-rollback-and-development-mode) · [Installations from before the rename](#installations-from-before-the-rename) · [Manual cron fallback](#manual-cron-fallback) · [Upgrading to webhooks (instant trigger)](#upgrading-to-webhooks-instant-trigger) · [Custom worker (not Claude Code)](#custom-worker-not-claude-code) · [Release cadence](#release-cadence)
 - **When something goes wrong**: [Troubleshooting](#troubleshooting)
 
@@ -164,6 +164,7 @@ PROJECT_NUMBER=""                # empty = first board linked to this repo
 PROJECT_OWNER=""                 # only when the board's owner differs from the repo's
 PROJECT_GH_TOKEN=""              # token used only for the board read; empty = reuse GH_TOKEN
 AUTO_ADD_PROJECTS=""             # add this repo's issues / PRs to these projects ("myorg/4 myorg/11"); empty = off
+AUTO_ASSIGN_REQUESTER=true       # assign new issues / PRs to whoever asked for them
 CI_FAILURE_REPORT_WORKFLOWS=""   # report a failed test workflow on the base branch ("tests.yml"); empty = off
 # WRITE_GH_TOKEN=""              # token used for every WRITE; empty = reuse GH_TOKEN
 ```
@@ -566,6 +567,63 @@ this project was first synced, whether its first full scan finished, and the las
 first-sync time is written on the first attempt and never changes. Deleting the file starts every project over (the
 "created after" cut-off then moves to now). Requests: one combined read per poll when nothing changed; adding a second
 project does not double it.
+
+</details>
+
+## Assign new issues / PRs to whoever asked for them
+
+Every poll, a newly created issue or PR that has no assignee gets the person who asked for it — so "assigned to me"
+also finds the PRs and sub-issues the agent opened on someone's behalf. On in the config template; a config without the
+line has it off. Turn it on or off with:
+
+```bash
+AUTO_ASSIGN_REQUESTER=true    # any other value, or no line = off
+```
+
+<details><summary>Who counts as the person who asked</summary>
+
+Only a person's account is ever assigned — never the loop's own account, a GitHub App or the requester bot.
+
+| Item | Assigned to |
+|---|---|
+| Issue or PR opened by a person | its author |
+| PR the agent opened | whoever asked for the issue it closes (its branch `feature/issue-N`, else `Closes` / `Fixes` / `Resolves` / `Refs #N` in its body); a PR from another repository, or one whose link points at a PR or at nothing, gets no one |
+| Sub-issue the agent split off | whoever asked for its parent issue, followed up to three levels |
+| Issue the daemon or the agent opened with no traceable source (failure reports and the like), or one the requester bot filed | no one |
+
+An item that already has any assignee is never touched; nothing is added next to it or replaced.
+
+</details>
+
+<details><summary>Each item once, in number order — removed assignees stay removed</summary>
+
+When it is first turned on, it notes the newest item number and only handles items created after it. Each poll it
+reads the newest items page by page down to where it stopped, so items created while the daemon was down are all
+picked up. Each item is handled once: after that, an assignee a person removes is not put back.
+
+An item whose source cannot be read (network error, rate limit, a read that fails) is never given up on: the next poll
+tries again, items after it are still handled, and once it has failed 30 polls in a row it is tried every 10th poll
+with one line in `poll.log`. An item the agent just opened gets 10 minutes to have its parent issue or `Closes` line
+set before it counts as "no source".
+
+Right before writing it reads everything it judged on again (the item, its branch and latest commit, its link, its
+parent chain) and writes only if nothing changed; otherwise it decides again next poll.
+
+</details>
+
+<details><summary>Permissions, state file and request cost</summary>
+
+The assignee is written by the write identity (`WRITE_GH_TOKEN`, else `GH_TOKEN`). GitHub silently refuses to assign
+someone without access to the repository; that item is logged once and not retried:
+
+```
+自动指派：#42 的提出者 @someone 不能被指派（GitHub 没有接受，可能没有仓库权限），不再重试
+```
+
+Progress lives in `$STATE_DIR/auto-assign.json` (deliberately not in `state.json`); an unreadable file is left alone and
+logged. Deleting it starts over from the newest item at that moment. Requests: one list read per poll when nothing new
+was created, plus a few reads per new item. While an item keeps failing, each poll re-reads the list down to it, so a
+long outage with many new items costs more list pages per poll until it recovers.
 
 </details>
 

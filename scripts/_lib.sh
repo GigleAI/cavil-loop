@@ -1040,6 +1040,11 @@ PROJECT_GH_TOKEN="${PROJECT_GH_TOKEN:-}"
 # 逻辑全在 scripts/project-auto-add.sh；这里只放默认值和每轮的入口 project_auto_add_tick。
 AUTO_ADD_PROJECTS="${AUTO_ADD_PROJECTS:-}"
 
+# ── 新建的 issue / PR 自动把提出者设为 assignee（GitHub#690）──
+# true = 开；不写这一行或写成别的值 = 关（模板里写 true，已在用的项目升级后不会自己开始写 assignee）。
+# 逻辑全在 scripts/auto-assign.sh；这里只放默认值、开关判断和每轮的入口 auto_assign_tick。
+AUTO_ASSIGN_REQUESTER="${AUTO_ASSIGN_REQUESTER:-false}"
+
 # ── base 分支测试工作流失败 → 自动开 / 续报告 issue（GitHub#345）──
 # CI_FAILURE_REPORT_WORKFLOWS：要监视的工作流文件名（空格或逗号分隔）；留空 = 关闭（默认），
 # 一个请求都不多发、派工一处都不多查。逻辑在 scripts/ci_failure_report.py（经 ci-failure-report.sh 运行），
@@ -11228,6 +11233,17 @@ project_auto_add_tick() {
     local rc=0
     CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/project-auto-add.sh" || rc=$?
     [ "$rc" = 0 ] || log "⚠️ 自动加入 Project：同步脚本异常退出（退出码 ${rc}），本轮跳过，派工不受影响"
+    return 0
+}
+
+# 只认 true：模板、运维文档和客户端设置都说「写成别的值 = 关」，这里照字面执行
+auto_assign_enabled() { [ "${AUTO_ASSIGN_REQUESTER:-}" = true ]; }
+# 开关关着时一个请求都不发（子进程都不起）
+auto_assign_tick() {
+    auto_assign_enabled || return 0
+    local rc=0
+    CODING_AGENT_CONFIG="$CONFIG_FILE" bash "$_LIB_DIR/auto-assign.sh" || rc=$?
+    [ "$rc" = 0 ] || log "⚠️ 自动指派：脚本异常退出（退出码 ${rc}），本轮跳过，派工不受影响"
     return 0
 }
 

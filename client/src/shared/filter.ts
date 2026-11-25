@@ -239,6 +239,24 @@ export function applyFilter(items: Item[], parsed: ParsedFilter, ctx: FilterCont
 }
 
 /**
+ * GitHub#689: 「只看我的」 — what the switch picks, by the very rule of `author:@me` / `assignee:@me`
+ * (one `valueHit`, so ticking only 我提出的 lists exactly what `author:@me` lists), either ticked box
+ * matching. Off, or no signed-in account (`viewer` null): every item, unchanged — an unknown account
+ * must not empty the board; the switch stays saved and applies again once the account is known.
+ */
+export function mineOnly(items: Item[], pick: { on: boolean; author: boolean; assignee: boolean }, viewer: string | null): Item[] {
+  if (!mineActive(pick, viewer)) return items;
+  const ctx: FilterContext = { viewer, today: '', projects: [] };
+  const none = new Map<string, Record<string, string | null>>();
+  return items.filter((it) => (pick.author && valueHit(it, 'author', '@me', ctx, none)) || (pick.assignee && valueHit(it, 'assignee', '@me', ctx, none)));
+}
+
+/** GitHub#689: whether 「只看我的」 narrows anything right now (on, and the account is known) */
+export function mineActive(pick: { on: boolean }, viewer: string | null): boolean {
+  return pick.on && viewer !== null && viewer !== '';
+}
+
+/**
  * GitHub#464: does the search itself say open / closed / merged (`is:open`, `-is:closed`, `is:merged`, …)?
  * Then the "显示已关闭" switch stays out of it: the search decides, or `is:closed` with the switch off
  * would always list nothing. Judged on the parsed clauses, so an unsupported word is not counted.
