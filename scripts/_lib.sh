@@ -3233,9 +3233,12 @@ _commit_identity_fetch() {   # <i>
     fi
     case " ${_CI_NUMS[*]:-} " in *" $num "*) return 1 ;; esac
     j=$(gh api "repos/$REPO/issues/$num" 2>/dev/null) || { CI_WHY="读不到 #$num"; return 2; }
-    printf '%s' "$j" | jq -e --argjson n "$num" \
-        '(.number == $n) and ((.assignees | type) == "array") and ((.user | type) == "object")' >/dev/null 2>&1 \
-        || { CI_WHY="#$num 的内容读不全（缺负责人或提出者字段）"; return 2; }
+    # 参与选择的每个账号记录都要完整：账号名是非空字符串、类型是字符串。缺字段、类型不对 = 读不全，
+    # 不能跳过它或补成真人（跳过会把「读不全」当成「没有合格的人」，撤掉已有的署名）
+    printf '%s' "$j" | jq -e --argjson n "$num" '
+        def acct: type == "object" and (.login | type) == "string" and .login != "" and (.type | type) == "string";
+        (.number == $n) and ((.assignees | type) == "array") and all(.assignees[]; acct) and (.user | acct)' >/dev/null 2>&1 \
+        || { CI_WHY="#$num 的负责人或提出者资料读不全"; return 2; }
     _CI_JSON+=("$j"); _CI_NUMS+=("$num")
 }
 
@@ -3253,7 +3256,6 @@ commit_identity_resolve() {   # <条目编号> [绑定的 issue 编号]
             [ "$rc" = 1 ] && break
             [ "$rc" = 0 ] || return 2
             while IFS=$'\t' read -r login atype; do
-                [ -n "$login" ] || continue
                 rc=0; _commit_identity_eligible "$login" "$atype" || rc=$?
                 case "$rc" in
                     0) CI_LOGIN="$login"
@@ -3264,7 +3266,7 @@ commit_identity_resolve() {   # <条目编号> [绑定的 issue 编号]
                     *) CI_WHY="判断不了 $login 是否在本仓库有写权限（${OS_WHY:-}）"; return 2 ;;
                 esac
             done < <(printf '%s' "${_CI_JSON[$i]}" | jq -r --arg p "$pass" \
-                'if $p == "assignees" then .assignees[] else .user end | [(.login // ""), (.type // "User")] | @tsv' 2>/dev/null)
+                'if $p == "assignees" then .assignees[] else .user end | [.login, .type] | @tsv' 2>/dev/null)
             i=$((i + 1))
         done
     done

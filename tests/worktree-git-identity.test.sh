@@ -276,6 +276,12 @@ cross "撤掉负责人、兜底两项都填 → 兜底身份" \
     eval 'set_assignees 987170 ""; conf "WORKTREE_GIT_USER_NAME=\"FbName\"" "WORKTREE_GIT_USER_EMAIL=\"fb@example.invalid\""'
 perm_fail() { touch "$GD/F_collaborators_alice_permission"; }
 cross "这一轮读不到 alice 的权限 → 仍是 alice（不撤）" "$(id_of alice)" perm_fail
+# 资料读不全（缺账号名、缺类型）= 判不了，和读取失败一样保留；明确的空列表、明确不合格的账号才撤（上面几条是对照）
+patch_item() { jq --arg f "$1" '.["987170"] |= (. as $it | $f | fromjson | . as $p | $it + $p)' "$GD/items.json" > "$GD/i.t" && mv "$GD/i.t" "$GD/items.json"; }
+cross "负责人列表为空、提出者资料是空对象 → 仍是 alice（不撤）" "$(id_of alice)" patch_item '{"assignees": [], "user": {}}'
+cross "负责人列表里有一条空记录（提出者是明确的外部账号）→ 仍是 alice（不撤）" "$(id_of alice)" patch_item '{"assignees": [{}]}'
+cross "负责人记录缺账号类型 → 仍是 alice（不补成真人、不撤）" "$(id_of alice)" patch_item '{"assignees": [{"login": "bob"}]}'
+cross "提出者账号名是空字符串 → 仍是 alice（不撤）" "$(id_of alice)" patch_item '{"assignees": [], "user": {"login": "", "type": "User"}}'
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
