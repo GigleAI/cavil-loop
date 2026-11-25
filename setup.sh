@@ -235,7 +235,7 @@ config_value() {
     ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1:-}\"" )
 }
 # 同上，但区分「没设置」和「写成空值」：没设置 → 第二个参数（默认值），空值 → 空。
-# 给 GitHub#551 起「没写这一行 = 开」的两个标签用，规则和 _lib.sh 的 ${X-默认} 相同。
+# 给「没写这一行 = 开」的标签用（等前置、暂缓 GitHub#551，托管 GitHub#691），规则和 _lib.sh 的 ${X-默认} 相同。
 config_value_or_default() {   # <KEY> <没设置时的值>
     ( set -a; . "$config" >/dev/null 2>&1 || true; eval "printf '%s' \"\${$1-\$2}\"" )
 }
@@ -499,8 +499,8 @@ blocked_label="$(config_value_or_default LABEL_PENDING_BLOCKED pending/blocked)"
 # 暂缓标签（GitHub#463）：配置里没这一行也建（GitHub#551 起默认开启），写成空值才不建。
 later_label="$(config_value_or_default LABEL_PENDING_LATER pending/later)"
 [ -n "$later_label" ] && label_defs+=("$later_label|c5def5|暂缓：暂时不做，daemon 不自动捞它开工；打派工标签照常派")
-# 托管标签（GitHub#114）默认关闭；配了 LABEL_AUTOPILOT 才建它和「等 daemon 合并」标签。
-autopilot_label="$(config_value LABEL_AUTOPILOT)"
+# 托管标签（GitHub#114）：配置里没这一行也建它和「等 daemon 合并」标签（GitHub#691 起默认开启），写成空值才不建。
+autopilot_label="$(config_value_or_default LABEL_AUTOPILOT autopilot)"
 if [ -n "$autopilot_label" ]; then
     merge_label="$(config_value LABEL_PENDING_MERGE)"
     label_defs+=("$autopilot_label|c5def5|托管：从方案到合并全交给 agent（复审与测试通过后自动合并）")

@@ -534,9 +534,9 @@ want="$(for k in $LIBKEYS $FNKEYS; do printf '%s=%s\n' "$k" "$(reg_empty "$k")";
 chk "这 $nkeys 项全写成空值后真实加载公共库：是登记表的「写成空值时的值」" "$loaded" "$want"
 chk "确有空值和不写不同的项（轮询记录：不写 = 开、空值 = 关）" "$(reg_unset ENABLE_POLL_RUN_LOG) $(reg_empty ENABLE_POLL_RUN_LOG)" "true false"
 chk "确有空值和不写不同的项（往返记录，GitHub#669：不写 = 开、空值 = 关；公共库写成空值时判定为关）" "$(reg_unset ENABLE_ROUND_LOG) $(reg_empty ENABLE_ROUND_LOG) $(grep -E '^ENABLE_ROUND_LOG=' <<<"$loaded")" "true false ENABLE_ROUND_LOG=false"
-chk "到达性 · 两个默认开的标签开关（GitHub#551）：没写这一行时是标签名，写成空值时公共库读到空" \
-    "$(for k in LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do printf '%s ' "$(reg_unset "$k")"; done)|$(grep -E '^LABEL_PENDING_(BLOCKED|LATER)=' <<<"$loaded" | tr '\n' ' ')" \
-    "pending/blocked pending/later |LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "
+chk "到达性 · 三个默认开的标签开关（等前置 / 暂缓 GitHub#551，托管 GitHub#691）：没写这一行时是标签名，写成空值时公共库读到空" \
+    "$(for k in LABEL_AUTOPILOT LABEL_PENDING_BLOCKED LABEL_PENDING_LATER; do printf '%s ' "$(reg_unset "$k")"; done)|$(grep -E '^LABEL_(AUTOPILOT|PENDING_BLOCKED|PENDING_LATER)=' <<<"$loaded" | tr '\n' ' ')" \
+    "autopilot pending/blocked pending/later |LABEL_AUTOPILOT= LABEL_PENDING_BLOCKED= LABEL_PENDING_LATER= "
 chk "同是标签的「等合并」写成空值仍是默认标签：按项登记、不按类型" "$(grep '^LABEL_PENDING_MERGE=' <<<"$loaded")" "LABEL_PENDING_MERGE=pending/merge"
 chk "同一份全空的配置：project-config.sh 显示的值 = 公共库实际得到的值" "$(shown_of)" "$loaded"
 # 保存这两种新写法：空值 = 关的开关（轮询记录）、「关」本身是空值的开关（外部内容预筛）

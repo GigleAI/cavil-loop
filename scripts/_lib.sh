@@ -860,14 +860,16 @@ LABEL_PENDING_AGENT="${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT_DEFAUL
 LABEL_AGENT_DOING="${LABEL_AGENT_DOING:-doing/agent}"
 LABEL_PENDING_PR="${LABEL_PENDING_PR:-pending/PR}"
 LABEL_DONE="${LABEL_DONE:-Done}"
-# ── 托管标签（GitHub#114，可选，默认关闭）──
+# ── 托管标签（GitHub#114；GitHub#691 起默认开启）──
 # 维护者在 issue 上打这个标签 = 这条从方案到合并全交给 agent：方案只过复审、不等人确认，
 # 代码复审通过后翻 LABEL_PENDING_MERGE，由 daemon 按固定条件合并（autopilot_merge_tick）。
 # 它是「模式标签」不是触发标签：派工时不摘、全程挂着。只在 issue 上打才算数——PR 上的同名
 # 标签一概不看（PR 由 worker 开，上面的任何标签都可能是 worker 打的）。
-# 留空 = 关闭：下面的 LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json
-# 和以前逐字节一样。开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
-LABEL_AUTOPILOT="${LABEL_AUTOPILOT:-}"
+# 配置里没有这一行 = 开，用 autopilot；写成空值（LABEL_AUTOPILOT=""）= 人决定不开：下面的
+# LABEL_PENDING_MERGE 也随之清空，派工、提示词、GitHub 调用、state.json 和以前逐字节一样。
+# 用 ${X-默认}（不带冒号），和等前置、暂缓两个标签同一条规则（GitHub#551）。
+# 开着但没配复审关卡（LABEL_PENDING_REVIEW）时不托管任何条目：没人把关。
+LABEL_AUTOPILOT="${LABEL_AUTOPILOT-autopilot}"
 LABEL_PENDING_MERGE="${LABEL_PENDING_MERGE:-pending/merge}"
 # 关掉之后的收尾（autopilot_off_sweep）还要认得这个标签名，所以清空之前先留一份
 AUTOPILOT_MERGE_LABEL_NAME="$LABEL_PENDING_MERGE"

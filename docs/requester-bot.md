@@ -341,7 +341,7 @@ A maintainer adding the autopilot label by hand on the issue, on a PR bound to i
 | Code review passes (`REQUESTER_BOT_REPORT_FIRST=false`) | hand to the maintainer | `pending/merge` → the daemon merges |
 | After the merge | the daemon posts the merge result comment | same |
 
-A new commit after the approval (say the maintainer asked for a change on the PR) voids it: review again, report again. The daemon does not read comment content: which commit was approved is checked by the reviewer under the [evidence rules](#what-grokbot-has-to-do-on-its-side), and none of the daemon's pre-merge checks is dropped. Workers and reviewers get these rules from the "requests filed by the bot + autopilot" section of the dispatch prompt, which appears only when both features are on and the item is on autopilot. See [operations](operations.md#autopilot-label-optional-off-by-default).
+A new commit after the approval (say the maintainer asked for a change on the PR) voids it: review again, report again. The daemon does not read comment content: which commit was approved is checked by the reviewer under the [evidence rules](#what-grokbot-has-to-do-on-its-side), and none of the daemon's pre-merge checks is dropped. Workers and reviewers get these rules from the "requests filed by the bot + autopilot" section of the dispatch prompt, which appears only when both features are on and the item is on autopilot. See [operations](operations.md#autopilot-label-autopilot).
 
 </details>
 
