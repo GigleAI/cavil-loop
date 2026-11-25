@@ -5,7 +5,7 @@
 `setup.sh` 之后运维要用到的全在这里：`cavil-loop.config` 里的配置、每个可选功能（做什么、默认开不开、怎么开关）、跑 daemon 的命令、故障排查。每节开头先给结论；规则、边界情况和逐步命令在折叠块里，需要时点开。一个项目怎么接入自己的提示词和命令，见[编排](orchestration.zh.md)。
 
 - **先配这些**：[配置（`cavil-loop.config`）](#配置cavil-loopconfig)
-- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签：`autopilot`](#托管标签autopilot) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
+- **功能，每项一节**：[并发满时的取工顺序](#并发满时的取工顺序) · [按模型派工的标签](#按模型派工的标签) · [等前置：`pending/blocked`](#等前置pendingblocked) · [暂缓：`pending/later`](#暂缓pendinglater) · [自动把 issue / PR 加进 GitHub Project（可选，默认关闭）](#自动把-issue--pr-加进-github-project可选默认关闭) · [新建的 issue / PR 自动指派提出者](#新建的-issue--pr-自动指派提出者) · [交叉 review 关卡（可选，默认关闭）](#交叉-review-关卡可选默认关闭) · [托管标签：`autopilot`](#托管标签autopilot) · [外部需求机器人（可选，默认关闭）](#外部需求机器人可选默认关闭) · [往返记录：agent 之间的来回写进同一条评论（`ENABLE_ROUND_LOG`）](#往返记录agent-之间的来回写进同一条评论enable_round_log) · [评论用量 footer](#评论用量-footer) · [Codex token 折算参考价值](#codex-token-折算参考价值) · [缺价自动补价](#缺价自动补价) · [agent 撞到用量上限：停派这个 agent，被打断的条目转人工](#agent-撞到用量上限停派这个-agent被打断的条目转人工) · [重测试排队（可选，默认关闭）](#重测试排队可选默认关闭) · [base 分支测试工作流失败自动报告（默认关闭）](#base-分支测试工作流失败自动报告默认关闭) · [GitHub 令牌脱敏](#github-令牌脱敏) · [合并后的对话复盘](#合并后的对话复盘) · [按需 preview（socket 激活）](#按需-previewsocket-激活) · [评论配图的公网入口：只放行图片和视频](#评论配图的公网入口只放行图片和视频) · [Prompt 模板](#prompt-模板) · [Cleanup hook（`CLEANUP_HOOK`）](#cleanup-hookcleanup_hook)
 - **运行 daemon**：[文件结构](#文件结构) · [按 OS 选调度器](#按-os-选调度器) · [多 project 共存](#多-project-共存) · [用脚本安装、查状态、断开](#用脚本安装查状态断开) · [用脚本读 / 改一个项目的常用配置](#用脚本读--改一个项目的常用配置) · [给流程标签改名](#给流程标签改名) · [远程入口：让另一台电脑上的客户端看这台机器的 daemon](#远程入口让另一台电脑上的客户端看这台机器的-daemon) · [升级、迁移、回退与开发模式](#升级迁移回退与开发模式) · [改名前的安装](#改名前的安装) · [手动 cron 兜底](#手动-cron-兜底) · [升级到 webhook（即时触发）](#升级到-webhook即时触发) · [自定义 worker（不是 Claude Code）](#自定义-worker不是-claude-code) · [发版节奏](#发版节奏)
 - **出问题时**：[故障排查](#故障排查)
 
@@ -150,6 +150,7 @@ PROJECT_NUMBER=""                # 留空 = 本仓库关联的第一个看板；
 PROJECT_OWNER=""                 # 看板 owner 跟仓库 owner 不同时才填
 PROJECT_GH_TOKEN=""              # 只用于读看板的 token；留空 = 复用 GH_TOKEN
 AUTO_ADD_PROJECTS=""             # 把本仓库 issue / PR 加进这些 Project（"myorg/4 myorg/11"）；留空 = 关闭
+AUTO_ASSIGN_REQUESTER=true       # 新建的 issue / PR 自动指派提出者
 CI_FAILURE_REPORT_WORKFLOWS=""   # base 分支测试工作流失败自动报告（"tests.yml"）；留空 = 关闭
 # WRITE_GH_TOKEN=""              # 所有**写**用的 token；留空 = 复用 GH_TOKEN
 ```
@@ -466,6 +467,56 @@ AUTO_ADD_PROJECTS="myorg/4 myorg/11"   # 「组织或用户名/编号」，空�
 状态在 `$STATE_DIR/project-auto-add.json`（每个 Project 一项，故意不放进 `state.json`）：第一次开始同步的时间、首次全量是否完成、
 上次完整成功同步的时间。第一次开始同步的时间在第一次尝试时写下、之后不变。删掉这个文件 = 所有 Project 从头开始（「新建时间晚于」
 的分界随之挪到现在）。请求量：没什么改动时每轮多 1 次合并读取；多配一个 Project 不会翻倍。
+
+</details>
+
+## 新建的 issue / PR 自动指派提出者
+
+每轮守护程序把新建、还没有 assignee 的 issue / PR 指派给提出需求的人——按「指派给我的」筛选时，agent 代开的 PR 和拆出的子 issue
+也能找到。配置模板里是开的；配置里没有这一行就是关。开关：
+
+```bash
+AUTO_ASSIGN_REQUESTER=true    # 写成别的值或不写这一行 = 关
+```
+
+<details><summary>谁算提出者</summary>
+
+只会指派真人账号：不会指派 loop 自己的账号、GitHub App 或外部需求机器人。
+
+| 条目 | 指派给 |
+|---|---|
+| 人开的 issue / PR | 作者本人 |
+| agent 开的 PR | 它关闭的那个 issue 的提出者（先看分支名 `feature/issue-N`，再看正文里的 `Closes` / `Fixes` / `Resolves` / `Refs #N`）；来自别的仓库的、关联指向 PR 或什么都没指向的，不指派 |
+| agent 拆出的子 issue | 父 issue 的提出者，最多往上找三层 |
+| daemon 或 agent 开的、找不到来源的 issue（失败报告之类），外部需求机器人开的 | 不指派 |
+
+已经有任何 assignee 的条目一律不动：不追加、不替换。
+
+</details>
+
+<details><summary>按编号每条只处理一次——人删掉的指派不会被加回</summary>
+
+第一次打开时记下当时最新的条目编号，只处理之后新建的条目。每轮按新建时间倒序一页页读到上次处理到的地方，守护程序停机期间新建的条目
+一条不漏。每个条目只处理一次：之后人删掉的 assignee 不会被加回来。
+
+读不到来源的条目（网络错误、限流、读取失败）永不放弃：下一轮再试，排在它后面的条目照常处理；连续失败满 30 轮后改为每 10 轮试一次，
+并在 `poll.log` 里写一行提醒。agent 刚开的条目有 10 分钟时间挂上父 issue 或写好 `Closes` 行，过了才算「没有来源」。
+
+写之前把判定依据（条目本身、分支和最新提交、关联、父 issue 链）全部重读一遍，没有任何变化才写；有变化就下一轮重新判断。
+
+</details>
+
+<details><summary>权限、状态文件与请求量</summary>
+
+assignee 由写身份写入（`WRITE_GH_TOKEN`，没配用 `GH_TOKEN`）。没有仓库权限的人 GitHub 会默默拒绝指派；这样的条目记一行日志、不再重试：
+
+```
+自动指派：#42 的提出者 @someone 不能被指派（GitHub 没有接受，可能没有仓库权限），不再重试
+```
+
+进度在 `$STATE_DIR/auto-assign.json`（故意不放进 `state.json`）；文件读不懂时不覆盖、只记日志。删掉它 = 从当时最新的条目重新起算。
+请求量：没有新条目时每轮多 1 次列表读取，每个新条目另有几次读取。某个条目一直读不到时，每轮都要把列表重读到它那里，所以长时间
+故障期间新条目很多时，每轮会多读几页，恢复后回落。
 
 </details>
 

@@ -1317,6 +1317,29 @@ PROJECT_GH_TOKEN=""
 #   · 每个 Project 的进度在 $STATE_DIR/project-auto-add.json（删掉它 = 从头开始）
 AUTO_ADD_PROJECTS=""               # e.g. / 例：AUTO_ADD_PROJECTS="myorg/4 myorg/11"
 
+# ── Assign new issues / PRs to whoever asked for them / 新建条目自动指派提出者 ──
+# true = every poll, a new issue or PR with no assignee gets the person who asked for it as
+# assignee, so "assigned to me" finds the PRs and sub-issues the agent opened on their behalf.
+#   · who asked: the author, when that is a person and not the loop's own account; for a PR the
+#     agent opened, the requester of the issue it closes; for a sub-issue the agent split off, the
+#     requester of its parent. Requester-bot items, the daemon's own reports and items with no
+#     traceable source are left alone
+#   · only fills an empty field: an item that already has any assignee is never touched; each
+#     item is handled once, so an assignee a person removes is not put back
+#   · only items created after it is first turned on; progress lives in $STATE_DIR/auto-assign.json
+#   · the write goes through the WRITE identity (WRITE_GH_TOKEN, else GH_TOKEN)
+# Missing line or any other value = off.
+#
+# true = 每轮把新建、还没有 assignee 的 issue / PR 指派给提出需求的人，「指派给我的」就能找到
+# agent 代开的 PR 和拆出的子 issue。
+#   · 提出者：作者是真人、不是 loop 自己的账号 → 作者本人；agent 开的 PR → 它关闭的 issue 的提出者；
+#     agent 拆出的子 issue → 父 issue 的提出者。外部需求机器人开的、daemon 自己的报告、找不到来源的不动
+#   · 只填空：已经有任何 assignee 的不碰；每个条目只处理一次，人删掉的指派不会被加回来
+#   · 只管第一次打开之后新建的条目；进度在 $STATE_DIR/auto-assign.json
+#   · 写入走写身份（WRITE_GH_TOKEN，没配用 GH_TOKEN）
+# 不写这一行或写成别的值 = 关。
+AUTO_ASSIGN_REQUESTER=true
+
 # ── Report a failed test workflow on the base branch (GitHub#345) / base 分支测试工作流失败自动报告 ──
 #
 # One or more workflow file names, space or comma separated (e.g. "tests.yml"). Empty = off

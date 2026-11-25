@@ -70,6 +70,8 @@ LABEL_PENDING_PR="pending/PR"
 LABEL_AGENT_DOING="doing/agent"
 LABEL_PENDING_REVIEW="pending/review"
 LABEL_DONE="Done"
+# 本文件的用例按「托管关着」写（pending/merge 不算流程标签）；托管没写这一行就开（#691），这里明确关掉
+LABEL_AUTOPILOT=""
 POST_MERGE_RETROSPECTIVE=false
 PENDING_HUMAN_CONFLICT_CHECK=false
 POLL_BACKOFF_LADDER=""
