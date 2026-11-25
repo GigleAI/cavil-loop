@@ -685,15 +685,15 @@ jobs:
             echo "::error::$TAG is on $now, not on the tested $SHA — no Release"
             exit 1
           fi
-      # A draft with the Windows files, for the Mac to add both Macs and latest.json and publish
-      # (scripts/handover.mjs; on the Mac, scripts/mac-release.sh). Not marked latest when it comes out:
-      # the daemon's weekly release stays "Latest". The tag must already be on the tested commit.
-      - name: Hand over to the Mac (a draft with the Windows files)
+      # A draft with the Windows files: the maintainers' Mac adds both Macs and latest.json and publishes
+      # it (scripts/mac-release.sh, scripts/handover.mjs publish). Not marked latest: the daemon's weekly
+      # release stays "Latest". --verify-tag: gh never creates a missing tag on the default branch's tip,
+      # a commit nothing here tested.
+      - name: Create Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.mode.outputs.tag }}
           SHA: ${{ needs.mode.outputs.sha }}
-          V: ${{ needs.mode.outputs.version }}
         run: |
           set -o pipefail
           refs="$(git ls-remote --tags origin "refs/tags/$TAG")"
@@ -704,7 +704,14 @@ jobs:
           fi
           # and once more right before the page: no newer client tag appeared meanwhile
           node scripts/release-version.mjs check "$TAG" --at "$SHA" >/dev/null
-          node scripts/handover.mjs create --channel stable --version "$V" --sha "$SHA" --dir dist-release --notes-file RELEASE_NOTES.md --repo "$GITHUB_REPOSITORY"
+          gh release create "$TAG" dist-release/*-windows-x64.exe dist-release/*-windows-x64.exe.sig \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --target "$SHA" \
+            --title "Cavil Loop 客户端 ${TAG#client/}" \
+            --notes-file RELEASE_NOTES.md \
+            --latest=false
 
   # GitHub#215 / #628: the development build, for installed apps on the development channel: a
   # pre-release tagged client/vX.Y.(Z+1)-dev.N (never Latest), published by a push to main (GitHub#665),
@@ -773,7 +780,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.v.outputs.version }}
           SHA: ${{ needs.mode.outputs.sha }}
-        run: node scripts/handover.mjs create --channel dev --version "$V" --sha "$SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+        run: node scripts/handover.mjs create --version "$V" --sha "$SHA" --dir dist-release --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
 
   # A draft handed to the Mac that is still not published after 12 hours means the Mac is not doing its
   # part (off, logged out, a failing build): the nightly run fails here, and the report below says so.

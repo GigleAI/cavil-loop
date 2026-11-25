@@ -6,13 +6,13 @@
 //
 // One draft release per version is the whole protocol; all of its state lives on GitHub, nothing is
 // remembered on either side. Installed apps never see a draft.
-//   create   (Actions, once the tests and the Windows build passed) the draft `client/v<version>` on the
-//            tested commit, carrying the Windows installer and its signature and its page text.
-//            A development build: the same judgement dev-release.mjs makes before it creates one
-//            (no higher published development build, this version not out, its tag not there yet)
-//            and the same page (title, what changed since the previous build). A release: its tag
-//            must already be on the commit (the workflow pushed it); the page text is RELEASE_NOTES.md.
-//            A draft of this version that never was public gets the Windows files replaced.
+//   create   (Actions, development builds, once the tests and the Windows build passed) the draft
+//            `client/v<version>` on the tested commit, carrying the Windows installer and its signature,
+//            with the same judgement dev-release.mjs makes before it creates one (no higher published
+//            development build, this version not out, its tag not there yet) and the same page (title,
+//            what changed since the previous build). A draft of this version that never was public
+//            gets the Windows files replaced. A release's draft is made by the workflow itself
+//            (client.yml, job release: `gh release create --draft` on the tag it pushed).
 //   waiting  (the Mac) the draft to build now, as JSON, or null: a release before a development
 //            build; of the development drafts only the highest, and none below the highest published
 //            development build (dev-release.mjs deletes those)
@@ -22,7 +22,7 @@
 //            uploaded, the tag on the commit
 //   stale    (the nightly run) any draft that has waited longer than --hours: listed, exit 1
 //
-//   node scripts/handover.mjs create --channel dev|stable --version V --sha S --dir D --notes-file N [--repo R]
+//   node scripts/handover.mjs create --version V --sha S --dir D --notes-file N [--repo R]
 //   node scripts/handover.mjs waiting [--repo R]
 //   node scripts/handover.mjs fetch --tag T --dir D --notes-out F [--repo R]
 //   node scripts/handover.mjs publish --tag T --sha S --dir D [--repo R]
@@ -95,37 +95,23 @@ function filesOf(dir, names) {
 }
 
 function create(a) {
-  const { repo, channel, version, sha, dir, notes } = a;
-  if (channelOf(version) !== channel) throw new Error(`--version ${version} 不是 ${channel} 渠道的版本号`);
+  const { repo, version, sha, dir, notes } = a;
+  if (channelOf(version) !== 'dev') throw new Error(`--version ${version} 不是开发版的版本号（正式版的草稿由工作流自己建）`);
   if (!FULL_SHA.test(sha ?? '')) throw new Error(`--sha 不是完整的提交号：${sha}`);
   if (!notes || !existsSync(notes)) throw new Error('缺 --notes-file');
   const tag = `${TAG_PREFIX}${version}`;
   const files = windowsFiles(version);
   const paths = filesOf(dir, files);
   const list = readReleases(repo);
-  if (channel === 'dev') {
-    const d = decide(list, version, files);
-    if (d.action === 'skip') return console.log(`⏭ 不交给 Mac：${d.why}`);
-    if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写`);
-    if (d.action === 'keep' || d.action === 'done') throw new Error(`${tag} 已经公开过：按维护者的选择，已公开的版本一律不改；等下一个提交发更高的版本`);
-    const t = tagState(repo, tag);
-    if (t.state !== 'absent') throw new Error(`${tag} 的标签${t.state === 'present' ? '已经存在：这个版本做过' : `读不出（${t.why}）`}：什么都不写`);
-    if (d.action === 'create') createDraft(repo, list, version, sha, paths, notes);
-    else gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
-  } else {
-    const t = tagOn(repo, tag, sha);
-    if (!t.ok) throw new Error(`${tag}：${t.why}：不交给 Mac`);
-    const same = list.filter((r) => r?.tag_name === tag);
-    if (same.length > 1) throw new Error(`${tag} 有 ${same.length} 个发版，不知道该用哪个`);
-    if (!same.length) {
-      gh(['release', 'create', tag, ...paths, '--repo', repo, '--draft', '--verify-tag', '--latest=false', '--title', `Cavil Loop 客户端 ${tag.slice('client/'.length)}`, '--notes-file', notes]);
-    } else if (same[0].draft === true && same[0].published_at === null) {
-      gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
-    } else {
-      throw new Error(`${tag} 已经公开过（或公开过又改回草稿）：已公开的版本一律不改`);
-    }
-  }
-  const back = handedOver(readReleases(repo)).find((d) => d.tag === tag && d.sha === sha);
+  const d = decide(list, version, files);
+  if (d.action === 'skip') return console.log(`⏭ 不交给 Mac：${d.why}`);
+  if (d.action === 'unknown') throw new Error(`${tag}：${d.why}：什么都不写`);
+  if (d.action === 'keep' || d.action === 'done') throw new Error(`${tag} 已经公开过：按维护者的选择，已公开的版本一律不改；等下一个提交发更高的版本`);
+  const t = tagState(repo, tag);
+  if (t.state !== 'absent') throw new Error(`${tag} 的标签${t.state === 'present' ? '已经存在：这个版本做过' : `读不出（${t.why}）`}：什么都不写`);
+  if (d.action === 'create') createDraft(repo, list, version, sha, paths, notes);
+  else gh(['release', 'upload', tag, ...paths, '--repo', repo, '--clobber']);
+  const back = handedOver(readReleases(repo)).find((x) => x.tag === tag && x.sha === sha);
   if (!back) throw new Error(`交完再读，${tag} 不是「从没公开过、在 ${sha.slice(0, 7)} 上、带齐 Windows 文件」的草稿`);
   console.log(`✅ ${tag} 交给 Mac：草稿，带着 ${files.join(', ')}`);
 }
@@ -186,7 +172,7 @@ function main() {
     for (const d of old) console.log(`::error::${d.tag}（${d.sha.slice(0, 7)}）交给 Mac 已经超过 ${hours} 小时还没发布（建于 ${d.created ?? '读不出'}）：看一下 Mac 上的 mac-release.sh status`);
     process.exit(1);
   }
-  if (cmd === 'create') return create({ repo, channel: opt('channel'), version: opt('version'), sha: opt('sha'), dir: opt('dir') ?? 'dist-release', notes: opt('notes-file') });
+  if (cmd === 'create') return create({ repo, version: opt('version'), sha: opt('sha'), dir: opt('dir') ?? 'dist-release', notes: opt('notes-file') });
   if (cmd === 'fetch') return fetchDraft({ repo, tag: opt('tag'), dir: opt('dir'), notesOut: opt('notes-out') });
   if (cmd === 'publish') return publish({ repo, tag: opt('tag'), sha: opt('sha'), dir: opt('dir') });
   throw new Error(`不认识的命令：${cmd ?? '（空）'}（create / waiting / fetch / publish / stale）`);

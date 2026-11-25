@@ -1072,7 +1072,7 @@ cstep "$CLIENT_WORKFLOW" mode "Release or development build" > "$TMP/c-mode.sh"
 cstep "$CLIENT_WORKFLOW" mode "Anything to build" > "$TMP/c-build.sh"
 cstep "$CLIENT_WORKFLOW" package "Version" > "$TMP/c-version.sh"
 cstep "$CLIENT_WORKFLOW" package-windows "Version" > "$TMP/c-version-win.sh"
-cstep "$CLIENT_WORKFLOW" release "The build is the tag's version, both Macs and Windows" > "$TMP/c-files.sh"
+cstep "$CLIENT_WORKFLOW" release "The Windows build is the tag's version" > "$TMP/c-files.sh"
 cstep "$CLIENT_WORKFLOW" release "Tag the tested commit" > "$TMP/c-tag.sh"
 cstep "$CLIENT_WORKFLOW" release "Create Release" > "$TMP/c-create.sh"
 
@@ -1141,7 +1141,7 @@ has "call ./.github/workflows/client.yml inherit [('sha', '\${{ needs.client-pla
 has "call-needs ['client-plan'] if needs.client-plan.outputs.tag != ''" "$S" "… only when the plan named a tag"
 has "daemon-release-needs ['plan', 'gate-summary']" "$S" "the daemon's release waits for nothing of the client"
 has "inputs [('sha', True, 'string'), ('tag', True, 'string')]" "$S" "client.yml can be called with a tag and a commit"
-has "client-release-needs ['e2e', 'mode', 'package', 'package-windows', 'size', 'test'] if needs.mode.outputs.tag != ''" "$S" "client release page only after quick + full tests, both Macs, Windows (GitHub#577) and the size gate"
+has "client-release-needs ['e2e', 'mode', 'package', 'package-windows', 'size', 'test'] if needs.mode.outputs.tag != ''" "$S" "client release draft only after quick + full tests, both Macs' checks, Windows (GitHub#577) and the size gate"
 has "no-github-ref-tag-test True" "$S" "no job decides 'release build' from github.ref (the caller's ref in a call)"
 has "every-job-on-mode []" "$S" "every build / test job checks out the commit the mode job names"
 has "mode-checkout \${{ inputs.sha || github.sha }}" "$S" "the mode job checks out the called commit"
@@ -1154,7 +1154,7 @@ has "crons ['30 20 * * *', '40 16 * * 0']" "$S" "two schedules: the nightly buil
 has "dispatch [('force', 'boolean', False), ('publish', 'boolean', False)]" "$S" "a manual run can publish, and skip the 'anything new?' check, both off by default"
 # which jobs run on which trigger, the concurrency group and the report: evaluated below from the
 # workflow's own expressions, after the mode job's steps have run for each trigger (GitHub#628)
-has "report-needs ['dev-release', 'mode', 'package', 'package-windows', 'size', 'test']" "$S" "… looking at every job of the night"
+has "report-needs ['dev-release', 'mac-handover', 'mode', 'package', 'package-windows', 'size', 'test']" "$S" "… looking at every job of the night, the Mac's hand-over included"
 has "report-kind ['client-nightly']" "$S" "… into its own kind of issue"
 has "report-perms [('actions', 'read'), ('contents', 'read'), ('issues', 'write')]" "$S" "… the only job that may write issues"
 has "win-last A real update of the installed app ['bash scripts/windows-update-check.sh release/Cavil-Loop-*-windows-x64.exe']" "$S" "the Windows job ends with a real update of the installed app (GitHub#628)"
@@ -1526,9 +1526,9 @@ PR='{"event_name":"pull_request","ref":"refs/pull/630/merge","event":{"pull_requ
 CHANGED="$(devrel 9 "$C1")"; SAME="$(devrel 9 "$C4")"
 BUILDJOBS="mode,package,package-windows,size,test,test-rust,test-vitest"
 csim "$NIGHT" '{}' "$CHANGED"
-check "nightly, client changed → quick tests, both builds, size gate, publish; one never-cancelling group" "$SIM" "ran=dev-release,$BUILDJOBS group=client-dev-publish cancel=false"
+check "nightly, client changed → quick tests, both builds, size gate, hand-over to the Mac, the Mac's earlier hand-overs checked; one never-cancelling group" "$SIM" "ran=dev-release,mac-handover,$BUILDJOBS group=client-dev-publish cancel=false"
 csim "$NIGHT" '{}' "$SAME"
-check "nightly, nothing new → only the mode job runs (and the run is green)" "$SIM" "ran=mode group=client-dev-publish cancel=false"
+check "nightly, nothing new → only the mode job and the check of the Mac's hand-overs run (and the run is green)" "$SIM" "ran=mac-handover,mode group=client-dev-publish cancel=false"
 csim "$WEEK" '{}' "$SAME"
 check "weekly → quick + full tests, both builds, size gate, nothing published; its own group" "$SIM" "ran=e2e,$BUILDJOBS group=client-refs/heads/main-weekly cancel=true"
 csim "$DISPATCH_MAIN" '{"publish":true,"force":false}' "$CHANGED"
@@ -1711,13 +1711,9 @@ crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
 check "the Windows installer's signature missing → fails (GitHub#577)" "$([ "$RC" != 0 ] && echo red)" "red"
 : > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-windows-x64.exe.sig"
 crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
-check "both Macs' and Windows' files of the tag's version → passes" "$RC" 0
+check "Windows' files of the tag's version → passes" "$RC" 0
 crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.1
 check "files of another version → fails" "$([ "$RC" != 0 ] && echo red)" "red"
-rm "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-x64.app.tar.gz.sig"
-crun "$TMP/client-run/client" "$TMP/c-files.sh" V=0.6.0
-check "one Mac's signature missing → fails" "$([ "$RC" != 0 ] && echo red)" "red"
-: > "$TMP/client-run/client/dist-release/Cavil-Loop-0.6.0-x64.app.tar.gz.sig"
 ctag() { crun "$TMP/client-run/client" "$TMP/c-tag.sh" "$@"; }
 ccreate() { crun "$TMP/client-run/client" "$TMP/c-create.sh" "$@"; }
 remote_tag() { git -C "$CREMOTE" rev-parse -q --verify "refs/tags/$1^{commit}" 2>/dev/null || echo none; }
@@ -1739,7 +1735,10 @@ A="$(cat "$GH_ARGS")"
 has "--verify-tag" "$A" "… never letting gh make the tag"
 has "--latest=false" "$A" "… not marked Latest (the daemon's release keeps it)"
 has "Cavil Loop 客户端 v0.6.0" "$A" "… titled with the version"
-has "dist-release/latest.json" "$A" "… with the update manifest"
+has "--draft" "$A" "… as a draft: the maintainers' Mac adds both Macs and latest.json and publishes it (scripts/mac-release.sh)"
+has "$C4" "$A" "… on the tested commit, which the Mac builds (--target)"
+lacks "latest.json" "$A" "… without an update manifest (the Mac writes it from every package)"
+lacks "arm64" "$A" "… and without any Mac file"
 
 echo "-- a newer release appears while this one builds → this one writes nothing (PR #580 review round 1)"
 PAGES_BEFORE="$(wc -l < "$CREL")"

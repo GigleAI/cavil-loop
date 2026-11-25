@@ -33,7 +33,7 @@ interface Rel {
 }
 
 // every file a development build carries: the script refuses to publish without one of them (GitHub#628)
-const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, `Cavil-Loop-${v}-x64.app.tar.gz`, `Cavil-Loop-${v}-x64.app.tar.gz.sig`, `Cavil-Loop-${v}-x64.dmg`, `Cavil-Loop-${v}-windows-x64.exe`, `Cavil-Loop-${v}-windows-x64.exe.sig`, 'latest.json'];
+const files = (v: string) => [`Cavil-Loop-${v}-arm64.app.tar.gz`, `Cavil-Loop-${v}-arm64.app.tar.gz.sig`, `Cavil-Loop-${v}-arm64.dmg`, `Cavil-Loop-${v}-windows-x64.exe`, `Cavil-Loop-${v}-windows-x64.exe.sig`, `Cavil-Loop-${v}-x64.app.tar.gz`, `Cavil-Loop-${v}-x64.app.tar.gz.sig`, `Cavil-Loop-${v}-x64.dmg`, 'latest.json'];
 const pub = (tag: string, o: Partial<Rel> = {}): Rel => ({ tag_name: tag, draft: false, prerelease: false, assets: [{ name: 'latest.json' }], ...o });
 const asset = (name: string) => ({ name, state: 'uploaded', size: 10 });
 const devRel = (v: string, o: Partial<Rel> = {}): Rel => pub(`client/v${v}`, { prerelease: true, assets: files(v).map(asset), ...o });
