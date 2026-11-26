@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
-import { retryByHand, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
+import { retryByHand, ago, headerStatus, hoverLines, offlineDataText, retryText } from './syncTimes';
 import { buildBoard, dropPlan, isOwnColumn, writesEnabled, type Card, type Column, type ColumnSub, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
@@ -618,6 +618,7 @@ export function BoardView({
     if (next.query !== query) setQuery(next.query);
   };
   const failed = sync.sources.filter((s) => !s.ok);
+  const header = headerStatus(sync, now);
   const trouble = syncTrouble(sync, parsed);
   // GitHub#455: a reread started from the ⚠️ panel; kept here so its outcome outlives the panel (all read → ⚠️ and panel go).
   // The green note is not a state of its own: it is shown exactly while the reread's latest outcome is "all read"
@@ -873,15 +874,26 @@ export function BoardView({
             </div>
             <div className="hdr-right">
               {/* GitHub#324: the oldest check, not "GitHub answered"; the hover has every source's two times */}
-              {headerText(sync, now) !== null && (
+              {/* GitHub#733: a round that stopped moving shows here too — also before any check succeeded */}
+              {header && (
                 <span
-                  className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
+                  className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}${header.stall ? ' stalled' : ''}`}
                   data-testid="sync-status"
                   title={hoverLines(sync, labelOf, now).join('\n')}
                   {...verbatimParts('github', state.sources.map((s) => labelOf(s.key)))}
                 >
                   <span className="dot" />
-                  <span className="sync-text">{headerText(sync, now)}</span>
+                  <span className="sync-text">
+                    {header.text}
+                    {header.stall && (
+                      <>
+                        {header.text !== null && ' · '}
+                        <b className="sync-stall" data-testid="sync-stall">
+                          {header.stall}
+                        </b>
+                      </>
+                    )}
+                  </span>
                 </span>
               )}
               {okShown && (

@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type SyncStall, type SyncStep, type TallyDef, type ViewSettings } from '../shared/types';
 import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoAssignees, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
@@ -23,7 +23,7 @@ import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
-import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS } from '../shared/config';
+import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS, WATCH_EVERY_MS, WATCH_FALLBACK_MS, WATCH_GAP_MS, WATCH_QUIET_TICKS } from '../shared/config';
 import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep, sayFailure } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound, type ViewerTag } from '../data/sync';
@@ -463,6 +463,21 @@ export class Controller {
   /** the gap, as last told (a beat of the shell carries its interval) */
   private timedGapMs: number;
   private readonly timers: SyncTimers;
+  // ---- GitHub#733: the window's watch over syncing (see watchTick) ----
+  private watchTimer: unknown = null;
+  /** when the watch last woke (null: not yet since it started) */
+  private lastWatchAt: number | null = null;
+  /** wakes in a row that saw syncing and no progress */
+  private watchQuiet = 0;
+  /** an answer from the back end came while syncing, since the watch last woke */
+  private progressSeen = false;
+  /** the round running now (null: none) and its last progress */
+  private roundStartedAt: number | null = null;
+  private lastProgressAt: number | null = null;
+  /** the step the round running now is at */
+  private step: SyncStep = 'renew';
+  /** when a timed round was last asked for (the shell's beat, the window's timer, or the watch itself) */
+  private lastTimedAskAt: number | null = null;
   /**
    * GitHub#324: per source, the latest round that read it in full or was told by GitHub's change
    * check that nothing changed. Never before the snapshot's own time; a failed round leaves it.
@@ -810,12 +825,100 @@ export class Controller {
   startTimer(): void {
     if (this.timer !== null) this.timers.clearInterval(this.timer);
     this.cancelFollowUp();
-    this.timer = this.timers.setInterval(() => this.timedSync(), this.deps.syncIntervalMs ?? SYNC_INTERVAL_MS);
+    this.timer = this.timers.setInterval(() => {
+      this.lastTimedAskAt = this.now();
+      this.timedSync();
+    }, this.deps.syncIntervalMs ?? SYNC_INTERVAL_MS);
+  }
+
+  /**
+   * GitHub#733: the window's watch over syncing (the desktop app starts it, main.tsx; tests by hand).
+   * It runs on the window's own timer, which is not slowed down while the window is hidden (main.rs).
+   */
+  startWatch(): void {
+    if (this.watchTimer !== null) this.timers.clearInterval(this.watchTimer);
+    this.lastWatchAt = null;
+    this.watchQuiet = 0;
+    this.lastTimedAskAt = this.now();
+    this.watchTimer = this.timers.setInterval(() => this.watchTick(), WATCH_EVERY_MS);
+  }
+
+  /**
+   * GitHub#733: an answer the round `run` got. Only the round running now moves the watch: another
+   * operation's answers, and a dropped round's late ones, are not this round's progress.
+   */
+  private noteProgress(run: SyncRun): void {
+    if (this.round !== run || run.signal.aborted) return;
+    this.progressSeen = true;
+    this.lastProgressAt = this.now();
+  }
+
+  /** GitHub#733: `p`, counted as progress of `run` when it settles (either way) */
+  private tracked<T>(run: SyncRun, p: Promise<T>): Promise<T> {
+    const done = () => this.noteProgress(run);
+    p.then(done, done);
+    return p;
+  }
+
+  /** GitHub#733: the back end as the round `run` uses it — each answer is that round's progress */
+  private roundBackend(run: SyncRun): Backend {
+    return { call: <T = any>(cmd: string, args?: Record<string, unknown>) => this.tracked(run, this.backend.call<T>(cmd, args)) };
+  }
+
+  /**
+   * GitHub#733: one wake of the watch.
+   *   wakes further apart than WATCH_GAP_MS   the timer did not run in between (the machine slept): the
+   *                                           count of quiet wakes starts again from this one
+   *   no round runs                           nothing to watch; when no timed round was asked for
+   *                                           WATCH_FALLBACK_MS (the shell's beat did not come), ask here
+   *   a round runs, no progress since the     one more quiet wake; at WATCH_QUIET_TICKS the round has
+   *   last wake                               stopped moving:
+   *     reading GitHub                        dropped the way a refresh by hand drops it (its late answers
+   *                                           land nowhere), and a new round starts — no full read forced
+   *     any other step                        never cut (a half-done renewal can lose the sign-in, a
+   *                                           half-done save can damage the cache): only said, and waited for
+   * What it found stays in the header until a round's check succeeds (runRound clears it).
+   */
+  private watchTick(): void {
+    const now = this.now();
+    if (this.lastWatchAt !== null && now - this.lastWatchAt > WATCH_GAP_MS) this.watchQuiet = 0;
+    this.lastWatchAt = now;
+    const cur = this.state.sync;
+    if (this.syncing === null) {
+      this.watchQuiet = 0;
+      this.progressSeen = false;
+      if (cur.roundAt) this.set({ sync: { ...this.state.sync, roundAt: null } });
+      if (this.signedIn && now - (this.lastTimedAskAt ?? now) >= WATCH_FALLBACK_MS) {
+        this.lastTimedAskAt = now;
+        this.timedSync();
+      }
+      return;
+    }
+    this.watchQuiet = this.progressSeen ? 0 : this.watchQuiet + 1;
+    this.progressSeen = false;
+    const startedAt = this.roundStartedAt;
+    let stall: SyncStall | null = cur.stall ?? null;
+    if (startedAt !== null && this.watchQuiet >= WATCH_QUIET_TICKS) {
+      if (this.round?.reading) {
+        stall = { kind: 'restarted', step: 'read', roundStartedAt: startedAt };
+        this.watchQuiet = 0;
+        // the same drop a refresh by hand makes (restartSync): the queued round starts at once
+        this.round.drop();
+      } else if (!stall || stall.roundStartedAt !== startedAt || stall.step !== this.step) {
+        stall = { kind: 'waiting', step: this.step, roundStartedAt: startedAt };
+      }
+    }
+    const roundAt = startedAt === null ? null : { startedAt, lastProgressAt: this.lastProgressAt ?? startedAt };
+    if (stall !== (cur.stall ?? null) || JSON.stringify(roundAt) !== JSON.stringify(cur.roundAt ?? null)) {
+      this.set({ sync: { ...this.state.sync, stall, roundAt } });
+    }
   }
 
   stopTimer(): void {
     if (this.timer !== null) this.timers.clearInterval(this.timer);
     this.timer = null;
+    if (this.watchTimer !== null) this.timers.clearInterval(this.watchTimer);
+    this.watchTimer = null;
     this.resetTimed();
     this.cancelFollowUp();
     // GitHub#258: and the watches of new issues (they only end here or with the session)
@@ -1585,6 +1688,9 @@ export class Controller {
       return;
     }
     if (ev.kind === 'tick') {
+      // GitHub#733: the hover says when the shell's beat last came; the watch asks for a round when it does not
+      this.lastTimedAskAt = this.now();
+      this.set({ sync: { ...this.state.sync, beatAt: this.lastTimedAskAt } });
       this.timedSync(ev.everyMs);
       return;
     }
@@ -1871,6 +1977,7 @@ export class Controller {
         } while (this.resync && this.signedIn);
       } finally {
         this.syncing = null;
+        this.roundStartedAt = null;
         // GitHub#324: the one place the earliest timed round is written — syncing went idle,
         // however it ended. (A round dropped by a refresh by hand ends outside this loop.)
         // Only a stretch that ran over a beat is followed by the gap: one that fits between two
@@ -1942,6 +2049,8 @@ export class Controller {
     this.cancelAlarm();
     this.timedDueAt = null;
     this.timedSwallowed = false;
+    // GitHub#733: what the watch reported belongs to the session it was in
+    if (this.state.sync.stall || this.state.sync.roundAt) this.set({ sync: { ...this.state.sync, stall: null, roundAt: null } });
   }
 
   /**
@@ -1969,6 +2078,12 @@ export class Controller {
 
   /** One round, given up on (without waiting for it) when it is dropped. */
   private runOne(): Promise<void> {
+    // GitHub#733: a new round for the watch: nothing counted against it yet
+    this.roundStartedAt = this.now();
+    this.lastProgressAt = this.roundStartedAt;
+    this.progressSeen = false;
+    this.watchQuiet = 0;
+    this.step = 'renew';
     const abort = new AbortController();
     let dropped!: () => void;
     const gone = new Promise<void>((r) => (dropped = r));
@@ -1992,11 +2107,18 @@ export class Controller {
   }
 
   private async runRound(run: SyncRun, retried = false): Promise<void> {
+    // GitHub#733: the step this round is at, for the watch (a dropped round no longer moves it)
+    const at = (step: SyncStep) => {
+      if (this.round === run) this.step = step;
+    };
     if (!this.signedIn) return;
-    const { result: fresh, reason: freshReason } = await this.freshOut();
+    at('renew');
+    const { result: fresh, reason: freshReason } = await this.tracked(run, this.freshOut());
     if (fresh === 'ended' || !this.signedIn) return;
-    await this.saveUnsaved();
-    const info = await this.backend.call<GrantInfo>('grantInfo');
+    at('saveCredential');
+    await this.tracked(run, this.saveUnsaved());
+    at('grant');
+    const info = await this.tracked(run, this.backend.call<GrantInfo>('grantInfo'));
     if (!info.signedIn || info.session !== this.session) return;
     // GitHub#401: the failure explanations speak of the app this sign-in used
     const kind = info.githubApp ? 'github-app' : 'oauth';
@@ -2021,6 +2143,7 @@ export class Controller {
     this.set({ sync: { ...this.state.sync, syncing: true } });
     // the one stretch a restart may cut: reading GitHub (GitHub#217)
     run.reading = true;
+    at('read');
     // GitHub#229: every read of this round went out after this stamp (a lower bound is what the check of a change needs)
     const issuedAt = this.stamp();
     // GitHub#261: only records of this session and of the very addition of each source
@@ -2054,7 +2177,8 @@ export class Controller {
       queue: this.sendQueue,
       ...(this.deps.readRetrySleep ? { sleep: this.deps.readRetrySleep } : {}),
     };
-    const client = this.client(session, run.signal, reads);
+    // GitHub#733: every answer this client gets (sources, notifications, comments) is this round's progress
+    const client = this.client(session, run.signal, reads, this.roundBackend(run));
     const forceFull = new Set(
       [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
     );
@@ -2100,7 +2224,8 @@ export class Controller {
     if (session !== this.session) return over();
     // GitHub says who this token belongs to; data of anybody else goes first.
     if (round.viewer) {
-      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean; problem?: string; problemSaid?: unknown }>('adoptViewer', { session, login: round.viewer });
+      at('adopt');
+      const a = await this.roundBackend(run).call<{ wiped?: boolean; stale?: boolean; problem?: string; problemSaid?: unknown }>('adoptViewer', { session, login: round.viewer });
       if (a.problem) this.setProblem(a.problem, readSaid(a.problemSaid));
       if (a.stale || session !== this.session) return over();
       if (a.wiped) this.dropMirror();
@@ -2111,7 +2236,8 @@ export class Controller {
     const current = (key: string) =>
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
     // GitHub#229: an item re-read after this round started keeps that newer copy
-    const landing = await this.landSnapshots(session, () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt), current);
+    at('store');
+    const landing = await this.tracked(run, this.landSnapshots(session, () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt), current));
     if (landing.kind === 'failed' && landing.error !== undefined) throw landing.error;
     // a source removed while the write was on its way: not shown either
     if (landing.kind !== 'landed') return over();
@@ -2132,6 +2258,7 @@ export class Controller {
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
     // GitHub#713: GitHub's own inbox, judged against the sources as they stand now
+    at('activity');
     const activity = await this.activityRound(client, session, run.signal, round.viewer ?? this.state.viewer);
     if (run.signal.aborted || session !== this.session) return over();
     // Only what was read completely this round (and still belongs here) is compared.
@@ -2151,11 +2278,14 @@ export class Controller {
     // GitHub#324: read in full or confirmed unchanged this round — and only then: a source that
     // failed keeps the time it had
     for (const st of status) if (st.ok && st.dataFrom !== null) this.checkedAt.set(st.sourceKey, Math.max(st.dataFrom, this.checkedAt.get(st.sourceKey) ?? 0));
+    // GitHub#733: a check succeeded: a stall the watch reported is over
+    const checked = status.some((st) => st.ok && st.dataFrom !== null);
     this.set({
       viewer: round.viewer ?? this.state.viewer,
       sync: {
         ...this.state.sync,
         syncing: false,
+        stall: checked ? null : (this.state.sync.stall ?? null),
         ...offlineFields(round.offline, round.offlineReason),
         // GitHub#374: a round the closed gate kept at home did not reach GitHub either
         lastOnlineAt: round.offline || round.held ? this.state.sync.lastOnlineAt : this.now(),
@@ -2164,7 +2294,9 @@ export class Controller {
     });
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
     if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
-      await this.catchUpReads(session);
+      at('catchUp');
+      // GitHub#733: every answer the re-reads get is this round's progress (the round's own back end)
+      await this.catchUpReads(session, this.roundBackend(run));
       // GitHub#359: and check again what an operation's answer that never came left open
       this.catchUpChecks(session);
       // GitHub#489: and what a reply's / an edit's
@@ -2174,7 +2306,8 @@ export class Controller {
       // A GitHub App token can be refreshed once before the credential is declared dead —
       // the token this round used, not one that changed meanwhile.
       if (!retried && session === this.session && info.canRefresh) {
-        const { result: r, reason } = await this.freshOut(true, info.gen);
+        at('renew');
+        const { result: r, reason } = await this.tracked(run, this.freshOut(true, info.gen));
         if (r === 'ok') return this.runRound(run, true);
         if (r === 'unreachable') this.set({ sync: { ...this.state.sync, ...offlineFields(true, reason) } });
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
@@ -2218,8 +2351,8 @@ export class Controller {
   }
 
   /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
-  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
+  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4], via: Backend = this.backend): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(via, session), signal, reads);
   }
 
   /**
@@ -5660,7 +5793,7 @@ export class Controller {
    * prove the item was read, so it is never taken for that. Skipped: a record put away, one whose own
    * requests / re-reads still run, one already being caught up.
    */
-  private async catchUpReads(session: number): Promise<void> {
+  private async catchUpReads(session: number, via: Backend = this.backend): Promise<void> {
     const due = [...this.ops.values()].filter((r) => r.readProblem && !r.dismissed && !r.running && !this.opJobs.has(r.id) && !this.catchingUp.has(r.id) && opPhase(r) !== 'waiting');
     for (const r of due) {
       if (session !== this.session || !this.signedIn) return;
@@ -5668,7 +5801,7 @@ export class Controller {
       try {
         // the merged / closed PR itself is what its linked issues are asked for (the cache may no longer carry it)
         const item = this.cachedItems().find((i) => i.key === r.key) ?? ({ key: r.key, repo: r.repo, number: r.number, kind: 'pr' } as Item);
-        await this.opReread(r.id, item, { client: this.client(session), session }, true);
+        await this.opReread(r.id, item, { client: this.client(session, undefined, undefined, via), session }, true);
       } catch {
         // a re-read never throws on GitHub's account; anything else: the next round tries again
       } finally {
