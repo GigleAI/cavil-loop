@@ -6,6 +6,7 @@
 //  - folding moves where a number is drawn, nothing else: a lit number that drops to 0 stays lit (the fold
 //    button lights up), comes back lit, and a click still gives the search from before
 //  - keyboard focus follows the number between the row and the fold
+//  - GitHub#712: a mouse click works in the fold — also pressing as the macOS app does (a press gives a button no focus)
 //  - the rule is kept per row across a restart; a table saved before folding existed keeps its names, colours
 //    and order and folds by the defaults
 // Screenshots land in test-results/screens/.
@@ -321,6 +322,65 @@ test('GitHub#634: a lit number goes 1 → 0 → 1 — it moves into the fold and
   await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
   await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'false');
 });
+
+/**
+ * GitHub#712: make a mouse press behave as in the macOS app's engine (WebKit on macOS), whatever engine the test
+ * runs on: a press on a button does not give the button focus — the element holding focus just loses it, to
+ * nowhere. Only a press whose default the page did not prevent moves focus, as in a real engine: the listener sits
+ * on the window, after the page's own handlers, and leaves a prevented press alone.
+ */
+async function macPresses(page: Page) {
+  await page.evaluate(() =>
+    window.addEventListener('mousedown', (ev) => {
+      if (ev.defaultPrevented || !(ev.target instanceof Element) || !ev.target.closest('button')) return;
+      ev.preventDefault();
+      (document.activeElement as HTMLElement | null)?.blur();
+    }),
+  );
+}
+
+for (const mac of [false, true]) {
+  test(`GitHub#712: with the mouse${mac ? ', pressing as the macOS app does' : ''} — a lit number in the fold is undone, an unlit one picked, the fold button closes the fold`, async () => {
+    const { page } = await launchApp(env);
+    await ready(page);
+    if (mac) await macPresses(page);
+    const [one] = await only(page, 'pending/human', 1);
+
+    // a lit number drops to 0 and goes into the fold; a click on it there gives back the search from before
+    await page.getByTestId('search').fill('新增依赖图视图');
+    await tally(page, 'human').click();
+    await expect(page.getByTestId('search')).toHaveValue('label:"pending/human"');
+    setLabel(one, 'pending/human', false);
+    await sync(page, (xs) => !xs.some((i) => has(i, 'pending/human')));
+    await expect(tally(page, 'human')).toHaveAttribute('data-at', 'fold');
+    await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'true');
+    await toggle(page).click();
+    await expect(pop(page)).toBeVisible();
+    await tally(page, 'human').click();
+    await expect(page.getByTestId('search')).toHaveValue('新增依赖图视图');
+    await expect(tally(page, 'human')).toHaveAttribute('aria-pressed', 'false');
+    await expect(pop(page)).toBeHidden();
+
+    // an unlit number in the fold is picked as in the row
+    await toggle(page).click();
+    await expect(pop(page)).toBeVisible();
+    await tally(page, 'later').click();
+    await expect(page.getByTestId('search')).toHaveValue('label:"pending/later"');
+    await expect(tally(page, 'later')).toHaveAttribute('aria-pressed', 'true');
+    await expect(pop(page)).toBeHidden();
+    await expect(toggle(page)).toHaveClass(/\bon\b/);
+
+    // the open fold's own button closes it, and it stays closed
+    await toggle(page).click();
+    await expect(pop(page)).toBeVisible();
+    await expect(toggle(page)).toHaveAttribute('aria-expanded', 'true');
+    await toggle(page).click();
+    await expect(pop(page)).toBeHidden();
+    await page.waitForTimeout(300);
+    await expect(pop(page)).toBeHidden();
+    await expect(toggle(page)).toHaveAttribute('aria-expanded', 'false');
+  });
+}
 
 test('GitHub#634: keyboard focus follows the number between the row and the fold', async () => {
   const { page } = await launchApp(env);
