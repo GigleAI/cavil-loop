@@ -297,7 +297,7 @@ describe('a round stuck at a step that is never cut', () => {
       expect(stallText(sync)).toBe('同步卡住');
       const lines = hoverLines(sync, () => '仓库', clock.now());
       expect(lines[0]).toContain(`卡在「${name}」已 3 分钟没有进展`);
-      expect(lines.some((l) => l.includes('不是关窗口'))).toBe(true);
+      expect(lines.some((l) => l.includes('只关窗口不算退出'))).toBe(true);
       // nothing was cut: one held call, no second one of its kind, no further round reached GitHub
       expect(backend.held()).toBe(1);
       expect(backend.calls.slice(callsBefore).filter((x) => match(x.cmd)).length).toBe(1);

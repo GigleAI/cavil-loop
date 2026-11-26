@@ -98,7 +98,7 @@
   "正在进行的新一轮：{at} 开始，已进行 {lasted}，最后一次进展 {ago}。": "New round in progress: started at {at}, running for {lasted}, last progress {ago}.",
   "这一轮 {at} 开始，卡在「{step}」已 3 分钟没有进展。": "This round started at {at} and has made no progress at “{step}” for 3 minutes.",
   "这一步不能安全地中途打断，客户端不会强行打断，正在等它结束；点刷新也要等它结束才生效。": "This step cannot be safely cut short, so the client does not cut it and waits for it to end; a refresh also waits until it ends.",
-  "一直不结束：完全退出客户端（菜单「退出」，不是关窗口）再打开。": "If it never ends: quit the client completely (the Quit menu item, not closing the window) and open it again.",
+  "一直不结束：完全退出客户端再打开（macOS：⌘Q 或菜单里的退出；Windows：通知区图标菜单里的「退出」）。只关窗口不算退出。": "If it never ends: quit the client completely and open it again (macOS: \u2318Q or Quit in the menu; Windows: Quit in the notification-area icon\u2019s menu). Closing the window is not quitting.",
   "最后收到定时信号：{ago}": "Last sync beat received: {ago}",
   "还没有同步过": "Not synced yet",
   "数据整份读取：{ago}": "Data fully read: {ago}",

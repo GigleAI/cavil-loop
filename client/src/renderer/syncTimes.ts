@@ -107,7 +107,7 @@ export function stallLines(sync: SyncState, now: number): string[] {
   } else {
     lines.push(t('这一轮 {at} 开始，卡在「{step}」已 3 分钟没有进展。', { at, step }));
     lines.push(t('这一步不能安全地中途打断，客户端不会强行打断，正在等它结束；点刷新也要等它结束才生效。'));
-    lines.push(t('一直不结束：完全退出客户端（菜单「退出」，不是关窗口）再打开。'));
+    lines.push(t('一直不结束：完全退出客户端再打开（macOS：⌘Q 或菜单里的退出；Windows：通知区图标菜单里的「退出」）。只关窗口不算退出。'));
   }
   return lines;
 }
