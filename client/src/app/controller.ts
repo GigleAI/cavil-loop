@@ -8,7 +8,7 @@
 
 import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type TallyDef, type ViewSettings } from '../shared/types';
 import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
-import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoAssignees, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
@@ -30,7 +30,7 @@ import { syncRound, type ViewerTag } from '../data/sync';
 import { SendQueue } from '../data/sendQueue';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listAssignees, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -273,9 +273,9 @@ export function mergeRetry(boards: CreateBoard[], results: Map<string, CreateBoa
 }
 
 /** The four kinds of change shown before GitHub confirms them (GitHub#229). */
-type FieldAction = Extract<WriteAction, { kind: 'addLabel' | 'removeLabel' | 'setMilestone' | 'setStatus' | 'setIteration' }>;
+type FieldAction = Extract<WriteAction, { kind: 'addLabel' | 'removeLabel' | 'addAssignee' | 'removeAssignee' | 'setMilestone' | 'setStatus' | 'setIteration' }>;
 function isFieldAction(a: WriteAction): a is FieldAction {
-  return a.kind === 'addLabel' || a.kind === 'removeLabel' || a.kind === 'setMilestone' || a.kind === 'setStatus' || a.kind === 'setIteration';
+  return a.kind === 'addLabel' || a.kind === 'removeLabel' || a.kind === 'addAssignee' || a.kind === 'removeAssignee' || a.kind === 'setMilestone' || a.kind === 'setStatus' || a.kind === 'setIteration';
 }
 
 /** where each kind's Client ID override is saved ('oauthClientId' predates the choice and keeps its name) */
@@ -521,6 +521,7 @@ export class Controller {
   private prefetchGen = 0;
   /** labels / milestones per repository, only reads that worked */
   private optionsCache = new Map<string, RepoOptions>();
+  private assigneesCache = new Map<string, RepoAssignees>();
   private createSeq = 0;
   /**
    * The newest read that landed, per source (a whole sync round) and per source + item (one
@@ -997,6 +998,7 @@ export class Controller {
     this.prefetchGen++;
     this.prefetching = false;
     this.optionsCache.clear();
+    this.assigneesCache.clear();
     this.sourceReadAt.clear();
     this.itemReadAt.clear();
     for (const t of this.opTimers.values()) clearTimeout(t);
@@ -2644,6 +2646,31 @@ export class Controller {
   }
 
   /**
+   * GitHub#711: who may be assigned in one repository (the assignee picker's candidates). Kept and
+   * re-read exactly like repoOptions (one kept answer per repository, `fresh` reads again, one more
+   * try after a lost connection, a failure never kept) — but apart from it: a failure here must not
+   * take the label / milestone candidates with it.
+   */
+  async repoAssignees(repo: string, fresh = false): Promise<RepoAssignees> {
+    const kept = this.assigneesCache.get(repo);
+    if (kept && !fresh) return kept;
+    const c = await this.clientForCall(false);
+    if ('error' in c) return { logins: [], error: c.error };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await listAssignees(c.client, repo);
+        if (c.session === this.session) this.assigneesCache.set(repo, r);
+        return r;
+      } catch (e) {
+        if (attempt === 0 && e instanceof GitHubError && e.kind === 'network') continue;
+        this.noteAuthFailure(e);
+        const errorSaid = sayFailure(zhKey('读取 {repo} 可指派的账号失败：{why}'), 'why', e, { repo: { text: repo, from: 'github' } });
+        return { logins: [], error: saidText(errorSaid), errorSaid };
+      }
+    }
+  }
+
+  /**
    * GitHub#559: may the signed-in account create labels in `repo`? Read now, every time (a permission
    * granted a minute ago must show); anything that cannot be read is 'unknown', never 'no'.
    */
@@ -3373,6 +3400,9 @@ export class Controller {
         const color = (action.kind === 'addLabel' ? action.color : undefined) ?? item.labels.find((l) => l.name === action.label)?.color ?? this.optionsCache.get(item.repo)?.labels.find((l) => l.name === action.label)?.color ?? '';
         return { kind: 'label', label: action.label, color };
       }
+      case 'addAssignee':
+      case 'removeAssignee':
+        return { kind: 'assignee', login: action.login };
       case 'setMilestone':
         return { kind: 'milestone' };
       case 'setStatus':
@@ -3385,8 +3415,10 @@ export class Controller {
   private valueOf(action: FieldAction): EditValue {
     switch (action.kind) {
       case 'addLabel':
+      case 'addAssignee':
         return true;
       case 'removeLabel':
+      case 'removeAssignee':
         return false;
       case 'setMilestone':
         return action.title;
@@ -3403,6 +3435,8 @@ export class Controller {
     switch (f.kind) {
       case 'label':
         return r.target ? { kind: 'addLabel', key: r.key, label: f.label, color: f.color } : { kind: 'removeLabel', key: r.key, label: f.label };
+      case 'assignee':
+        return { kind: r.target ? 'addAssignee' : 'removeAssignee', key: r.key, login: f.login };
       case 'milestone':
         return { kind: 'setMilestone', key: r.key, title: typeof r.target === 'string' ? r.target : null };
       case 'status':

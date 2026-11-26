@@ -1,6 +1,6 @@
 // "Does this late answer still belong to what is on screen?" — the one rule
 // every asynchronous call of the detail panel goes through (reading the
-// detail, reading the repository's labels / milestones, the reply preview,
+// detail, reading the repository's labels / milestones / assignable accounts, the reply preview,
 // a change sent to GitHub).
 //
 // An *opening* is one visit of the panel to one item: opening #138, going to
@@ -11,7 +11,7 @@
 //
 // Pure (no React): the panel creates one per opening; tests drive it directly.
 
-export type CallKind = 'detail' | 'options' | 'preview' | 'write';
+export type CallKind = 'detail' | 'options' | 'assignees' | 'preview' | 'write';
 
 export interface OpenSession {
   /** this opening is still the one on screen */
@@ -29,7 +29,7 @@ export interface OpenSession {
 
 export function createOpenSession(): OpenSession {
   let open = true;
-  const seq: Record<CallKind, number> = { detail: 0, options: 0, preview: 0, write: 0 };
+  const seq: Record<CallKind, number> = { detail: 0, options: 0, assignees: 0, preview: 0, write: 0 };
   return {
     current: () => open,
     begin(kind) {

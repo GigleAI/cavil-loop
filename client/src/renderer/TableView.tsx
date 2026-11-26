@@ -1,7 +1,7 @@
 import { stateTone } from '../shared/stateTone';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
-import type { RepoOptions, WriteAction } from '../shared/actions';
+import type { RepoAssignees, RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
 import { boardMode, buildTable, foldRuns, foldTally, isOwnGroup, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
@@ -12,6 +12,8 @@ import { OPENS_ITEM } from './outsideClick';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
+import { AssigneePicker } from './AssigneePicker';
+import { sameLogin } from '../shared/assignees';
 import { resultNote, type ResultNote } from './DetailPanel';
 import { IterationOptions } from './iterationOptions';
 import type { TableFolds } from '../shared/uiPrefs';
@@ -83,7 +85,9 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
       return (
         <span className="people">
           {item.assignees.map((a) => (
-            <Person key={a} login={a} />
+            <span key={a} className={item.edits?.some((m) => m.field === 'assignee' && m.login !== undefined && sameLogin(m.login, a) && ['saving', 'verifying', 'observing'].includes(m.status)) ? 'pending' : undefined} data-testid="cell-assignee" data-login={a}>
+              <Person login={a} />
+            </span>
           ))}
         </span>
       );
@@ -159,7 +163,7 @@ function Cell({ col, item, all, now, dark }: { col: TableColumn; item: Item; all
 }
 
 /** GitHub#205: the columns a table cell can change, the same changes the detail panel makes. */
-export const EDITABLE_COLUMNS: readonly TableColumn[] = ['labels', 'iteration', 'status', 'milestone'];
+export const EDITABLE_COLUMNS: readonly TableColumn[] = ['labels', 'assignees', 'iteration', 'status', 'milestone'];
 
 /** A column's width when none was dragged (fixed layout only, once any column has been dragged). */
 const DEFAULT_WIDTH: Partial<Record<TableColumn, number>> = { title: 360, labels: 200, assignees: 120, linkedPrs: 120, author: 120 };
@@ -183,6 +187,9 @@ type Editor = {
   col: TableColumn;
   projects: ProjectMeta[];
   options: RepoOptions | null;
+  /** GitHub#711: the assignee picker's candidates (null = still being read) and the signed-in account */
+  assignees: RepoAssignees | null;
+  viewer: string | null;
   disabled: boolean;
   /** YYYY-MM-DD: which iteration is current (GitHub#231) */
   today: string;
@@ -193,17 +200,24 @@ type Editor = {
 };
 
 /** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
-function CellEditor({ item, col, projects, options, disabled, today, act, close, pinned }: Editor) {
+function CellEditor({ item, col, projects, options, assignees, viewer, disabled, today, act, close, pinned }: Editor) {
   const box = useRef<HTMLSpanElement>(null);
-  // a click outside the editor puts it away (the label picker has its own)
+  // a click outside the editor puts it away (the label / assignee pickers have their own)
   useEffect(() => {
-    if (col === 'labels') return;
+    if (col === 'labels' || col === 'assignees') return;
     const out = (e: MouseEvent) => {
       if (box.current && !box.current.contains(e.target as Node)) close();
     };
     document.addEventListener('mousedown', out);
     return () => document.removeEventListener('mousedown', out);
   }, [col, close]);
+  if (col === 'assignees') {
+    return (
+      <span className="picker-anchor">
+        <AssigneePicker item={item} candidates={assignees} viewer={viewer} testid="cell-assignee-picker" disabled={disabled} act={act} onClose={close} />
+      </span>
+    );
+  }
   if (col === 'labels') {
     if (!options) return <span className="small muted">{t('读取标签…')}</span>;
     if (options.error) return <span className="small err">{options.error}</span>;
@@ -348,6 +362,7 @@ export function TableView({
   table: built,
   pinnedLabels,
   openKey = null,
+  viewer = null,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -376,6 +391,8 @@ export function TableView({
   pinnedLabels?: (repo: string) => readonly string[];
   /** GitHub#522: the item the floating detail shows: its row is marked */
   openKey?: string | null;
+  /** GitHub#711: the signed-in account (the assignee picker marks it and keeps it near the top) */
+  viewer?: string | null;
 }) {
   const dark = useDarkMode();
   const tb = view.table;
@@ -426,6 +443,20 @@ export function TableView({
   // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
   const [editing, setEditing] = useState<{ row: string; col: TableColumn } | null>(null);
   const [options, setOptions] = useState<Record<string, RepoOptions>>({});
+  // GitHub#711: the assignee candidates per repository, asked the first time a cell of that repository opens
+  const [assignees, setAssignees] = useState<Record<string, RepoAssignees>>({});
+  const askedAssignees = useRef(new Set<string>());
+  const needAssignees = (repo: string) => {
+    if (askedAssignees.current.has(repo)) return;
+    askedAssignees.current.add(repo);
+    void api()
+      .repoAssignees(repo)
+      .then((o) => {
+        setAssignees((m) => ({ ...m, [repo]: o }));
+        // a failed read is asked again next time the cell is opened
+        if (o.error) askedAssignees.current.delete(repo);
+      });
+  };
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const asked = useRef(new Set<string>());
   const needOptions = (repo: string) => {
@@ -442,6 +473,7 @@ export function TableView({
   const startEdit = (row: string, item: Item, col: TableColumn) => {
     if (!canWrite || !EDITABLE_COLUMNS.includes(col)) return;
     if (col === 'labels' || col === 'milestone') needOptions(item.repo);
+    if (col === 'assignees') needAssignees(item.repo);
     setEditing({ row, col });
   };
   const act = (item: Item) => async (a: WriteAction, okText: string) => {
@@ -654,6 +686,8 @@ export function TableView({
                       col={c}
                       projects={projects}
                       options={options[r.item.repo] ?? null}
+                      assignees={assignees[r.item.repo] ?? null}
+                      viewer={viewer}
                       disabled={!canWrite || busy.has(r.item.key)}
                       today={today}
                       act={(a, ok) => void act(r.item)(a, ok)}

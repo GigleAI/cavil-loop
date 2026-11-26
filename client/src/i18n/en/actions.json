@@ -266,5 +266,18 @@
   "托管：从方案到合并全交给 agent（复审与测试通过后自动合并）": "Autopilot: the agent takes it from proposal to merge (merged automatically once review and tests pass)",
   "等本仓库别的 issue / PR 完成，完成后 daemon 自动接着干": "Waiting for other issues / PRs of this repository; the daemon carries on once they are done",
   "等待人类处理": "Waiting for a human",
-  "上一次建标签没收到回答：先「再查一次」，确认标签还没有再建": "The last attempt got no answer: \"Check again\" first, and create them only once they are confirmed missing"
+  "上一次建标签没收到回答：先「再查一次」，确认标签还没有再建": "The last attempt got no answer: \"Check again\" first, and create them only once they are confirmed missing",
+  "读取 {repo} 可指派的账号失败：{why}": "Could not read the accounts that can be assigned in {repo}: {why}",
+  "GitHub 的可指派账号列表里有一项没有账号名": "An entry in GitHub's list of assignable accounts has no login",
+  "不知道要改哪个负责人，没有修改": "Not sure which assignee to change; nothing was changed",
+  "GitHub 规定一条最多 {n} 个负责人，已经满了，没有修改": "GitHub allows at most {n} assignees and this item already has them; nothing was changed",
+  "GitHub 没有把「{login}」设为负责人（这个账号可能不能被指派到这个仓库），没有修改": "GitHub did not make “{login}” an assignee (this account may not be assignable in this repository); nothing was changed",
+  "GitHub 没有去掉负责人「{login}」，没有修改": "GitHub did not remove the assignee “{login}”; nothing was changed",
+  "GitHub 的回应里读不到负责人列表": "GitHub's answer has no readable list of assignees",
+  "负责人里有「{login}」": "“{login}” is an assignee",
+  "负责人里没有「{login}」": "“{login}” is not an assignee",
+  "把「{login}」设为负责人": "make “{login}” an assignee",
+  "去掉负责人「{login}」": "remove the assignee “{login}”",
+  "已去掉负责人「{login}」": "Removed the assignee “{login}”",
+  "已把「{login}」设为负责人": "Made “{login}” an assignee"
 }

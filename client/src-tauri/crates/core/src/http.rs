@@ -675,6 +675,49 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_with_a_body_sends_the_body() {
+        // GitHub#711: "remove assignees" is DELETE + JSON body; the body must reach GitHub (ureq's typed
+        // builder would refuse one on DELETE — this path must keep sending it)
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got = Arc::new(Mutex::new(None::<(String, String, String)>));
+        let g = got.clone();
+        std::thread::spawn(move || {
+            let Ok((s, _)) = listener.accept() else { return };
+            let mut w = s.try_clone().unwrap();
+            let mut rd = BufReader::new(s);
+            let mut line = String::new();
+            rd.read_line(&mut line).unwrap();
+            let (mut len, mut ctype) = (0usize, String::new());
+            loop {
+                let mut h = String::new();
+                rd.read_line(&mut h).unwrap();
+                if h == "\r\n" {
+                    break;
+                }
+                let lower = h.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                if let Some(v) = lower.strip_prefix("content-type:") {
+                    ctype = v.trim().to_string();
+                }
+            }
+            let mut body = vec![0u8; len];
+            rd.read_exact(&mut body).unwrap();
+            *g.lock().unwrap() = Some((line.trim().to_string(), ctype, String::from_utf8(body).unwrap()));
+            let _ = write!(w, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{{}}");
+        });
+        let sent = r#"{"assignees":["alice"]}"#;
+        let r = send_with(&req("DELETE", format!("http://127.0.0.1:{port}/api/repos/o/r/issues/1/assignees"), Some(sent)), &quick()).unwrap();
+        assert_eq!((r.status, r.body.as_str()), (200, "{}"));
+        let (line, ctype, body) = got.lock().unwrap().clone().expect("the server read the request");
+        assert_eq!(line, "DELETE /api/repos/o/r/issues/1/assignees HTTP/1.1");
+        assert_eq!(ctype, "application/json");
+        assert_eq!(body, sent);
+    }
+
+    #[test]
     fn a_broken_handshake_is_retried_even_for_a_write() {
         let (port, conns) = handshake_breaker();
         let e = send_with(&req("POST", format!("https://127.0.0.1:{port}/api/repos/o/r/issues"), Some("{}")), &quick()).unwrap_err();

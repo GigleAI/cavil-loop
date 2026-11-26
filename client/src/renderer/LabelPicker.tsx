@@ -9,8 +9,11 @@ import { pickOrder } from '../shared/pickOrder';
 import { useLayer, useShortcuts } from './keyboard';
 import { t } from '../shared/i18n';
 import { Verbatim } from './Verbatim';
+import { Avatar } from './Avatar';
 
-export type PickItem = { name: string; color?: string; checked: boolean };
+// GitHub#711: the assignee picker is the same picker — a row may show the account's avatar (`login`)
+// and may be one that cannot be ticked right now (`blocked`: why, shown on the row; unticking still works).
+export type PickItem = { name: string; color?: string; checked: boolean; login?: string; note?: string; blocked?: string };
 
 export function LabelPicker({
   title,
@@ -59,7 +62,7 @@ export function LabelPicker({
     box.current?.querySelector('[data-active="yes"]')?.scrollIntoView?.({ block: 'nearest' });
   }, [at]);
   const toggle = (i: PickItem | undefined) => {
-    if (i && !disabled) onToggle(i);
+    if (i && !disabled && !(i.blocked && !i.checked)) onToggle(i);
   };
   useShortcuts({
     pickerUp: () => setActive(Math.max(0, at - 1)),
@@ -91,13 +94,17 @@ export function LabelPicker({
             data-name={i.name}
             data-checked={i.checked ? 'yes' : 'no'}
             data-active={n === at ? 'yes' : 'no'}
-            className={`${n === at ? 'active' : ''}${disabled ? ' disabled' : ''}`}
+            data-blocked={i.blocked && !i.checked ? 'yes' : 'no'}
+            title={i.blocked && !i.checked ? i.blocked : undefined}
+            className={`${n === at ? 'active' : ''}${disabled || (i.blocked && !i.checked) ? ' disabled' : ''}`}
             onMouseEnter={() => setActive(n)}
             onClick={() => toggle(i)}
           >
             <span className="chk">{i.checked ? '✓' : ''}</span>
             {i.color !== undefined && <span className="dot" style={{ background: `#${i.color || 'ddd'}` }} />}
+            {i.login !== undefined && <Avatar login={i.login} size={16} />}
             <Verbatim from="github">{i.name}</Verbatim>
+            {i.note && <span className="muted small">{i.note}</span>}
           </li>
         ))}
         {shown.length === 0 && <li className="muted">{t('没有匹配的')}</li>}

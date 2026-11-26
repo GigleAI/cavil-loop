@@ -109,6 +109,14 @@ export interface WritableState {
   failLabelsMessage: string | null;
   /** GitHub#474 (PR #537 review round 2): the `Link: rel="next"` a repository's label list answers with (null = none) */
   labelsNextLink: string | null;
+  /** GitHub#711: `owner/repo` lower-cased -> who may be assigned (unset: everyone the repository's items name as author or assignee, and the signed-in account) */
+  assignable: Map<string, string[]>;
+  /** GitHub#711: repositories whose list of assignable accounts answers HTTP 502 */
+  failAssignees: Set<string>;
+  /** GitHub#711: logins (lower-cased) an assignee write leaves out without an error, as GitHub does for an account that cannot be assigned */
+  dropAssignees: Set<string>;
+  /** GitHub#711: answer an assignee write with an item that has no `assignees` field (an answer that proves nothing) */
+  assigneeAnswerWithoutList: boolean;
   /** repositories where a new issue's labels are dropped without an error, as GitHub does for an account without write access (GitHub#245) */
   dropIssueLabels: Set<string>;
   /** clock of updated_at / createdAt written by the fake */
@@ -208,6 +216,10 @@ export function defaultWritable(): WritableState {
     failLabel: null,
     failMilestones: new Set(),
     failLabels: new Set(),
+    assignable: new Map(),
+    failAssignees: new Set(),
+    dropAssignees: new Set(),
+    assigneeAnswerWithoutList: false,
     failLabelsMessage: null,
     labelsNextLink: null,
     dropIssueLabels: new Set(),
@@ -611,6 +623,17 @@ export function handleRest(store: Store, method: string, path: string, body: any
     if (w.failLabels.has(key)) return send(502, { message: w.failLabelsMessage ?? 'Server Error' }), true;
     return send(200, w.repoLabels.get(key) ?? [], w.labelsNextLink ? { link: `<${w.labelsNextLink}>; rel="next"` } : undefined), true;
   }
+  // GitHub#711: who may be assigned (GitHub's GET /repos/o/r/assignees; one page here)
+  if (method === 'GET' && rest === '/assignees') {
+    if (w.failAssignees.has(key)) return send(502, { message: 'Server Error' }), true;
+    let list = w.assignable.get(key);
+    if (!list) {
+      const seen = new Map<string, string>([[actor.toLowerCase(), actor]]);
+      for (const r of store.repos.get(key) ?? []) for (const l of [r.user?.login, ...(r.assignees ?? []).map((a: any) => a.login)]) if (l) seen.set(l.toLowerCase(), l);
+      list = [...seen.values()];
+    }
+    return send(200, list.map((login) => ({ login }))), true;
+  }
   if (method === 'GET' && rest === '/milestones') {
     if (w.failMilestones.has(key)) return send(502, { message: 'Server Error' }), true;
     return send(200, w.milestones.get(key) ?? []), true;
@@ -694,6 +717,23 @@ export function handleRest(store: Store, method: string, path: string, body: any
     }
     touch(store, c);
     return send(200, gqlContent(c).labels.nodes), true;
+  }
+  // GitHub#711: add / remove assignees — only the logins sent; GitHub keeps at most 10 and leaves out, without an
+  // error, an account that cannot be assigned; it answers with the item, whose `assignees` is the proof
+  if (im[1] === 'issues' && (method === 'POST' || method === 'DELETE') && sub === '/assignees') {
+    const logins: string[] = Array.isArray(body?.assignees) ? body.assignees.filter((x: unknown): x is string => typeof x === 'string') : [];
+    let next: string[] = (gqlContent(c).assignees?.nodes ?? []).map((a: any) => a.login as string);
+    if (method === 'POST') {
+      for (const l of logins) if (!w.dropAssignees.has(l.toLowerCase()) && !next.some((x) => x.toLowerCase() === l.toLowerCase()) && next.length < 10) next = [...next, l];
+    } else {
+      next = next.filter((x) => !logins.some((l) => l.toLowerCase() === x.toLowerCase()));
+    }
+    for (const r of c.rest) r.assignees = next.map((login) => ({ login }));
+    for (const g of c.gql) g.assignees = { nodes: next.map((login) => ({ login })) };
+    touch(store, c);
+    const answer: Record<string, unknown> = { number: c.number, html_url: `https://github.com/${repo}/issues/${c.number}` };
+    if (!w.assigneeAnswerWithoutList) answer.assignees = next.map((login) => ({ login }));
+    return send(method === 'POST' ? 201 : 200, answer), true;
   }
   if (im[1] === 'issues' && method === 'PUT' && sub === '/labels') {
     // the whole-list replacement: the client must never use it, but GitHub has it

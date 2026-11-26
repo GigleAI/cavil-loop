@@ -1,6 +1,6 @@
 // GitHub#323: a failed change's red bar above the board goes away by itself once the change it is
 // about no longer needs anything from anyone — confirmed on GitHub, resent and accepted, or
-// abandoned. It is about field changes only (labels, milestone, status, iteration): those are the
+// abandoned. It is about field changes only (labels, assignees, milestone, status, iteration): those are the
 // ones kept in the "not saved / not confirmed" list, and that list is what says it is over.
 //
 // The rule is "seen waiting, then seen gone": the change must first be seen in the list as failed /
@@ -28,6 +28,10 @@ export function noteEditOf(a: WriteAction): NoteEdit | null {
     case 'removeLabel':
       // the colour is not part of the id
       field = { kind: 'label', label: a.label, color: '' };
+      break;
+    case 'addAssignee':
+    case 'removeAssignee':
+      field = { kind: 'assignee', login: a.login };
       break;
     case 'setMilestone':
       field = { kind: 'milestone' };
