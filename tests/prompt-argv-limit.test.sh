@@ -185,6 +185,8 @@ SH
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 log="${FAKE_LOG:?}/tmux.log"
+# 起 worker 前的 agent 命令检查（GitHub#731）开的检查会话：假 tmux 起不了，检查按「不知道」照常往下走；不算起程序
+[[ "$*" == *" -s cavil-bincheck-"* ]] && exit 1
 case "$1" in
     new-session)
         name=""; prev=""

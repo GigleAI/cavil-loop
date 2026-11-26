@@ -4608,6 +4608,47 @@ item bounced to `pending/human` with a comment naming the agent and directory, p
 
 </details>
 
+### A worker dies right away with exit code 127 (agent command not found)
+
+Before the daemon starts a worker it runs `command -v <agent>` the way tmux will start that worker — same shell setting,
+same start-up files, same environment and working directory. If the agent's command is clearly missing or not executable
+there, no session is started: the item goes to `pending/human` with a comment naming the command, the PATH the worker
+would have had (home directory written as `~`), and the steps below; `poll.log` says `起 worker 前检查：…找不到…`. That
+hand-over does not count towards the self-heal retries.
+
+<details><summary>What to do</summary>
+
+1. On the daemon machine, make the command appear in that PATH. Either change `PATH` in
+   `~/.config/cavil-loop/<project>.conf`, or link the command into a directory already on it — the example uses
+   `~/.local/bin` and `codex`; put the command's current full path on the first line:
+
+   ```bash
+   new=/path/to/new/codex
+   t=~/.local/bin/codex
+   if [ -e "$t" ] || [ -L "$t" ]; then echo "already exists: $t"; elif ln -s "$new" "$t"; then echo linked; fi
+   ```
+
+   `already exists` means something (a file, a directory, a link) is already at that place: stop, look at it, and do not
+   go on to step 2. Only `linked` means it worked.
+2. Remove `pending/human` from the item and make sure the dispatch label named in the comment is on it (add it back if not).
+3. The next poll checks again in the worker's environment; if the command is still missing, the same comment is posted again.
+
+</details>
+
+<details><summary>When the check cannot tell, and the exit code</summary>
+
+The check is skipped, and the worker starts as before, when it cannot prove it sees what the worker will see: the worker's
+program is being restarted in its existing pane (tmux reuses the shell that pane was created with), a tmux read fails, or no
+result arrives within 10 seconds. A worker that then exits at once is reported with its exit code instead of "session
+corrupted" — in the quick-exit hand-over, in the "resume died within 2 s" line and in self-heal: 127 = command not found,
+126 = cannot execute (also a prompt over the command-line length limit), 0 = the program ended normally, 128+N = killed by
+signal N. The code is kept in `$STATE_DIR/worker-exit/<tmux session>` (removed by `cleanup-issue.sh`); without it the
+message says no exit code was read and lists the usual causes. Before every launch the daemon writes a fresh marker next to
+that file; if it cannot (the state directory is not writable), the worker is not started and `poll.log` says
+`这次启动的记号写不进` — fix the directory's permissions and the next poll tries again.
+
+</details>
+
 ### Every project's poll.log stops at the same minute
 
 Not one stuck worker — the whole `systemd --user` manager is gone, and with it every timer, every tmux session,
@@ -4698,13 +4739,13 @@ systemctl --user show cavil-loop-poll@<instance>.service -p KillMode   # want: p
 
 <details><summary>Symptom in poll.log</summary>
 
-A loop that always ends in a false "session corrupted" verdict:
+A loop that always ends in the item being handed to a human after three retries:
 
 ```
 dispatch PR #N comment ...
-🔄 self-heal: PR #N session=<prefix>-issue<M> 不存在 → 自动重新派工（第 1/3 次 …）
+🔄 self-heal: PR #N session=<prefix>-issue<M> 不存在（没读到最后一次的退出码…）→ 自动重新派工（第 1/3 次 …）
 … (3 rounds) …
-⚠️ self-heal: PR #N 自动恢复 3 次仍死（疑似会话损坏）→ 转人工 pending/human
+⚠️ self-heal: PR #N 自动恢复 3 次仍死（没读到最后一次的退出码…）→ 转人工 pending/human
 ```
 
 Check whether the tmux server is alive at all:
@@ -4725,8 +4766,9 @@ it lands inside `cavil-loop-poll@<i>.service`. With `Type=oneshot`, systemd's de
 `KillMode=control-group` then SIGTERMs everything left in that cgroup the moment the poll
 script exits, taking the brand-new server and its worker session with it.
 
-So self-heal can't ever succeed: it re-dispatches, the session dies again, three rounds burn
-out, and the issue gets dumped to `pending/human` under a bogus "session corrupted" reason.
+So self-heal can't ever succeed: it re-dispatches, the session dies again, three rounds burn out, and the
+issue is handed to `pending/human`. No exit code is recorded in this case: systemd stops the worker's shell together with
+the program, before it can write one.
 
 </details>
 

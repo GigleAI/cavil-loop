@@ -82,6 +82,9 @@ SH
 # tmux：有状态的假货。new-session 时把两份配置文件拍个快照（断言「起会话那一刻已经信任」）
 cat > "$FAKEBIN/tmux" <<'SH'
 #!/usr/bin/env bash
+# 起 worker 前的 agent 命令检查（GitHub#731）开的检查会话：假 tmux 起不了，检查按「不知道」照常往下走；
+# 不记录、不算起程序（检查在 tests/agent-bin-check.test.sh 测）
+[[ "$*" == *" -s cavil-bincheck-"* ]] && exit 1
 FT="${FAKE_TMUX_DIR:?}"; mkdir -p "$FT"
 echo "$*" >> "$FT/calls"
 tgt() { local a; while [ $# -gt 0 ]; do [ "$1" = -t ] && { a="$2"; a="${a#=}"; printf '%s' "${a%%:*}"; return; }; shift; done; }

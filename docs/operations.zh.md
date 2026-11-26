@@ -4091,6 +4091,42 @@ daemon 每次起会话前都会先写信任记录、起完看一眼屏幕，所�
 
 </details>
 
+### worker 一起来就退出，退出码 127（找不到 agent 命令）
+
+daemon 起 worker 之前，会照 tmux 起这个 worker 的方式跑一次 `command -v <agent>`——同样的 shell 设置、同样的启动文件、
+同样的环境和工作目录。在那里明确找不到 agent 命令、或者找到了却不能执行时，不起会话：条目转 `pending/human`，留言写明
+命令名、worker 会拿到的 PATH（家目录写成 `~`）和下面的步骤；`poll.log` 里有一行 `起 worker 前检查：…找不到…`。这次转人工
+不计入 self-heal 的重试次数。
+
+<details><summary>怎么处理</summary>
+
+1. 在 daemon 所在机器上让这个命令出现在那个 PATH 里：改 `~/.config/cavil-loop/<项目>.conf` 里的 `PATH`，或者软链进
+   其中已有的目录——下面以 `~/.local/bin` 和 `codex` 为例，第一行换成这个命令现在的完整路径：
+
+   ```bash
+   new=/path/to/new/codex
+   t=~/.local/bin/codex
+   if [ -e "$t" ] || [ -L "$t" ]; then echo "already exists: $t"; elif ln -s "$new" "$t"; then echo linked; fi
+   ```
+
+   输出 `already exists` 说明那个位置已经有东西（文件、目录或软链）：停下先看清是什么，不要做第 2 步。输出 `linked`
+   才算成功。
+2. 摘掉条目上的 `pending/human`，确认留言里写的派工标签挂着，没挂就加上。
+3. daemon 下一轮会在 worker 的环境里再查一次；还找不到会再留一条同样的说明。
+
+</details>
+
+<details><summary>查不清的时候，以及退出码</summary>
+
+检查没法证明自己看到的就是 worker 会看到的时，就不检查，照常起 worker：worker 程序在原有窗格里重起（tmux 沿用那个窗格
+创建时的 shell）、tmux 查询失败、10 秒内没拿到结果。之后 worker 一起来就退出的，报的是退出码，不再说「会话损坏」——
+新 issue 派工的秒退转人工、「续接 2 秒内死了」那一行、self-heal 都一样：127 = 找不到命令，126 = 不能执行（提示词超过
+命令行长度上限也是它），0 = 程序自己正常结束，128+N = 被信号 N 结束。退出码记在 `$STATE_DIR/worker-exit/<tmux 会话>`
+（`cleanup-issue.sh` 会删掉）；没有记录时，留言写「没读到退出码」并列出常见原因。每次起程序之前，daemon 先在它旁边写一个新的
+启动记号；写不进（状态目录不可写）就不起这个 worker，`poll.log` 里写着 `这次启动的记号写不进`——把目录权限改好，下一轮会再试。
+
+</details>
+
 ### 所有项目的 poll.log 停在同一分钟
 
 不是哪个 worker 卡住了——整个 `systemd --user` manager 没了，连带**所有**项目的每个定时任务、每个 tmux 会话、每个
@@ -4175,13 +4211,13 @@ systemctl --user show cavil-loop-poll@<instance>.service -p KillMode   # want: p
 
 <details><summary>poll.log 里的现象</summary>
 
-一个总以错误的「会话损坏」结论收场的循环：
+一个三轮重试后总以转人工收场的循环：
 
 ```
 dispatch PR #N comment ...
-🔄 self-heal: PR #N session=<prefix>-issue<M> 不存在 → 自动重新派工（第 1/3 次 …）
+🔄 self-heal: PR #N session=<prefix>-issue<M> 不存在（没读到最后一次的退出码…）→ 自动重新派工（第 1/3 次 …）
 … (3 rounds) …
-⚠️ self-heal: PR #N 自动恢复 3 次仍死（疑似会话损坏）→ 转人工 pending/human
+⚠️ self-heal: PR #N 自动恢复 3 次仍死（没读到最后一次的退出码…）→ 转人工 pending/human
 ```
 
 看 tmux server 到底还在不在：
@@ -4200,7 +4236,7 @@ tmux ls   # "no server running on /tmp/tmux-<uid>/default" → this is your case
 默认的 `KillMode=control-group` 会在轮询脚本退出的那一刻给这个 cgroup 里剩下的一切发 SIGTERM，刚起的 server 和它的
 worker 会话一起没了。
 
-所以 self-heal 永远不会成功：重新派工、会话又死、三轮用完，这条活被以假的「会话损坏」理由扔到 `pending/human`。
+所以 self-heal 永远不会成功：重新派工、会话又死、三轮用完，这条活被转到 `pending/human`。这种情况记不下退出码：systemd 把 worker 的 shell 和程序一起结束了，它来不及写。
 
 </details>
 

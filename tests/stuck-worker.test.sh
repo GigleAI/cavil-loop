@@ -1577,7 +1577,7 @@ if ! compat_skip "功能关闭时的调用、state.json、标签与改动前" "$
         jq -S . "$STATE" > "$TMP/off.$tag/state"
         # 窗格编号、进程号每次起 server 都从头数，两边一致；抓的是参数原文
         # 两边脚本目录不同（日志脱敏管道里带着脚本的路径），换成同一个占位再比
-        sed "s|$root/|ROOT/|g" "$CTL/tmux.log" > "$TMP/off.$tag/tmux"
+        sed "s|$root/|ROOT/|g" "$CTL/tmux.log" | compat_bincheck_tmux > "$TMP/off.$tag/tmux"   # 起 worker 前的检查见 compat_bincheck_tmux
         echo "$(alive "$N")/$(labels_of "$N")/$(labels_of "$M")" > "$TMP/off.$tag/end"
         ROOT="$NEW"; STUCK_OFF=0
     }

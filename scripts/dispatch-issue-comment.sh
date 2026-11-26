@@ -141,11 +141,14 @@ if [ -d "$WORKTREE" ]; then
     while IFS= read -r -d '' _tmux_e; do
         tmux_env+=("$_tmux_e")
     done < <(tmux_env_args)
+    # 起程序之前查 agent 命令在不在（GitHub#731）：明确找不到就转人工并退出，查不清照常走
+    agent_bin_gate "$ISSUE" "$ISSUE" "$TMUX_SESSION" auto "$WORKTREE" "${tmux_env[@]}"
 
     # B1: 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
         || dispatch_refused_exit "$ISSUE"
+    agent_exit_wrap_into "$TMUX_SESSION"   # 程序退出时记下退出码（GitHub#731）
     dispatch_claim "$ISSUE"
     dispatch_handing
     log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
@@ -162,10 +165,11 @@ if [ -d "$WORKTREE" ]; then
             exit "$DISPATCH_RC_UNKNOWN"
         fi
         if [ "$_alive" = 1 ]; then
-            log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
+            log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION" "$AGENT_EXIT_TOKEN")")），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
             agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
                 || dispatch_refused_exit "$ISSUE"
+            agent_exit_wrap_into "$TMUX_SESSION"
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi

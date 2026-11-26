@@ -98,6 +98,9 @@ fi
 # 本条目以前的启动记录用不上了（代数已变），一并删掉
 [ "$HEAVY_CLEANUP" != 1 ] || heavy_launch_forget_item "$ISSUE"
 
+# 这条会话的退出码记录（GitHub#731）：会话已经杀掉，留着没用
+agent_exit_forget "$TMUX_SESSION" || log "  ⚠️ 删不掉 $TMUX_SESSION 的退出码记录（继续 cleanup）"
+
 # ── 3c. 派工提示词 ──
 # worker 只在启动那一刻读它，session 已经杀掉，留着只会在状态目录里越积越多
 prompt_files_forget "$ISSUE" || log "  ⚠️ 删不掉条目 #$ISSUE 的派工提示词（继续 cleanup）"
