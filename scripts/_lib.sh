@@ -8267,14 +8267,14 @@ session_log_pipe_ensure() {   # <tmux_session> <worker 窗格> <已挂=1> <日�
 #   （保持 "has-session==false == worker 死" 的语义，self-heal 才能正常翻 label），return 1
 # 只在没有 has-session-based fallback 的路径（dispatch-new-issue）用；
 # 注入/resume 路径靠各自 Case 逻辑，不在这里碰。
-verify_fresh_session() {   # <tmux_session> [等几秒] [工作编号：用来读这次的退出码]
+verify_fresh_session() {   # <tmux_session> [等几秒]
     local sess="$1"
-    local wait_s="${2:-2}" num="${3:-}"
+    local wait_s="${2:-2}"
     sleep "$wait_s"
     local dead
     dead="$(tmux list-panes -t "=$sess" -F '#{pane_dead}' 2>/dev/null | head -1)"
     if [ "$dead" = "1" ] || ! session_alive "$sess"; then
-        log "  ❌ $sess 启动后 ${wait_s}s 内秒退（$(agent_exit_explain "$(agent_exit_read "$sess" "$num" "$AGENT_EXIT_TOKEN")")），capture pane 死因："
+        log "  ❌ $sess 启动后 ${wait_s}s 内秒退（$(agent_exit_explain "$(agent_exit_read "$sess" "$AGENT_EXIT_TOKEN")")），capture pane 死因："
         local log_path
         log_path="$(session_log_path "$sess")"
         {
@@ -12304,9 +12304,11 @@ dispatch_prompt_refused() {   # <num> → 0 = 已转人工；77 / 78 = 条目变
 #    CAVIL_AGENT_BIN_CHECK_WAIT (1–60, anything else = 10) is for tests only.
 # 2. **Record the exit code** (`agent_exit_wrap`): the launch command is followed by a few shell words that
 #    write `<code> <launch token>` to `$STATE_DIR/worker-exit/<tmux session>` and exit with the same code,
-#    so the session still disappears when the program ends. The token is written to `<file>.launch`
-#    before the launch; a record whose token differs (an old run, a failed overwrite) is never read as this
-#    run's. The words are POSIX shell, so they are only added when the shell tmux will use is one of the
+#    so the session still disappears when the program ends. A fresh token is written to `<file>.launch` and
+#    read back before every launch; when that fails the program is not started at all (the dispatcher stops),
+#    so `.launch` always names the last program that really ran and a record whose token differs (an old
+#    run, an undeletable leftover) is never read as this run's — no timestamps, no "could not read, so it
+#    must be old" (code review rounds 1–3 of #731). The words are POSIX shell, so they are only added when the shell tmux will use is one of the
 #    POSIX family; otherwise the command is unchanged and the reader says it has no exit code. Readers: the
 #    new-issue quick-exit check, the "resume died within 2 s" fallback and self-heal in agent-poll.sh — none
 #    of them says "session corrupted" any more. `cleanup-issue.sh` deletes both files.
@@ -12511,82 +12513,59 @@ agent_exit_shell_posix() {   # <tmux_session>
     return 1
 }
 
-# 一条记录算「这次启动的」要同时满足（GitHub#731 代码复审第 1、2 轮）：
-#   · 记录里的启动记号等于这次的记号——派工脚本里读（秒退、续接降级）拿 AGENT_EXIT_TOKEN 比，它是本进程这次
-#     包装时生成的，包装没成功就是空、读出来就是「没读到」；轮询里读（self-heal）拿 <记录>.launch 比
-#   · 记录比这个条目最新的派工提示词文件新（agent_exit_record_fresh）：每次派工在起程序之前都重写提示词
-# 生命周期收口在包装这一步：起程序之前，旧记录要么删掉，要么已经不「新」（比提示词旧）。两样都做不到——旧记录
-# 删不掉、把提示词标成更新也失败或没生效——就**不起这个程序**（agent_exit_wrap 返回 3，调用方停下）：这样留在磁盘
-# 上、还被认作「新」的那条记录，一定属于真正最后跑过的那个程序，self-heal 报的就是它的退出码，不会把上一次的当成
-# 这一次的。同一次派工里续接降级的第二次启动被拦下时，条目停在 doing/agent、没有会话，下一轮 self-heal 报的是
-# 第一次（唯一真跑过的那次）的退出码。
+# 一条退出码记录算「这次启动的」只有一个条件：记录里的启动记号 = 这次启动的记号（GitHub#731 代码复审第 1–3 轮）。
+# 「这次的记号」只有一个来源：<记录>.launch。起程序之前包装先生成新记号、写进 .launch、再读回核对——这一步**做不到
+# 就不起程序**（agent_exit_wrap 返回 3，派工脚本停下）。所以只要程序起了，.launch 里一定是它的记号：
+#   · 旧记录删不掉也没关系：它带的是旧记号，对不上，读出「没读到」
+#   · 之后目录读不了：读不到 .launch / 记录 → 「没读到」；恢复之后 .launch 仍是最后一次启动的记号，旧记录仍对不上
+#   · 没起程序（写不了记号）：.launch 和记录还是上一次真跑过的那个程序的，读到的就是它的退出码
+#   · shell 不是 POSIX 一族、不包装：照样换上新记号，这次不写记录，读出「没读到」
+# 派工脚本里读（秒退、续接降级）另拿本进程这次生成的 AGENT_EXIT_TOKEN 比（读的是同一个记号，少一次读盘）。
+# 不靠删旧文件、不靠时间先后，没有「查不到当成已过期」这一类判断。
 AGENT_EXIT_TOKEN=""
-# 记录比这个条目最新的派工提示词新（读取和包装共用这一条判断）。没有提示词文件 = 不新
-agent_exit_record_fresh() {   # <记录文件> <工作编号>
-    local newest="" p
-    for p in "$(prompt_dir)/$2"-*.md; do
-        [ -e "$p" ] || continue
-        if [ -z "$newest" ] || [ "$p" -nt "$newest" ]; then newest="$p"; fi
-    done
-    [ -n "$newest" ] && [ "$1" -nt "$newest" ]
-}
-# stdout：包好的启动命令（不能包时原样）。在当前 shell 里调（设 AGENT_EXIT_TOKEN），用 agent_exit_wrap_into。
-# 返回 0 = 可以起（包好了，或原样但旧记录已不会被认作这次的）；3 = 旧记录删不掉也没法让它变旧：不要起
-agent_exit_wrap() {   # <tmux_session> <工作编号> <命令>
-    local sess="$1" num="$2" cmd="$3" f tok
+# stdout：包好的启动命令（shell 不是 POSIX 一族时原样）。返回 0 = 新记号已落盘、可以起；3 = 记号写不上：不要起
+agent_exit_wrap() {   # <tmux_session> <命令>
+    local sess="$1" cmd="$2" f tok got
     AGENT_EXIT_TOKEN=""
     f="$(agent_exit_file "$sess")"
-    rm -f "$f" "$f.launch" 2>/dev/null || true
-    if [ -e "$f" ] || [ -e "$f.launch" ]; then
-        agent_exit_make_stale "$num" "$f" || return 3
-        printf '%s' "$cmd"; return 0
-    fi
-    case "$f" in *"'"*) printf '%s' "$cmd"; return 0 ;; esac
-    if ! agent_exit_shell_posix "$sess" || ! mkdir -p "$AGENT_EXIT_DIR" 2>/dev/null; then
-        printf '%s' "$cmd"; return 0
-    fi
-    tok="$(agent_session_new_uuid 2>/dev/null)" || tok=""
-    if ! [[ "$tok" =~ ^[0-9a-f-]+$ ]] || ! printf '%s\n' "$tok" > "$f.launch" 2>/dev/null \
-        || [ "$(cat "$f.launch" 2>/dev/null)" != "$tok" ]; then
-        # 没有旧记录（上面删掉了），这次也不写：之后读到的只能是「没读到」
-        rm -f "$f.launch" 2>/dev/null || true
-        printf '%s' "$cmd"; return 0
-    fi
+    case "$f" in *"'"*|*$'\n'*) return 3 ;; esac
+    mkdir -p "$AGENT_EXIT_DIR" 2>/dev/null || return 3
+    tok="$(agent_session_new_uuid 2>/dev/null)" || return 3
+    [[ "$tok" =~ ^[0-9a-f-]+$ ]] || return 3
+    printf '%s\n' "$tok" > "$f.launch" 2>/dev/null || return 3
+    got=$(cat "$f.launch" 2>/dev/null) || return 3
+    [ "$got" = "$tok" ] || return 3
+    rm -f "$f" 2>/dev/null || true   # 删不掉也不要紧：旧记录的记号对不上
     AGENT_EXIT_TOKEN="$tok"
+    if ! agent_exit_shell_posix "$sess"; then printf '%s' "$cmd"; return 0; fi
     printf "%s; __cavil_rc=\$?; printf '%%s %%s\\\\n' \"\$__cavil_rc\" '%s' > '%s' 2>/dev/null; exit \$__cavil_rc" "$cmd" "$tok" "$f"
 }
 # 在当前 shell 里包装 CMD（AGENT_EXIT_TOKEN 留在当前 shell）。返回非 0 = 不要起这个程序（原因已记日志）
-agent_exit_wrap_into() {   # <tmux_session> <工作编号>：读写全局 CMD
+agent_exit_wrap_into() {   # <tmux_session>：读写全局 CMD
     local out rc=0
     AGENT_EXIT_TOKEN=""
     if ! out=$(mktemp); then
         log "  ❌ 包装启动命令失败（建不出临时文件），不起程序"; return 1
     fi
-    agent_exit_wrap "$1" "$2" "$CMD" > "$out" || rc=$?
+    agent_exit_wrap "$1" "$CMD" > "$out" || rc=$?
     if [ "$rc" != 0 ]; then
         rm -f "$out"
-        log "  ❌ 上次的退出码记录删不掉（$(agent_exit_file "$1")），也没法让它变旧：不起程序——起了的话，之后会把上一次的退出码当成这一次的"
+        log "  ❌ 这次启动的记号写不进 $(agent_exit_file "$1").launch：不起程序——起了的话，之后会把上一次的退出码当成这一次的"
         return 1
     fi
     CMD="$(cat "$out")"; rm -f "$out"
     [ -n "$CMD" ] || { log "  ❌ 包装启动命令失败（读不回包装结果），不起程序"; return 1; }
 }
-# 旧记录删不掉：把这个条目的提示词文件标成更新，再用读取时的同一条判断核对旧记录确实不新了
-agent_exit_make_stale() {   # <工作编号> <记录文件>
-    touch -- "$(prompt_dir)/$1"-*.md 2>/dev/null || true
-    ! agent_exit_record_fresh "$2" "$1"
-}
 
 # 这次启动的退出码（数字），读不到 / 不是这次的 → 空
-#   <期望记号>：派工脚本里传 "$AGENT_EXIT_TOKEN"（空 = 这次没包装成功 → 读不到）；轮询里不传，用 .launch
-agent_exit_read() {   # <tmux_session> <工作编号> [期望记号]
+#   <期望记号>：派工脚本里传 "$AGENT_EXIT_TOKEN"；轮询里不传，用 .launch
+agent_exit_read() {   # <tmux_session> [期望记号]
     local f code tok want
     f="$(agent_exit_file "$1")"
-    if [ "$#" -ge 3 ]; then want="$3"; else want=$(cat "$f.launch" 2>/dev/null) || return 0; fi
-    [ -n "$want" ] || return 0
+    if [ "$#" -ge 2 ]; then want="$2"; else want=$(cat "$f.launch" 2>/dev/null) || return 0; fi
+    [[ "$want" =~ ^[0-9a-f-]+$ ]] || return 0
     read -r code tok < "$f" 2>/dev/null || return 0
     [[ "$code" =~ ^[0-9]{1,3}$ ]] && [ "$tok" = "$want" ] || return 0
-    agent_exit_record_fresh "$f" "$2" || return 0
     printf '%s' "$code"
 }
 

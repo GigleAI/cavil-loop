@@ -153,7 +153,7 @@ agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
 log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
     || dispatch_refused_exit "$ISSUE"
-agent_exit_wrap_into "$TMUX_SESSION" "$ISSUE"   # 程序退出时记下退出码（GitHub#731）
+agent_exit_wrap_into "$TMUX_SESSION"   # 程序退出时记下退出码（GitHub#731）
 # 先认领（doing/agent 打上、触发标签摘掉、读回确认），再起会话交任务（GitHub#700）
 dispatch_claim "$ISSUE"
 # remain-on-exit 用 `\;` 链在同一次 tmux 调用里设上：worker 秒退时 pane 留尸，
@@ -178,8 +178,8 @@ start_session_logging "$TMUX_SESSION"
 # 4.6 探活：fresh 路径没有 has-session-based fallback，worker 偶发秒退时
 #     必须就地 capture 死因（否则 pipe-pane 一挂日志全空），并保持 label 干净
 #     —— 起会话前已经认领（doing/agent）；没活起来就转人工（转之前先核对条目没被别人改过）。
-if ! verify_fresh_session "$TMUX_SESSION" 2 "$ISSUE"; then
-    _exit_note="$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION" "$ISSUE" "$AGENT_EXIT_TOKEN")")"
+if ! verify_fresh_session "$TMUX_SESSION"; then
+    _exit_note="$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION" "$AGENT_EXIT_TOKEN")")"
     log "dispatch-new-issue: #$ISSUE worker 秒退（${_exit_note}）→ 翻 $LABEL_PENDING_AGENT 回 ${LABEL_PENDING_HUMAN}（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
     _r=0; dispatch_to_human "$ISSUE" \
         "worker 启动后立刻退出了（${_exit_note}）。死因已截在 daemon 机器的 poll.log 里。" \

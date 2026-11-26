@@ -21,8 +21,8 @@
 #   8. 真 agent-poll.sh：真起、真退出的程序留下的退出码，self-heal 的日志和用完次数的交人留言都带上，
 #      不再说「疑似会话损坏」；下一轮派工检查到命令不在 → 转人工、计数清零（跨轮）
 #   8b. 退出码矩阵：0、被信号结束、记录写坏、记号对不上；旧记录删不掉 / 新记号写不了时读出「没读到」，不冒充本次
-#   8c. 同一次派工里续接失败、降级重起：旧记录删不掉时，能让它变旧就照常重起、之后读不到；连变旧也做不到就不重起，
-#       之后读到的是唯一真跑过的那次的退出码
+#   8c. 同一次派工里续接失败、降级重起：旧记录删不掉但新记号写进了 → 照常重起，之后读不到（目录读不了再恢复也一样），
+#       重起的程序退出后读到它自己的码；新记号写不进 → 不重起，之后读到的是唯一真跑过的那次的退出码
 #   9. cleanup-issue.sh 删掉退出码记录
 #   10. 交人留言和中英文档里给人的软链命令三处一字不差，在临时 HOME 里照字面跑：目标位置已有文件 / 目录 / 软链 /
 #       悬空软链都停下不写，空位置才建；建好后下一次派工检查找得到
@@ -63,18 +63,19 @@ cat > "$AGENTDIR/claude" <<SH
 [ -n "\${TMUX:-}" ] || exit 0
 [ -z "\${CAVIL_DIRECT:-}" ] || exit 0   # 「不检查直接起」那一组：起得来就立刻退出 0
 echo "ran \$(pwd -P)" >> "$CTL/ran"
-# $CTL/mode：exit127 / exit0 = 3 秒后以这个码退出（过了派工的 2 秒秒退检查）；term = 3 秒后被 SIGTERM 结束；
-# now127 = 立刻以 127 退出（秒退）；没有 = 一直睡
+# $CTL/mode：exit127 / exit0 / term = 等测试放行（$CTL/go 出现，测试在派工结束后才放）再以这个码退出 /
+# 被 SIGTERM 结束——不靠固定等几秒，机器再忙也过得了派工的秒退检查；now127 = 立刻以 127 退出（秒退）；没有 = 一直睡
+waitgo() { local i; for ((i = 0; i < 600; i++)); do [ -e "$CTL/go" ] && return 0; sleep 0.1; done; }
 case "\$(cat "$CTL/mode" 2>/dev/null)" in
-    exit127) sleep 3; exit 127 ;;
-    exit0) sleep 3; exit 0 ;;
-    term) sleep 3; kill -TERM \$\$; sleep 5 ;;
+    exit127) waitgo; exit 127 ;;
+    exit0) waitgo; exit 0 ;;
+    term) waitgo; kill -TERM \$\$; sleep 5 ;;
     now127) exit 127 ;;
-    # 续接那次：先布好下一步的故障（删不掉退出码记录；arm-both 另让提示词标不成更新），再以 127 退出；
-    # 降级重起的那次（如果真起了）就一直睡
-    arm-rm|arm-both)
-        touch "$CTL/fail-rm"; [ "\$(cat "$CTL/mode")" = arm-both ] && touch "$CTL/fail-touch"
-        echo sleep > "$CTL/mode"; exit 127 ;;
+    # 续接那次：先布好下一步的故障，再以 127 退出；降级重起的那次（如果真起了）等放行后以 0 退出
+    #   arm-rm = 退出码目录里的旧文件删不掉；arm-ro = 这次启动的记号文件写不进（只读）
+    arm-rm|arm-ro)
+        if [ "\$(cat "$CTL/mode")" = arm-rm ]; then touch "$CTL/fail-rm"; else chmod 444 "\$(cat "$CTL/launchfile")"; fi
+        echo exit0 > "$CTL/mode"; exit 127 ;;
 esac
 exec sleep 60
 SH
@@ -109,16 +110,11 @@ if [ -e "$CTL/flip-shell" ] && [ "\${1:-}" = kill-session ] && [[ "\$*" == *cavi
 fi
 exec "$NEXT_TMUX" "\${args[@]}"
 SH
-# rm / touch 垫片：$CTL/fail-rm 在时删不掉退出码目录里的文件；$CTL/fail-touch 在时提示词文件标不成更新
+# rm 垫片：$CTL/fail-rm 在时删不掉退出码目录里的文件
 cat > "$FAKEBIN/rm" <<SH
 #!/usr/bin/env bash
 if [ -e "$CTL/fail-rm" ]; then for a in "\$@"; do case "\$a" in */worker-exit/*) exit 1 ;; esac; done; fi
 exec /bin/rm "\$@"
-SH
-cat > "$FAKEBIN/touch" <<SH
-#!/usr/bin/env bash
-if [ -e "$CTL/fail-touch" ]; then for a in "\$@"; do case "\$a" in */prompts/*) exit 1 ;; esac; done; fi
-exec /usr/bin/touch "\$@"
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKEBIN/systemctl"
 chmod +x "$FAKEBIN"/*
@@ -166,7 +162,7 @@ CAVIL_AGENT_BIN_CHECK_WAIT=2
 GH_TOKEN="fake-token-for-test"
 PATH="${front}\$(printf '%s' "\$PATH" | tr ':' '\n' | grep -vxF -f "$CTL/hide" | paste -sd: -)"
 CONF
-    rm -rf "$CTL/items" "$CTL/comments" "$CTL/ran" "$CTL/gh.log" "$CTL/tmux.log" "$CTL"/fail-* "$CTL/stall" "$CTL/flip-shell" "$CTL/mode"
+    rm -rf "$CTL/items" "$CTL/comments" "$CTL/ran" "$CTL/gh.log" "$CTL/tmux.log" "$CTL"/fail-* "$CTL/stall" "$CTL/flip-shell" "$CTL/mode" "$CTL/go"
     mkdir -p "$CTL/items"; : > "$CTL/items/$P.pr"
     tmux kill-session -t "=abc-issue$N" 2>/dev/null
     tmux set-option -gu default-shell 2>/dev/null; tmux set-environment -gu BASH_ENV 2>/dev/null
@@ -191,7 +187,7 @@ prlabels() { sort "$CTL/items/$P" 2>/dev/null | grep -v '^$' | paste -sd, -; }
 # 跨进程读这次的退出码（和 self-heal 一样：不带期望记号）
 read_exit() {
     tmux_sandbox_env_i HOME="$S/home" CODING_AGENT_CONFIG="$S/config" REPO_DIR="$REPO_DIR" OUT="$CTL/exit.out" N="$N" \
-        bash -c 'source "$REPO_DIR/scripts/_lib.sh"; agent_exit_read "abc-issue$N" "$N" > "$OUT"' > /dev/null 2>&1
+        bash -c 'source "$REPO_DIR/scripts/_lib.sh"; agent_exit_read "abc-issue$N" > "$OUT"' > /dev/null 2>&1
     cat "$CTL/exit.out" 2>/dev/null
 }
 wait_gone() { local i; for ((i = 0; i < 100; i++)); do sess_alive || return 0; sleep 0.1; done; return 1; }
@@ -378,7 +374,8 @@ for mode in exit0 term exit127; do
     scenario "exit-$mode" yes
     echo "$mode" > "$CTL/mode"
     run_dispatch new
-    wait_gone
+    chk "[$mode] 到达性 · 程序起来了、等着放行" "$(yesno sess_alive)" yes
+    touch "$CTL/go"; wait_gone
     case "$mode" in
         exit0) chk "正常结束 → 0" "$(read_exit)" 0; has "白话：正常结束" "$(tmux_sandbox_env_i REPO_DIR="$REPO_DIR" HOME="$S/home" CODING_AGENT_CONFIG="$S/config" OUT="$CTL/x" bash -c 'source "$REPO_DIR/scripts/_lib.sh"; agent_exit_explain 0 > "$OUT"' >/dev/null 2>&1; cat "$CTL/x")" "正常结束" ;;
         term)  chk "被 SIGTERM 结束 → 143" "$(read_exit)" 143 ;;
@@ -394,17 +391,22 @@ cp "$CTL/rec.bak" "$R"; echo other-token > "$R.launch"
 chk "记号对不上 → 读不到" "$(read_exit)" ""
 echo "$(cut -d' ' -f2 "$CTL/rec.bak")" > "$R.launch"
 chk "到达性 · 恢复后又读得到 127" "$(read_exit)" 127
-# 旧记录删不掉、新记号写不了：退出码目录只读，再派一次（新提示词）
-chmod 555 "$S/state/worker-exit"
-echo now127 > "$CTL/mode"; rm -f "$CTL/items/$N"
+# 这次的记号写不进（记号文件只读）：不起程序；留下的记录就是上一次真跑过的那个程序的
+chmod 444 "$R.launch"
+echo now127 > "$CTL/mode"; rm -f "$CTL/items/$N" "$CTL/ran"
 run_dispatch new
-chk "旧记录确实还在（删不掉）" "$(cut -d' ' -f1 "$R" 2>/dev/null)" 127
-has "秒退的交人留言写「没读到」，不冒充上次的 127" "$(comments)" "没读到最后一次的退出码"
-lacks "交人留言里没有上次的「找不到命令」" "$(comments)" "退出码 127"
-chk "跨进程（self-heal 那样）读也是读不到" "$(read_exit)" ""
+has "记号写不进：日志写明不起程序" "$(polllog)" "这次启动的记号写不进"
+chk "记号写不进：没起程序" "$([ -s "$CTL/ran" ] && echo ran || echo none)" none
+chk "记号写不进：没认领，标签仍是派工标签" "$(labels)" "pending/agent"
+chk "记号写不进：读到的是上一次真跑过那次的 127" "$(read_exit)" 127
+chmod 644 "$R.launch"
+# 目录读不了时读不到；恢复后照旧（记号、记录都没被冒用）
+chmod 000 "$S/state/worker-exit"
+chk "退出码目录读不了 → 读不到" "$(read_exit)" ""
 chmod 755 "$S/state/worker-exit"
+chk "目录恢复后 → 仍是同一次的 127" "$(read_exit)" 127
 
-echo "【8c】续接失败、降级重起时旧记录删不掉"
+echo "【8c】同一次派工里续接失败、降级重起"
 # 先正常起一次（登记会话），再给这条会话补一份对话记录，让下一次派工走「续接」
 prep_resume() {
     run_dispatch issue
@@ -417,27 +419,32 @@ prep_resume() {
     rm -f "$CTL/ran" "$CTL/items/$N"
     [ -n "$id" ]
 }
-for variant in arm-rm arm-both; do
+for variant in arm-rm arm-ro; do
     scenario "fallback-$variant" yes
     chk "[$variant] 到达性 · 续接的前提布好了（登记了会话、有对话记录）" "$(prep_resume && echo yes)" yes
-    echo "$variant" > "$CTL/mode"
+    echo "$variant" > "$CTL/mode"; echo "$S/state/worker-exit/abc-issue$N.launch" > "$CTL/launchfile"
     run_dispatch issue
     has "[$variant] 续接 2 秒内死了，日志带这次的退出码 127" "$(polllog)" "session 死了（退出码 127：找不到命令"
     case "$variant" in
         arm-rm)
             chk "[$variant] 旧记录确实没删掉" "$(cut -d' ' -f1 "$S/state/worker-exit/abc-issue$N" 2>/dev/null)" 127
-            chk "[$variant] 旧记录能变旧：照常降级重起" "$(wc -l < "$CTL/ran" | tr -d ' ')" 2
+            chk "[$variant] 新记号写进了：照常降级重起" "$(wc -l < "$CTL/ran" | tr -d ' ')" 2
             chk "[$variant] 重起的会话活着" "$(yesno sess_alive)" yes
-            chk "[$variant] 之后（self-heal 那样）读不到，不冒充上次的 127" "$(read_exit)" "" ;;
-        arm-both)
-            chk "[$variant] 旧记录确实没删掉" "$(cut -d' ' -f1 "$S/state/worker-exit/abc-issue$N" 2>/dev/null)" 127
-            has "[$variant] 不重起，日志写明原因" "$(polllog)" "也没法让它变旧：不起程序"
+            chk "[$variant] 重起的程序还没退出时（self-heal 那样）读不到，不冒充上次的 127" "$(read_exit)" ""
+            chmod 000 "$S/state/worker-exit"
+            chk "[$variant] 退出码目录读不了 → 读不到" "$(read_exit)" ""
+            chmod 755 "$S/state/worker-exit"
+            chk "[$variant] 目录恢复后 → 仍读不到上次的 127" "$(read_exit)" ""
+            rm -f "$CTL/fail-rm"; touch "$CTL/go"; wait_gone
+            chk "[$variant] 对照 · 重起的程序退出后读到它自己的 0" "$(read_exit)" 0 ;;
+        arm-ro)
+            has "[$variant] 不重起，日志写明原因" "$(polllog)" "这次启动的记号写不进"
             chk "[$variant] 只真跑过续接那一次" "$(wc -l < "$CTL/ran" | tr -d ' ')" 1
             chk "[$variant] 没有会话" "$(yesno sess_alive)" no
             chk "[$variant] 派工以「结果不明」退出（条目留在 doing/agent，交给 self-heal）" "$(cat "$S/rc")" 77
             chk "[$variant] 之后读到的是唯一真跑过那次的退出码" "$(read_exit)" 127 ;;
     esac
-    rm -f "$CTL/fail-rm" "$CTL/fail-touch"
+    rm -f "$CTL/fail-rm"; chmod 644 "$S/state/worker-exit/abc-issue$N.launch" 2>/dev/null
 done
 
 echo "【8】真 agent-poll.sh：self-heal 带退出码；下一轮检查到命令不在 → 转人工、计数清零"
@@ -487,12 +494,12 @@ poll_round() {
         timeout 180 bash "$REPO_DIR/scripts/agent-poll.sh") > /dev/null 2>&1
 }
 plabels() { jq -r --arg n "$N" '(.[$n] // []) | sort | join(",")' "$GD/labels.json"; }
-# 第 0 轮：真派工、真起程序；程序 3 秒后以 127 退出，会话随之消失
-echo exit127 > "$CTL/mode"
+# 第 0 轮：真派工、真起程序；放行后程序以 127 退出，会话随之消失
+echo exit127 > "$CTL/mode"; rm -f "$CTL/go"
 poll_round
 chk "第 0 轮派工起了程序" "$(plabels)" "doing/agent"
-wait_gone
-rm -f "$CTL/mode"
+touch "$CTL/go"; wait_gone
+rm -f "$CTL/mode" "$CTL/go"
 poll_round
 PLOG="$(cat "$POLLS/state/poll.log" 2>/dev/null)"
 has "第 1 轮 self-heal 日志带退出码" "$PLOG" "不存在（退出码 127：找不到命令"
@@ -506,11 +513,11 @@ chk "第 2 轮转人工" "$(plabels)" "pending/human"
 chk "转人工后自愈计数清零" "$(cat "$POLLS/state/selfheal/$N" 2>/dev/null || echo none)" none
 chk "没起 worker 会话" "$(yesno sess_alive)" no
 # 用完次数的那条路：命令装回来、程序真起来后被 SIGTERM 结束，计数已到上限 → 会话消失直接交人，留言带退出码
-cp "$AGENTDIR/claude" "$POLLS/agentbin/claude"; echo term > "$CTL/mode"
+cp "$AGENTDIR/claude" "$POLLS/agentbin/claude"; echo term > "$CTL/mode"; rm -f "$CTL/go"
 jq -n --arg i "$N" '{($i): ["pending/agent"]}' > "$GD/labels.json"
 poll_round
 chk "到达性 · 又真起了一次程序" "$(plabels)" "doing/agent"
-wait_gone; rm -f "$CTL/mode"
+touch "$CTL/go"; wait_gone; rm -f "$CTL/mode" "$CTL/go"
 mkdir -p "$POLLS/state/selfheal"; echo 1 > "$POLLS/state/selfheal/$N"
 poll_round
 PCOM="$(jq -r '.. | .body? // empty' "$GD"/comments*.json 2>/dev/null; cat "$GD"/*.log 2>/dev/null)"

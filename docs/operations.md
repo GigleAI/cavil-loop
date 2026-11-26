@@ -4643,7 +4643,9 @@ result arrives within 10 seconds. A worker that then exits at once is reported w
 corrupted" — in the quick-exit hand-over, in the "resume died within 2 s" line and in self-heal: 127 = command not found,
 126 = cannot execute (also a prompt over the command-line length limit), 0 = the program ended normally, 128+N = killed by
 signal N. The code is kept in `$STATE_DIR/worker-exit/<tmux session>` (removed by `cleanup-issue.sh`); without it the
-message says no exit code was read and lists the usual causes.
+message says no exit code was read and lists the usual causes. Before every launch the daemon writes a fresh marker next to
+that file; if it cannot (the state directory is not writable), the worker is not started and `poll.log` says
+`这次启动的记号写不进` — fix the directory's permissions and the next poll tries again.
 
 </details>
 

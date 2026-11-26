@@ -222,7 +222,7 @@ self_heal_one() {
     tries=$(selfheal_bump "$issue_n")
     # 程序最后一次退出时记下的退出码（GitHub#731）：127 = 命令不存在，不再一律说「会话损坏」
     local exit_note
-    exit_note="$(agent_exit_explain "$(agent_exit_read "$sess" "$issue_n")")"
+    exit_note="$(agent_exit_explain "$(agent_exit_read "$sess")")"
     if [ "$tries" -le "$cap" ]; then
         log "🔄 self-heal: $kind #$n session=$sess 不存在（${exit_note}）→ 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
         pace_mark_acted
