@@ -33,6 +33,8 @@ sync_project_checkout
 PR="${1:?need PR number}"
 BRANCH="${2:?need branch}"
 LATEST_COMMENT_ID="${3:-0}"
+# 派工认领（GitHub#700）：认领了没交出就意外退出 → 复原；交任务开始后意外退出 → 结果不明（77）
+dispatch_trap_install "$PR"
 
 ISSUE_N="$(pr_to_issue_num "$PR" "$BRANCH")"
 
@@ -42,14 +44,11 @@ ISSUE_N="$(pr_to_issue_num "$PR" "$BRANCH")"
 if [ -z "$ISSUE_N" ]; then
     log "PR #$PR: pr_to_issue_num 返回空（异常状态——预期 fallback 到 PR 编号永远非空，可能 gh API 故障）"
     log "  → 翻 label 回 $LABEL_PENDING_HUMAN 防反复重试，手动检查后再 label"
-    notify_bounced_to_human "$PR" \
+    _r=0; dispatch_to_human "$PR" \
         "daemon 解析不出这个 PR 对应的工作编号（多半是 GitHub API 当时异常）。" \
-        "稍后直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；反复出现请查 daemon 机器上的 poll.log。"
-    run_gh "label 翻转 (PR #$PR 兜底 pending/agent → pending/human)" \
-        gh_label_flip "$PR" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" || true
-    exit 0
+        "稍后直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；反复出现请查 daemon 机器上的 poll.log。" \
+        "解析不出工作编号" || _r=$?
+    exit "$_r"
 fi
 
 # 定下这次启动的条目代数和启动编号（重测试排队，功能关着什么都不做）；注入现有会话时用不上
@@ -113,11 +112,6 @@ PR #$PR 有新评论。三类反馈来源都要读（inline 行评论 \`gh pr vi
 EOF
 fi
 
-flip_label() {
-    # daemon dispatch 翻到 doing/agent；worker 完工时它自己翻成 pending/human
-    flip_to_doing "$PR" "PR #$PR pending/agent → $LABEL_AGENT_DOING" || true
-}
-
 # 标签要求的 worker/model/角色与现有 session 不一致时，不能走 stdin 注入；由
 # Case B/C 的 new/resume 命令带上选择，conversation/worktree 仍按原 work number 续接。
 # session 本身不删：Case B 的 worker_session_launch 在原窗格里换程序，attach 着的
@@ -149,8 +143,10 @@ if [ "$REUSE_SESSION" = 1 ]; then
     log "PR #$PR -> 注入 $TMUX_SESSION (agent=$WORKER_AGENT)"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
+    # 先认领（doing/agent 打上、触发标签摘掉、读回确认），再往会话里送任务（GitHub#700）
+    dispatch_claim "$PR"
+    dispatch_handing
     if inject_prompt_logged "$TMUX_SESSION" "$PROMPT_FILE"; then
-        flip_label
         exit 0
     fi
     log "PR #$PR -> 注入失败，fallback 在原 session 里重起程序 (agent=$WORKER_AGENT)"
@@ -167,7 +163,9 @@ if [ -d "$WORKTREE" ]; then
     # 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-        || { dispatch_prompt_refused "$PR"; exit 0; }
+        || dispatch_refused_exit "$PR"
+    dispatch_claim "$PR"
+    dispatch_handing
     log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
     worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 
@@ -177,26 +175,26 @@ if [ -d "$WORKTREE" ]; then
         sleep 2
         _alive=0; worker_alive "$TMUX_SESSION" || _alive=$?
         if [ "$_alive" = 2 ]; then
-            # 读不到程序是否还在：不退休会话记录、不重起（可能正在跑），本轮失败退出，下一轮再判
+            # 读不到程序是否还在：不退休会话记录、不重起（可能正在跑）；结果不明，不再写标签，下一轮再判
             log "PR #$PR -> 读不到 $TMUX_SESSION 里的程序是否还在（tmux 查询失败），不降级、不重起"
-            exit 1
+            exit "$DISPATCH_RC_UNKNOWN"
         fi
         if [ "$_alive" = 1 ]; then
             log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
             agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-                || { dispatch_prompt_refused "$PR"; exit 0; }
+                || dispatch_refused_exit "$PR"
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
 
     # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
     heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
-    agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
+    dispatch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE"
+    # 任务已交出：之后这一轮不再写本条的流程标签（下面几步出错也只算结果不明）
     agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
     start_session_logging "$TMUX_SESSION"
-    flip_label
     exit 0
 fi
 
@@ -255,12 +253,8 @@ if find_branch_holder "$BRANCH" "$WORKTREE"; then
         if [ "$AUTO_RELEASE_MAIN_CHECKOUT" = 1 ] && [ -n "${AUTO_RELEASE_REASON:-}" ]; then
             reason="$reason 没有自动切走它：${AUTO_RELEASE_REASON}。"
         fi
-        notify_bounced_to_human "$PR" "$reason" "$(branch_holder_next_step "$BASE")"
-        run_gh "label 翻转 (PR #$PR 分支被占用 → $LABEL_PENDING_HUMAN)" \
-            gh_label_flip "$PR" \
-            --add "$LABEL_PENDING_HUMAN" \
-            --remove "${TRIGGER_LABELS_ALL[@]}" || true
-        exit 0
+        _r=0; dispatch_to_human "$PR" "$reason" "$(branch_holder_next_step "$BASE")" "分支被占用" || _r=$?
+        exit "$_r"
     fi
 
     log "  → 已把主 checkout 从 $BRANCH 切回 ${BASE}（切换前干净、与 PR 最新提交一致）"
@@ -279,14 +273,11 @@ if [ "${RELEASED:-0}" = 1 ]; then
         now_sha=$(git rev-parse -q --verify "refs/heads/$BRANCH^{commit}" 2>/dev/null || echo "读不出")
         log "PR #$PR -> 让出主 checkout 期间分支 $BRANCH 变了（检查时 ${PR_HEAD_SHA}，现在 ${now_sha}），不覆盖、不派工，转人工"
         log "  git: $(printf '%s' "$cas_out" | tr '\n' ' ' | head -c 300)"
-        notify_bounced_to_human "$PR" \
+        _r=0; dispatch_to_human "$PR" \
             "daemon 已把本机主 checkout \`$HOLDER_DIR\` 从 \`$BRANCH\` 切回 \`$BASE\`，但就在检查和切换之间，分支 \`$BRANCH\` 多出了新提交（检查时是 \`$PR_HEAD_SHA\`，现在是 \`$now_sha\`）。daemon 没有覆盖它，也没有派工。" \
-            "确认这些新提交是否要进 PR：要的话 push 到 PR 分支；不要的话自行处理。然后把标签改回 \`$LABEL_PENDING_AGENT\`。"
-        run_gh "label 翻转 (PR #$PR 让出期间分支变化 → $LABEL_PENDING_HUMAN)" \
-            gh_label_flip "$PR" \
-            --add "$LABEL_PENDING_HUMAN" \
-            --remove "${TRIGGER_LABELS_ALL[@]}" || true
-        exit 0
+            "确认这些新提交是否要进 PR：要的话 push 到 PR 分支；不要的话自行处理。然后把标签改回 \`$LABEL_PENDING_AGENT\`。" \
+            "让出期间分支变化" || _r=$?
+        exit "$_r"
     fi
     run_gh "说明主 checkout 已切回 (#$PR)" \
         gh_write api -X POST "repos/$REPO/issues/$PR/comments" \
@@ -320,7 +311,9 @@ commit_identity_apply "$WORKTREE" "$PR" "$ISSUE_N"
 
 agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-    || { dispatch_prompt_refused "$PR"; exit 0; }
+    || dispatch_refused_exit "$PR"
+dispatch_claim "$PR"
+dispatch_handing
 log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
@@ -330,10 +323,9 @@ done < <(tmux_env_args)
 worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）
 heavy_launch_record "$TMUX_SESSION"   # 重测试排队：记下这次新起的 worker 进程
-agent_launch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE" || exit 0
+dispatch_trust_gate "$PR" "$TMUX_SESSION" "$WORKTREE"
 agent_session_register_launched "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
 configure_tmux_session_display "$TMUX_SESSION" "$issue_title"
 start_session_logging "$TMUX_SESSION"
 
-flip_label
 log "dispatch-pr-comment done: PR #$PR fresh worktree + session (agent=$WORKER_AGENT)"

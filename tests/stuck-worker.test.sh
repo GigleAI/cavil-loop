@@ -986,37 +986,40 @@ printf '%s\n' 'respawn-pane*' > "$CTL/fault"
 tick 5
 rm -f "$CTL/fault"
 chk "13c① 到达性：核对通过、指令用掉之后才失败" "$(plog "#$P 派工前最后一次核对通过")/$([ -s "$CTL/fault.hits" ] && echo hit || echo miss)" "1/hit"
+# 起会话之前已经认领（GitHub#700）：标签是 doing/agent，派工标签已摘；恢复派工里失败不复原，交给统一收尾
 chk "13c① 不进普通失败兜底：没有普通的转人工留言、没翻 pending/human、失败计数没动、评论读取位置没前进" \
     "$(jq -r --arg n "$P" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json")/$(labels_of "$P")/$(cat "$W/state/dispatch-fail/pr-$P")/$(jq -r --arg n "$P" '.seen_comments[$n] // "none"' "$STATE")" \
-    "0/pending/agent/2/none"
-chk "13c① 对照 · 没停住的那条照原规则：第 3 次失败 → 留言并翻 pending/human" \
-    "$(jq -r --arg n "$M" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json")/$(labels_of "$M")" "1/pending/human"
+    "0/doing/agent/2/none"
+# 对照那条没停住：换程序前已经认领，换程序失败 = 结果不明（GitHub#700），不计失败、不转人工、doing/agent 留着
+chk "13c① 对照 · 没停住的那条：结果不明，不计失败、不留言、不转人工" \
+    "$(jq -r --arg n "$M" '[(.[$n] // [])[] | select(.body | contains("自动处理已暂停"))] | length' "$GD/comments.json")/$(labels_of "$M")/$(cat "$W/state/dispatch-fail/issue-$M")" "0/doing/agent/2"
 after_refreeze "13c①" "$P" "任务可能已送出" "$tok"
 # 重新授权：新说明发出、新起点之后，人再打一次 → 正常派工一次
 tick 0
 chk "13c① 新的停住说明发出（第二条）" "$(notes_on "$P")/$(ff "$N" posted)" "2/yes"
-d0=$(disp "$P"); human_resume "$P" pending/agent pending/agent
+# 上一次认领留下的 doing/agent 一并摘掉（恢复指令要求条目上只有那一枚派工标签）
+d0=$(disp "$P"); human_resume "$P" pending/agent doing/agent pending/agent
 tick 5
 chk "13c① 重新授权 · 人再打一次：派工一次，换成 doing/agent，停住记录清掉，失败计数清零" \
     "$(( $(disp "$P") - d0 ))/$(labels_of "$P")/$(entry "$N")/$([ -e "$W/state/dispatch-fail/pr-$P" ] && echo kept || echo reset)" "1/doing/agent/{}/reset"
 
-# 13c② 新建路径：会话已经起来，翻标签时加 doing/agent 失败（派工标签已摘掉）
+# 13c② 新建路径：认领时加 doing/agent 失败（GitHub#700 起认领在起会话之前）→ 不起会话，交给统一收尾
 frozen_is use2; human_resume "$N" pending/agent doing/agent pending/agent
 T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
 tok=$(ff "$N" token); touch "$GD/F_post_labels"
 tick 5
 rm -f "$GD/F_post_labels"
-chk "13c② 夹具：会话起来了，但条目上没有 doing/agent" "$(alive "$N")/$(labels_of "$N")" "yes/"
-after_refreeze "13c②" "$N" "任务已送出，会话" "$tok"
-chk "13c② 会话原样留着" "$(alive "$N")" "yes"
+chk "13c② 夹具：没起会话，派工标签还在、没有 doing/agent" "$(alive "$N")/$(labels_of "$N")" "no/pending/agent"
+# 加标签没生效、读回仍是派工前的样子 → 确定失败（退出码 1）；恢复派工不复原，照样由统一收尾重新停住
+after_refreeze "13c②" "$N" "退出码 1" "$tok"
 
-# 13c③ issue 评论路径：任务已经送进现有会话，翻标签时摘派工标签失败（结果：两个标签都在）
+# 13c③ issue 评论路径：认领时摘派工标签失败（结果：两个标签都在）→ 不送任务、不复原，交给统一收尾
 frozen_is use3; human_resume "$N" pending/agent doing/agent pending/agent
 tok=$(ff "$N" token); g0=$(got "$N"); touch "$GD/F_delete_labels"
 tick 5
 rm -f "$GD/F_delete_labels"
-chk "13c③ 夹具：任务送进了会话；派工标签没摘掉" "$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")" "sent/doing/agent,pending/agent"
-after_refreeze "13c③" "$N" "任务已送出，会话" "$tok"
+chk "13c③ 夹具：任务没送出；派工标签没摘掉" "$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")" "no/doing/agent,pending/agent"
+after_refreeze "13c③" "$N" "退出码 77" "$tok"
 chk "13c③ 到达性：之后派工队列看到遗留的 pending/agent 并跳过" "$([ "$(plog "本轮不派工的条目.*issue#$N(pending/agent)")" -ge 2 ] && echo yes || echo no)" "yes"
 
 # 13c④ 派工之后读不到条目
@@ -1025,8 +1028,9 @@ tok=$(ff "$N" token)
 hook_after_add "$N" touch "$GD/F_issues_$N"
 tick 5
 rm -f "$GD/F_issues_$N"
-chk "13c④ 到达性：翻标签之后才读不到" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent"
-after_refreeze "13c④" "$N" "读不到条目的标签" "$tok"
+chk "13c④ 到达性：加上 doing/agent 之后才读不到" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent,pending/agent"
+# 加完第一个标签的读回就读不到了：之后一个都不再写（派工标签不摘），派工脚本以结果不明（77）退出，任务没送出
+after_refreeze "13c④" "$N" "退出码 77" "$tok"
 
 # 13c⑤ 「指令已用掉」写不进本地 → 不派工，什么都没送出，指令没用掉；写得进之后正常派工
 frozen_is use5; human_resume "$N" pending/agent doing/agent pending/agent
@@ -1050,9 +1054,12 @@ after_refreeze "13c⑥" "$N" "不属于这次派工的标签变化" "$tok"
 # 13c⑦ 会话上的记号不是这一次的 → 不算成功
 frozen_is use7; human_resume "$N" pending/agent doing/agent pending/agent
 tok=$(ff "$N" token)
-hook_after_add "$N" "$REAL_TMUX" -S "$SOCK" set-option -t "=$(sess_of "$N"):" @dispatch_token someone-else
+# 记号在送完任务之后才写（认领早于送任务，GitHub#700）：让这一次写记号失败，会话上留着别人的记号
+"$REAL_TMUX" -S "$SOCK" set-option -t "=$(sess_of "$N"):" @dispatch_token someone-else
+printf '%s\n' 'set-option -t =*: @dispatch_token *' > "$CTL/fault"
 tick 5
-chk "13c⑦ 到达性" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent"
+rm -f "$CTL/fault"
+chk "13c⑦ 到达性" "$([ -s "$CTL/fault.hits" ] && echo yes)/$(labels_of "$N")" "yes/doing/agent"
 after_refreeze "13c⑦" "$N" "任务可能已送出" "$tok"
 
 # 13c⑧ 派工脚本没走到最后一次核对就退出（读不到会话记录）：不算派工；连着 3 次 → 用掉指令、重新停住
@@ -1236,11 +1243,12 @@ printf '%s\n' 'new-session*' > "$CTL/fault"
 tick 5
 rm -f "$CTL/fault"
 chk "issue 评论路径 · 到达性：核对通过、指令用掉之后才失败" "$(plog "#$N 派工前最后一次核对通过")/$([ -s "$CTL/fault.hits" ] && echo hit || echo miss)" "1/hit"
+# 起会话之前已经认领（GitHub#700）：标签是 doing/agent，派工标签已摘；恢复派工里失败不复原，交给统一收尾
 chk "issue 评论路径：没有普通的转人工留言、没翻 pending/human、失败计数没动、评论读取位置没前进；重新停住" \
     "$(bounced "$N")/$(labels_of "$N")/$(cat "$W/state/dispatch-fail/issue-$N")/$(jq -r --arg n "$N" '.seen_issue_comments[$n] // "none"' "$STATE")/$(frozen "$N")/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)" \
-    "0/pending/agent/2/none/true/new"
+    "0/doing/agent/2/none/true/new"
 d0=$(disp "$N"); tick 5; tick 5
-chk "issue 评论路径：之后两轮不再派工（派工标签还在）" "$(( $(disp "$N") - d0 ))/$(alive "$N")" "0/no"
+chk "issue 评论路径：之后两轮不再派工" "$(( $(disp "$N") - d0 ))/$(alive "$N")" "0/no"
 # 新建路径：会话起来就秒退 → 派工脚本自己那段「留言 + 翻 pending/human」也不做
 frozen_is nob2; human_resume "$N" pending/agent doing/agent pending/agent
 T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
@@ -1250,9 +1258,10 @@ tick 5
 rm -f "$CTL/die.issue-$N"
 chk "新建路径 · 到达性：派工脚本走到了秒退后的转人工那一段，那两次写入都被拦下" \
     "$(plog "dispatch-new-issue: #$N worker 秒退")/$([ "$(plog '恢复派工里不做普通流程的这次 GitHub 写入')" -ge 2 ] && echo yes || echo no)" "1/yes"
+# 起会话之前已经认领（GitHub#700）：标签是 doing/agent，派工标签已摘；恢复派工里失败不复原，交给统一收尾
 chk "新建路径：没有普通的转人工留言、没翻 pending/human、失败计数没动；重新停住" \
     "$(bounced "$N")/$(labels_of "$N")/$(cat "$W/state/dispatch-fail/issue-$N")/$(frozen "$N")/$([ "$(ff "$N" token)" != "$tok" ] && echo new || echo same)" \
-    "0/pending/agent/2/true/new"
+    "0/doing/agent/2/true/new"
 r0=$(runs "$N"); d0=$(disp "$N"); tick 5; tick 5
 chk "新建路径：之后两轮不再派工、不起新进程" "$(( $(disp "$N") - d0 ))/$(( $(runs "$N") - r0 ))" "0/0"
 fi
@@ -1274,9 +1283,10 @@ rm -f "$GD/hook.ran"
 tick_killable 5
 sleep 2   # 派工脚本成了孤儿，等它自己跑完
 rm -f "$GD/F_delete_labels"
-chk "轮询被杀 · 夹具：任务已送出、派工标签还在、状态里还没记「已用掉」，本机留着这次的凭据" \
+# 派工先认领、再交任务（GitHub#700）：杀在摘派工标签那一步时任务还没送出；凭据已经写下，了结它的规则和「已送出」时一样
+chk "轮询被杀 · 夹具：认领做了一半（任务没送出）、派工标签还在、状态里还没记「已用掉」，本机留着这次的凭据" \
     "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")/$(ff "$N" used)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)" \
-    "yes/sent/doing/agent,pending/agent/null/file"
+    "yes/no/doing/agent,pending/agent/null/file"
 g1=$(got "$N"); d1=$(disp "$N"); r1=$(runs "$N")
 tick 5
 chk "轮询被杀 · 下一轮（没有新的人工操作）：不再派工、不再送任务；指令记为已用掉，重新停住，凭据在这之后才清掉" \
@@ -1298,9 +1308,10 @@ rm -f "$GD/hook.ran"
 tick_killable 5
 sleep 2
 rm -f "$GD/F_delete_labels"
-chk "读失败 · 夹具：任务已送出、派工标签还在、凭据在、状态里没记「已用掉」" \
+# 派工先认领、再交任务（GitHub#700）：杀在摘派工标签那一步时任务还没送出；凭据已经写下，了结它的规则和「已送出」时一样
+chk "读失败 · 夹具：认领做了一半（任务没送出）、派工标签还在、凭据在、状态里没记「已用掉」" \
     "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$(labels_of "$N")/$(ff "$N" used)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)" \
-    "yes/sent/doing/agent,pending/agent/null/file"
+    "yes/no/doing/agent,pending/agent/null/file"
 g1=$(got "$N"); d1=$(disp "$N")
 printf '%s\n' '-ce --arg k * if type == "object" and*' > "$CTL/jqfault"; rm -f "$CTL/jqfault.hits"
 tick 5
@@ -1317,7 +1328,7 @@ fi
 # 复审第 5 轮（代码）的复现：记录读得出，了结遗留凭据时从记录里「取字段」失败（条目类型、凭据里的事件编号）。
 # 取不出 ≠ 空值：记录（含条目类型）和凭据都原样留着、这一轮什么都不写；读得出之后照常了结，
 # 两条恢复途径（GitHub 上重新打派工标签、本机解卡命令）都还能用
-crash_left() {   # <名字>：摆出「派工过了核对、任务已送出、父进程在收尾前被杀」的样子
+crash_left() {   # <名字>：摆出「派工过了核对、认领做了一半、父进程在收尾前被杀」的样子
     frozen_is "$1"; human_resume "$N" pending/agent doing/agent pending/agent
     local g0 k; g0=$(got "$N")
     touch "$GD/F_delete_labels"
@@ -1327,9 +1338,10 @@ crash_left() {   # <名字>：摆出「派工过了核对、任务已送出、�
     tick_killable 5
     sleep 2
     rm -f "$GD/F_delete_labels"
-    chk "$1 · 夹具：任务已送出、凭据在、记录停住且类型为 issue" \
+    # 派工先认领、再交任务（GitHub#700）：杀在摘派工标签那一步时任务还没送出；凭据已经写下，了结它的规则和「已送出」时一样
+    chk "$1 · 夹具：认领做了一半（任务没送出）、凭据在、记录停住且类型为 issue" \
         "$(hook_ran)/$([ "$(got "$N")" -gt "$g0" ] && echo sent || echo no)/$([ -s "$W/state/stuck-release/$N.used" ] && echo file || echo none)/$(efield "$N" '.kind')/$(frozen "$N")" \
-        "yes/sent/file/issue/true"
+        "yes/no/file/issue/true"
 }
 rcv_field_fail() {   # <名字> <jq 故障的 glob> <日志里应出现的字样> <后续：github|local>
     crash_left "$1"

@@ -447,7 +447,7 @@ collect_queue_rows() {
             continue
         fi
         # 等外部需求机器人期间有人又打了触发标签（GitHub#95）：按这个标签原流程派，派工翻
-        # doing/agent 时一并摘掉等待标签（_lib.sh flip_to_doing 的 REQUESTER_BOT_DISPATCH_CLEAR）。
+        # doing/agent 时一并摘掉等待标签（_lib.sh dispatch_clear_labels 里的 REQUESTER_BOT_DISPATCH_CLEAR）。
         if labels_have_requester_bot_wait "$labels_csv"; then
             log "${kind} #${num} 挂着外部需求机器人等待标签 ${LABEL_PENDING_REQUESTER_BOT}，但又被打了触发标签 $trigger_label → 按原流程派工，派工时摘掉等待标签"
         fi
@@ -457,7 +457,7 @@ collect_queue_rows() {
         fi
         prio=$(priority_rank "$labels_csv" "$num")
         stage=$(stage_rank "$kind" "$trigger_label" "$num")
-        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}${title}"$'\n'
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${trigger_label}${US}${model}${US}${worker_agent}${US}${prompt_kind}${US}label${US}${title}"$'\n'
     done <<< "$raw"
 }
 
@@ -491,16 +491,60 @@ dispatch_failed() {
         log "${kind} #${num} 派工失败（第 $tries/$cap 次，下轮重试）：$reason"
         return 0
     fi
+    # 转人工之前核对条目仍是这次该派的（GitHub#700）：人已撤回 / 条目变了 → 不写；读不到 → 不写、计数留着下轮再判
+    local rc=0
+    dispatch_precheck "$num" "$DQ_SRC" "$DQ_TRIGGER" "$DQ_PR_BASE" "$DQ_PR_HEAD" "$DQ_PR_SRC" || rc=$?
+    if [ "$rc" = "$DISPATCH_RC_WITHDRAWN" ]; then
+        log "${kind} #${num} 连续 $tries 次派工失败，但条目已不是这次该派的（${DISPATCH_PRECHECK_WHY}）→ 不转人工、不写"
+        dispatch_fail_reset "$key"
+        return 0
+    elif [ "$rc" != 0 ]; then
+        log "${kind} #${num} 连续 $tries 次派工失败，转人工前读不到条目（${DISPATCH_PRECHECK_WHY}）→ 本轮不写，下轮再判"
+        return 0
+    fi
     log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 ${LABEL_PENDING_HUMAN}（停止重试）：$reason"
-    notify_bounced_to_human "$num" \
+    # 留言、再核对、再一步一步翻标签（每一步写完读回，人在中间改了就停）
+    rc=0
+    dispatch_human_steps "$num" "$DISPATCH_PRE_DOC" \
         "daemon 连续 $tries 次没能把这条活派出去，为防止空转已停止重试。最后一次的错误：\`$(printf '%s' "$reason" | tr '`' "'")\`" \
-        "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。"
-    run_gh "label 翻转 (${kind} #${num} 连续派工失败 → $LABEL_PENDING_HUMAN)" \
-        gh_label_flip "$num" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
-    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。
-    dispatch_fail_reset "$key"
+        "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。" || rc=$?
+    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。读不到 / 没写全时计数留着，下轮再判
+    case "$rc" in
+        0|"$DISPATCH_RC_WITHDRAWN") dispatch_fail_reset "$key" ;;
+        *) log "${kind} #${num} 转人工没写全（停在某一步），计数留着，下轮再判" ;;
+    esac
+}
+
+# 派工脚本的结果（GitHub#700，表在 _lib.sh 的 dispatch_claim 上方）。三条派工路径共用这一个。
+# 0 = 已送出（调用方接着前进评论读取位置）；1 = 其余（调用方什么都不再做）。
+#   0  失败次数清零、记用量上限计时       77 结果不明：不计失败、不写
+#   78 已撤回：不计失败、不写            其它 失败：计一次，满次转人工（转之前核对）
+# 派工前设好：DQ_SRC（label / autopilot / free）、DQ_TRIGGER、PR 的 DQ_PR_BASE / DQ_PR_HEAD / DQ_PR_SRC
+DQ_SRC=""; DQ_TRIGGER=""; DQ_PR_BASE=""; DQ_PR_HEAD=""; DQ_PR_SRC=""
+dispatch_outcome() {   # <issue|pr> <编号> <退出码> <子进程 stdout> <用量上限用的工作编号> <开始时间>
+    local kind="$1" num="$2" rc="$3" out="$4" work="$5" t0="$6"
+    case "$rc" in
+        0)
+            dispatch_fail_reset "${kind}-${num}"
+            usage_limit_note_dispatch "$work" "$t0"
+            return 0 ;;
+        "$DISPATCH_RC_UNKNOWN")
+            log "${kind} #${num} 派工结果不明（读不到条目，或任务可能已交出却确认不了）→ 不计失败、不写，留给下一轮和自愈 / 卡住检测" ;;
+        "$DISPATCH_RC_WITHDRAWN")
+            log "${kind} #${num} 派工期间条目被人改过（撤回 / 关闭 / PR 变了）→ 不计失败、不写" ;;
+        *)
+            dispatch_failed "$kind" "$num" "$(dispatch_fail_excerpt "$out")" ;;
+    esac
+    return 1
+}
+# PR 派工时快照里的目标分支 / 最新提交 / 来源仓库（派工脚本拿它核对 PR 有没有变）。读不出就留空
+dispatch_pr_identity() {   # <PR 编号>
+    DQ_PR_BASE=""; DQ_PR_HEAD=""; DQ_PR_SRC=""
+    local row
+    row=$(open_snapshot pulls 2>/dev/null | jq -r --argjson n "$1" \
+        'first(.[][] | select(.number == $n)) | [.base.ref // "", .head.sha // "", .head.repo.full_name // ""] | @tsv' 2>/dev/null) || row=""
+    [ -n "$row" ] || return 0
+    IFS=$'\t' read -r DQ_PR_BASE DQ_PR_HEAD DQ_PR_SRC <<< "$row"
 }
 
 # 这次派工是不是托管条目（GitHub#114）：设 AP_FLAG / AP_ISSUE 给 dispatch 脚本（拼托管规则段用）。
@@ -531,7 +575,7 @@ autopilot_dispatch_flags() {   # <issue|pr> <编号> <prompt_kind>
 }
 
 dispatch_one_issue() {
-    local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
+    local num="$1" title="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6" src="${7:-label}"
     local sess wt latest_id tmp
     local d_rc d_out ul_t0 rel
     # 这次要用的 agent 撞了用量上限、还没到解除时间：这一条本轮不碰（GitHub#341）
@@ -567,20 +611,17 @@ dispatch_one_issue() {
         d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
         stuck_release_begin issue "$num" "$trigger_label" || rel=$?
         [ "$rel" != 2 ] || return 0
-        d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+        DQ_SRC="$src"; DQ_TRIGGER="$trigger_label"; DQ_PR_BASE=""; DQ_PR_HEAD=""; DQ_PR_SRC=""
+        d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_CLAIM_SOURCE="$src" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
             bash "$SCRIPT_DIR/dispatch-issue-comment.sh" "$num" "$latest_id") || d_rc=$?
         [ -n "$d_out" ] && printf '%s\n' "$d_out"
         runlog_dispatch "$d_rc"
         # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
         # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
         if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
-        if [ "$d_rc" = 0 ]; then
-            dispatch_fail_reset "issue-$num"
-            usage_limit_note_dispatch "$num" "$ul_t0"
+        if dispatch_outcome issue "$num" "$d_rc" "$d_out" "$num" "$ul_t0"; then
             tmp=$(mktemp)
             jq ".seen_issue_comments[\"$num\"] = $latest_id" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-        else
-            dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
         fi
         return 0
     fi
@@ -598,19 +639,15 @@ dispatch_one_issue() {
     d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
     stuck_release_begin issue "$num" "$trigger_label" || rel=$?
     [ "$rel" != 2 ] || return 0
-    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    DQ_SRC="$src"; DQ_TRIGGER="$trigger_label"; DQ_PR_BASE=""; DQ_PR_HEAD=""; DQ_PR_SRC=""
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_CLAIM_SOURCE="$src" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-new-issue.sh" "$num") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
     # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
     # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
     if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
-    if [ "$d_rc" = 0 ]; then
-        dispatch_fail_reset "issue-$num"
-        usage_limit_note_dispatch "$num" "$ul_t0"
-    else
-        dispatch_failed issue "$num" "$(dispatch_fail_excerpt "$d_out")"
-    fi
+    dispatch_outcome issue "$num" "$d_rc" "$d_out" "$num" "$ul_t0" || true
 }
 
 # PR 上的「评论」其实有三种，存三个不同 endpoint，ID 序列也是独立的：
@@ -619,7 +656,7 @@ dispatch_one_issue() {
 #   - /pulls/N/reviews    ← 整次 review 提交（Approve/Request changes/Comment 的整体 body）
 # state.json 里分三个字段各存最新 ID。
 dispatch_one_pr() {
-    local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6"
+    local prnum="$1" branch="$2" trigger_label="$3" model="$4" worker_agent="$5" prompt_kind="$6" src="${7:-label}"
     local issue_n sess latest_conv latest_inline latest_review
     local seen_conv seen_inline seen_review kick_id tmp
     local d_rc d_out ul_t0 rel
@@ -664,21 +701,18 @@ dispatch_one_pr() {
     d_rc=0; rel=0; printf -v ul_t0 '%(%s)T' -1
     stuck_release_begin pr "$prnum" "$trigger_label" || rel=$?
     [ "$rel" != 2 ] || return 0
-    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
+    DQ_SRC="$src"; DQ_TRIGGER="$trigger_label"; dispatch_pr_identity "$prnum"
+    d_out=$(DISPATCH_STUCK_RELEASE="$STUCK_REL" DISPATCH_CLAIM_SOURCE="$src" DISPATCH_PR_BASE="$DQ_PR_BASE" DISPATCH_PR_HEAD="$DQ_PR_HEAD" DISPATCH_PR_SOURCE="$DQ_PR_SRC" DISPATCH_AUTOPILOT="$AP_FLAG" DISPATCH_AUTOPILOT_ISSUE="$AP_ISSUE" DISPATCH_AUTOPILOT_PR="$AP_PR" DISPATCH_AUTOPILOT_WHERE="$AP_WHERE" DISPATCH_OUTSIDER_TARGET="$AP_OT" DISPATCH_OUTSIDER_NOTE="$AP_ON" DISPATCH_PENDING_AGENT_LABEL="$trigger_label" DISPATCH_WORKER_AGENT="$worker_agent" DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET=1 DISPATCH_PROMPT_KIND="$prompt_kind" \
         bash "$SCRIPT_DIR/dispatch-pr-comment.sh" "$prnum" "$branch" "$kick_id") || d_rc=$?
     [ -n "$d_out" ] && printf '%s\n' "$d_out"
     runlog_dispatch "$d_rc"
     # 动用人的恢复指令的派工（GitHub#339）：结果只由 stuck_release_finish 收尾；确认成功才接着
     # 走下面普通派工的成功分支，其余什么都不再做（不计失败、不留言、不翻标签、不前进读取位置）
     if [ "$rel" = 0 ]; then stuck_release_finish "$d_rc" || return 0; fi
-    if [ "$d_rc" = 0 ]; then
-        dispatch_fail_reset "pr-$prnum"
-        usage_limit_note_dispatch "$issue_n" "$ul_t0"
+    if dispatch_outcome pr "$prnum" "$d_rc" "$d_out" "$issue_n" "$ul_t0"; then
         tmp=$(mktemp)
         jq ".seen_comments[\"$prnum\"] = $latest_conv | .seen_review_comments[\"$prnum\"] = $latest_inline | .seen_reviews[\"$prnum\"] = $latest_review" \
             "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
-    else
-        dispatch_failed pr "$prnum" "$(dispatch_fail_excerpt "$d_out")"
     fi
 }
 
@@ -747,7 +781,7 @@ collect_queue_rows_greedy() {
         # prompt（"读 issue → 实现 → 开 PR → 翻 pending/human"），于是 worker 跳过设计
         # 阶段、跳过交叉 review、不贴测试输出，看日志却一切正常。2026-09-02 issue #833
         # 就是这么翻车的。改这行前先数一遍 US 的个数。
-        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
+        QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}${kind}${US}${num}${US}${branch}${US}${US}${WORKER_MODEL}${US}${US}${US}free${US}${title}"$'\n'
     done <<< "$raw"
 }
 
@@ -831,7 +865,7 @@ collect_autopilot_rows() {
                 prio=$(priority_rank "$labels_csv" "$num")
                 stage=$(stage_rank issue "$LABEL_PENDING_AGENT_DEFAULT" "$num")
                 log "托管：issue #$num 只挂着托管标签（$AUTOPILOT_ACTOR 打的）→ 当作 $LABEL_PENDING_AGENT_DEFAULT 派工"
-                QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}issue${US}${num}${US}-${US}${LABEL_PENDING_AGENT_DEFAULT}${US}${WORKER_MODEL}${US}${US}${US}${title}"$'\n'
+                QUEUE_ROWS+="${prio}${US}${stage}${US}${updated}${US}issue${US}${num}${US}-${US}${LABEL_PENDING_AGENT_DEFAULT}${US}${WORKER_MODEL}${US}${US}${US}autopilot${US}${title}"$'\n'
                 ;;
             1)
                 log "托管：issue #$num 只挂着托管标签，但授权不成立（${AUTOPILOT_REASON}）→ 不派工"
@@ -885,12 +919,12 @@ if [ -n "$QUEUE_SORTED" ]; then
           printf "%s%s#%s(p%s,%s)", (NR > 1 ? " " : ""), ($4 == "pr" ? "PR" : "issue"), $5, $1, stage }')
     log "派工队列 $(printf '%s\n' "$QUEUE_SORTED" | wc -l) 项（mode=${DISPATCH_MODE:-label}），按「优先级/阶段/等待」排：$queue_summary"
 
-    while IFS="$US" read -r q_prio q_stage q_updated q_kind q_num q_branch q_label q_model q_agent q_kind_prompt q_title; do
+    while IFS="$US" read -r q_prio q_stage q_updated q_kind q_num q_branch q_label q_model q_agent q_kind_prompt q_src q_title; do
         [ -n "${q_num:-}" ] || continue
         if [ "$q_kind" = "issue" ]; then
-            dispatch_one_issue "$q_num" "$q_title" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt"
+            dispatch_one_issue "$q_num" "$q_title" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt" "$q_src"
         else
-            dispatch_one_pr "$q_num" "$q_branch" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt"
+            dispatch_one_pr "$q_num" "$q_branch" "$q_label" "$q_model" "$q_agent" "$q_kind_prompt" "$q_src"
         fi
     done < <(printf '%s\n' "$QUEUE_SORTED")
 fi

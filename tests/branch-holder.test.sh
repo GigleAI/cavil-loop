@@ -32,10 +32,13 @@ export TZ=UTC
 
 FAKEBIN="$ROOT/bin"
 mkdir -p "$FAKEBIN"
+TESTS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 cat > "$FAKEBIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 # 一次调用记一行（评论正文是多行的，按行 grep 才不会只看到第一行）
 { printf '%s' "gh $*" | tr '\n' ' '; printf '\n'; } >> "$GH_CALLS"
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+[ -z "${FAKE_ITEM_LABELS_LIB:-}" ] || . "$FAKE_ITEM_LABELS_LIB" "$@"
 exit 0
 FAKEGH
 cat > "$FAKEBIN/tmux" <<'FAKETMUX'
@@ -126,7 +129,7 @@ SCRIPTS="$REPO_DIR/scripts"
 run_pr() {
     local c="$1" root
     root=$(sed -n 's/^PROJECT_ROOT="\(.*\)"$/\1/p' "$c/cavil-loop.config")
-    (cd "$root" && GH_CALLS="$c/gh-calls.log" CODING_AGENT_CONFIG="$c/cavil-loop.config" \
+    (cd "$root" && GH_CALLS="$c/gh-calls.log" CODING_AGENT_CONFIG="$c/cavil-loop.config" FAKE_ITEM_DIR="$c/items" FAKE_ITEM_LABELS_LIB="$TESTS_LIB/fake_item_labels.sh" \
         bash "$SCRIPTS/dispatch-pr-comment.sh" "$N" "$BR" 0 >/dev/null 2>&1)
     echo $?
 }
@@ -313,7 +316,7 @@ s_submodule_on() {
 s_new_issue() {
     echo "── 新 issue 建 worktree 那条路：只提示 switch，开关开也不切 ──"
     local c f0=$fail out rc; c=$(case_std newissue 1)
-    out=$(cd "$c/project" && GH_CALLS="$c/gh-calls.log" CODING_AGENT_CONFIG="$c/cavil-loop.config" \
+    out=$(cd "$c/project" && GH_CALLS="$c/gh-calls.log" CODING_AGENT_CONFIG="$c/cavil-loop.config" FAKE_ITEM_DIR="$c/items" FAKE_ITEM_LABELS_LIB="$TESTS_LIB/fake_item_labels.sh" \
         bash "$SCRIPTS/create-worktree.sh" "$N" main 2>&1 >/dev/null); rc=$?
     local logged; logged=$(cat "$c/state/poll.log" 2>/dev/null)
     chk "create-worktree 失败退出（交给重试计数）" "$rc" 1

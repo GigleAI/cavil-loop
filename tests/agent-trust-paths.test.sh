@@ -111,6 +111,8 @@ SH
 cat > "$FAKEBIN/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+[ -z "${FAKE_ITEM_LABELS_LIB:-}" ] || . "$FAKE_ITEM_LABELS_LIB" "$@"
 case "$*" in
     "auth status"*) exit 0 ;;
     "repo view"*) echo "acme/widget"; exit 0 ;;
@@ -395,6 +397,7 @@ run_dispatch() {
     local R="$1" D="$2" script="$3"; shift 3
     (cd "$PROOT" && env -u CODING_AGENT_RELEASE_ROOT -u CLAUDE_JSON_PATH -u CODEX_HOME -u CAVIL_TRUST_LOCK_DIR -u WORKER_AGENT \
         HOME="$H" CODING_AGENT_CONFIG="$D/config" GH_LOG="$D/gh.log" FAKE_TMUX_DIR="$D/tmux" \
+        FAKE_ITEM_LABELS_LIB="$TEST_DIR/lib/fake_item_labels.sh" FAKE_ITEM_DIR="$D/items" \
         FAKE_PANE_FILE="${PANE:-}" FAKE_TMUX_DIE_LAUNCHES="${DIE:-}" \
         bash "$R/scripts/$script" "$@") >/dev/null 2>&1
 }
@@ -454,11 +457,12 @@ scenario() {
         || echo "FAIL disp·$name·每次起会话那一刻已信任 $(basename "$key") :: 快照里没有 $key"
     if [ "$dialog" = yes ]; then
         local num_lbl="issues/$N/labels"
+        # 起会话之前已经认领（GitHub#700），转人工时摘掉 doing/agent：最后只剩 pending/human
         if grep -q "$num_lbl.*labels\[\]=pending/human" "$D/gh.log" && grep -q "issues/$N/comments" "$D/gh.log" \
-           && grep -q "trusttest-issue$N" "$D/tmux/killed" 2>/dev/null && ! grep -q "labels\[\]=doing/agent" "$D/gh.log"; then
-            echo "PASS disp·$name·卡在确认框：杀会话、留言、转 pending/human、不翻 doing"
+           && grep -q "trusttest-issue$N" "$D/tmux/killed" 2>/dev/null && [ "$(sort "$D/items/$N" 2>/dev/null | tr '\n' ,)" = "pending/human," ]; then
+            echo "PASS disp·$name·卡在确认框：杀会话、留言、转 pending/human、doing/agent 已摘"
         else
-            echo "FAIL disp·$name·卡在确认框：杀会话、留言、转 pending/human、不翻 doing :: $(grep -c . "$D/gh.log" 2>/dev/null) 次 gh 调用；killed=$(tr "\n" " " < "$D/tmux/killed" 2>/dev/null)"
+            echo "FAIL disp·$name·卡在确认框：杀会话、留言、转 pending/human、doing/agent 已摘 :: $(grep -c . "$D/gh.log" 2>/dev/null) 次 gh 调用；killed=$(tr "\n" " " < "$D/tmux/killed" 2>/dev/null)；标签=$(tr '\n' , < "$D/items/$N" 2>/dev/null)"
         fi
         grep -q "目录信任确认框" "$D/state/poll.log" 2>/dev/null && echo "PASS disp·$name·poll.log 写明哪个 agent、哪个目录" \
             || echo "FAIL disp·$name·poll.log 写明哪个 agent、哪个目录 :: 日志里没有"

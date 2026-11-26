@@ -40,7 +40,7 @@ unset MAX_CONCURRENT_WORKERS DISPATCH_MAX_RETRIES SELFHEAL_MAX_RETRIES AUTO_CLEA
 export FAKE_GH_LISTS=1 FAKE_GH_REPO="example/pc"
 
 bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_DIR/lib/fake_github.py"
-# 假 tmux：FAKE_TMUX_FAIL=1 时 new-session 失败（派工失败的夹具），否则记一行并成功
+# 假 tmux：有 <日志>.fail 时 new-session 失败，否则记一行并成功
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 log="${FAKE_TMUX_LOG:?}"
@@ -125,7 +125,8 @@ world() {   # <场景：two-pending | failing | dead-worker>
                         head:{sha:\"2222222222222222222222222222222222222222\", ref:\"chore/merged\", repo:{full_name:\"example/pc\"}}, base:{ref:\"main\"}}}" > "$GD/items.json"
             jq -n --arg a "$A" --arg b "$B" --arg m "$M" '{($a): ["pending/agent"], ($b): ["pending/agent"], ($m): ["pending/human"]}' > "$GD/labels.json" ;;
         failing)
-            : > "$W/tmux.log.fail"
+            # 确定失败：认领时加 doing/agent 被拒（条目复原、任务没交出）。起会话失败算「结果不明」，不计失败次数（GitHub#700）
+            mkdir -p "$GD/F_post_label_doing"; : > "$GD/F_post_label_doing/agent"
             jq -n --arg a "$A" "{(\$a): $issue}" > "$GD/items.json"
             jq -n --arg a "$A" '{($a): ["pending/agent"]}' > "$GD/labels.json" ;;
         conflict)   # <PR 上次更新是几天前>：一个等人审的 PR，和 main 冲突

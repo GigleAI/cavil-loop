@@ -60,6 +60,8 @@ FAKEBIN="$TMP/fakebin"; CTL="$TMP/ctl"; mkdir -p "$FAKEBIN" "$CTL"
 cat > "$FAKEBIN/gh" <<SH
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$CTL/gh.log"
+# 派工先读条目、认领、读回（GitHub#700）：单条读取和标签增删按状态回答
+FAKE_ITEM_DIR="$CTL/items" . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fake_item_labels.sh" "\$@"
 case "\$*" in
     *title*) echo "测试标题"; exit 0 ;;
 esac
@@ -144,6 +146,7 @@ CONF
 dispatch() {
     local R="$1" kind="$2" agent="$3" role="$4" pk
     pk=""; [ "$role" = review ] && pk=review
+    rm -rf "$CTL/items"   # 每次派工前条目都挂着 pending/agent（GitHub#700：派工先认领）
     (cd "$D/proj" && HOME="$D/home" CODING_AGENT_CONFIG="$D/config" \
         DISPATCH_WORKER_AGENT="$agent" DISPATCH_PROMPT_KIND="$pk" \
         timeout 120 bash -c '
@@ -361,8 +364,13 @@ fault_scenario() {
         [ "$(T list-panes -s -t "=$SESS:" -F x | wc -l)" = 2 ] && echo "PASS 故障·${name}·窗格数没变" || echo "FAIL 故障·${name}·窗格数没变"
         if client_attached && ! grep -q '^%exit' "$D/client.out"; then echo "PASS 故障·${name}·客户端还挂着"
         else echo "FAIL 故障·${name}·客户端还挂着"; fi
-        grep -q 'doing/agent' "$CTL/gh.log" && echo "FAIL 故障·${name}·没有翻标签 :: $(grep doing/agent "$CTL/gh.log" | head -1)" \
-            || echo "PASS 故障·${name}·没有翻标签"
+        # 认领在换程序之前（GitHub#700）：换程序读不到窗格时结果不明，doing/agent 留着、不转人工、不写别的；
+        # 会话身份读不到时认领前就停下，一个标签都没写（条目状态文件根本没建）
+        grep -q 'pending/human' "$CTL/gh.log" && echo "FAIL 故障·${name}·没有转人工 :: $(grep pending/human "$CTL/gh.log" | head -1)" \
+            || echo "PASS 故障·${name}·没有转人工"
+        _lb=$(tr '\n' , < "$CTL/items/$N" 2>/dev/null) || _lb=none
+        { [ "$_lb" = "doing/agent," ] || { [ "$_lb" = none ] && ! grep -q '/labels' "$CTL/gh.log"; }; } && echo "PASS 故障·${name}·只留着认领时打上的 doing/agent（或一个标签都没写）" \
+            || echo "FAIL 故障·${name}·只留着认领时打上的 doing/agent :: $_lb"
     done
 
     # 查询恢复后：正常完成一次切换

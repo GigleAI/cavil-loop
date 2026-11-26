@@ -88,9 +88,27 @@ compat_feedback_fp_patch() {
 # 交接不随清理关掉），改动前那时不读；② 假 GitHub 没开列表时（不带 FAKE_GH_LISTS）
 # 对列表一律原样答 `[]`，改动前的脚本按行读、把它当成编号为「[]」的 PR（读它的正文、给它打标签、记进已清理），
 # 现在按 JSON 读、没有这个 PR——这些对「[]」的调用和记录与要比的功能无关，去掉。
+# ③ 派工时换标签那一段（GitHub#700）：改动前是「交任务之后摘全部触发标签、再加 doing/agent」，现在是「交任务之前读
+# 条目、加 doing/agent、只摘挂着的触发标签、再读回」。同一个条目上连在一起的这几种调用（单条读条目 / PR、加 doing/agent、
+# 摘标签；有的假 gh 另记一行 `WRITE <方法> <路径>`）两边各折成一行 `claim <编号>` 再比；派工之后的标签结果仍由各测试比 labels.json，认领本身在 tests/dispatch-claim.test.sh 测
+compat_claim_calls() {   # stdin：调用记录；stdout：统一后的调用记录
+    python3 -c '
+import re, sys
+pat = re.compile(r"^(?:gh )?api (?:repos/[^/ ]+/[^/ ]+/(?:issues|pulls)/(\d+)|-X POST repos/[^/ ]+/[^/ ]+/issues/(\d+)/labels -f labels\[\]=doing/agent|-X DELETE repos/[^/ ]+/[^/ ]+/issues/(\d+)/labels/\S+)$|^WRITE (?:POST|DELETE) repos/[^/ ]+/[^/ ]+/issues/(\d+)/labels(?:/\S+)?$")
+last = None
+for line in sys.stdin:
+    m = pat.match(line.rstrip("\n"))
+    n = next((g for g in m.groups() if g), None) if m else None
+    if n is None:
+        last = None; sys.stdout.write(line); continue
+    if n != last:
+        print("claim " + n)
+    last = n
+'
+}
 compat_merge_calls() {   # stdin：调用记录；stdout：统一后的调用记录
     # 记录里命令名可以写也可以不写（有的假 gh 只记参数）
-    grep -vE '^(gh )?pr list --repo [^ ]+ --state merged |^(gh )?pr view \[\] |/issues/\[\]( |/|$)' || true
+    { grep -vE '^(gh )?pr list --repo [^ ]+ --state merged |^(gh )?pr view \[\] |/issues/\[\]( |/|$)' || true; } | compat_claim_calls
 }
 # state.json 一侧：去掉「[]」那条假 PR（已清理列表里的、各重试队列里以「[]」为键的）；已清理列表是空的（只是首轮
 # bootstrap 写下的）就整项去掉

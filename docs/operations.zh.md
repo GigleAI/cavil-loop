@@ -4399,8 +4399,9 @@ bash ~/.agents/skills/cavil-loop/scripts/stuck-release.sh "$KEY" "$N"
 
 ### 同一条活每轮派工都失败
 
-派工失败什么都不改，下一轮 poll 会把同一条活再捡起来——最多连续 `DISPATCH_MAX_RETRIES`（默认 3）次，到上限就摘掉
-触发 label、把这条活转 `pending/human`。原因在 `poll.log` 里：
+派工失败时条目保持原样（标签也是），下一轮 poll 会把同一条活再捡起来——最多连续 `DISPATCH_MAX_RETRIES`（默认 3）次，到上限就摘掉
+触发 label、把这条活转 `pending/human`。有两种结果不算失败、也什么都不写：daemon 确认不了任务有没有交到 worker 手里（条目留着
+`doing/agent`，会话不在的照常送回队列），或者派工期间有人改了条目（关闭、摘掉触发 label、PR 推了新提交）。原因在 `poll.log` 里：
 
 <details><summary>命令</summary>
 

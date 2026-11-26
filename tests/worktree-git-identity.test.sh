@@ -136,9 +136,15 @@ set_assignees() {   # <编号> <负责人，逗号分隔，可空>
     jq --arg n "$1" --arg as "$2" '.[$n].assignees = ($as | split(",") | map(select(. != "")) | map({login: ., type: "User"}))' \
         "$GD/items.json" > "$GD/items.json.t" && mv "$GD/items.json.t" "$GD/items.json"
 }
-run_new() { env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-new-issue.sh" "$1" >>"$W/dispatch.log" 2>&1; }
-run_cmt() { env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$1" 0 >>"$W/dispatch.log" 2>&1; }
-run_pr()  { env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" "$1" "$2" 0 >>"$W/dispatch.log" 2>&1; }
+# 每次派工前把条目放成真实派工时的样子：只挂派工标签（派工先读条目、认领 doing/agent，触发标签不在就不派，GitHub#700；
+# 上一次派工留下的 doing/agent 也去掉，同 worker 交回后 daemon 再派）
+# 每次派工的退出码都记下：署名在认领之前就算好，署名对了不代表派工真的跑完；结尾核对全部是 0
+DISP_LOG="$SANDBOX/dispatch-rc.log"; : > "$DISP_LOG"
+disp_rc() { echo "$2 $1" >> "$DISP_LOG"; return 0; }
+trig() { jq --arg n "$1" '.[$n] = ["pending/agent"]' "$GD/labels.json" > "$GD/labels.json.t" && mv "$GD/labels.json.t" "$GD/labels.json"; }
+run_new() { trig "$1"; env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-new-issue.sh" "$1" >>"$W/dispatch.log" 2>&1; disp_rc "$?" "$1"; }
+run_cmt() { trig "$1"; env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-issue-comment.sh" "$1" 0 >>"$W/dispatch.log" 2>&1; disp_rc "$?" "$1"; }
+run_pr()  { trig "$1"; env CODING_AGENT_CONFIG="$CONF" timeout 60 bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" "$1" "$2" 0 >>"$W/dispatch.log" 2>&1; disp_rc "$?" "$1"; }
 # 在 <工作编号> 的 worktree 里真提交一次，读这次提交的作者 / 提交者四项
 ident() {
     local wt="$W/wt/issue-$1"
@@ -294,6 +300,10 @@ cross "账号编号不是数字 → 仍是 alice" "$(id_of alice)" user_patch '{
 cross "负责人类型明确是 Bot → 跳过，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [{"login": "alice", "type": "Bot"}]}'
 cross "负责人类型明确是 Organization → 跳过，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [{"login": "alice", "type": "Organization"}]}'
 cross "父 issue 在别的仓库（负责人已撤）→ 链到头，撤回到仓库身份" "$REPO_ID" patch_item '{"assignees": [], "parent_issue_url": "https://api.github.com/repos/other/repo/issues/5"}'
+
+echo "【9】到达性：上面每一次派工都真的跑完（退出码 0）"
+chk "派工次数不少于 40 次" "$([ "$(wc -l < "$DISP_LOG")" -ge 40 ] && echo yes || echo "no: $(wc -l < "$DISP_LOG")")" "yes"
+chk "没有一次派工中途退出（列出退出码不是 0 的）" "$(awk '$2 != 0' "$DISP_LOG" | tr '\n' ' ')" ""
 
 echo
 echo "结果：$pass 通过 / $fail 失败"
