@@ -42,6 +42,9 @@ bash "$TEST_DIR/lib/fake_gh_client.sh" install "$SANDBOX/bin/gh" python3 "$TEST_
 cat > "$SANDBOX/bin/tmux" <<'SH'
 #!/usr/bin/env bash
 d="${FAKE_TMUX_DIR:?}"
+# 起 worker 前的 agent 命令检查（GitHub#731）开的检查会话：假 tmux 起不了，检查按「不知道」照常往下走；
+# 不记进调用记录，「起程序」的计数只算 worker 本身（检查在 tests/agent-bin-check.test.sh 测）
+[[ "$*" == *" -s cavil-bincheck-"* ]] && exit 1
 printf 'tmux %s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 tgt=""; prev=""
 for a in "$@"; do [ "$prev" = -t ] || [ "$prev" = -s ] && tgt="${a#=}"; prev="$a"; done

@@ -8268,7 +8268,7 @@ verify_fresh_session() {
     local dead
     dead="$(tmux list-panes -t "=$sess" -F '#{pane_dead}' 2>/dev/null | head -1)"
     if [ "$dead" = "1" ] || ! session_alive "$sess"; then
-        log "  ❌ $sess 启动后 ${wait_s}s 内秒退，capture pane 死因："
+        log "  ❌ $sess 启动后 ${wait_s}s 内秒退（$(agent_exit_explain "$(agent_exit_read "$sess")")），capture pane 死因："
         local log_path
         log_path="$(session_log_path "$sess")"
         {
@@ -12263,6 +12263,277 @@ dispatch_prompt_refused() {   # <num> → 0 = 已转人工；77 / 78 = 条目变
         "这次派工的提示词交不给 worker：提示词太长（超过命令行一次能传的上限），daemon 又没能把它写成转交文件，或者提示词文件本身读不了。没有起会话。" \
         "到 daemon 机器的 poll.log 里看这一条前面那行写的具体原因（多半是状态目录写不进去、磁盘满）；处理后把标签改回 \`$LABEL_PENDING_AGENT\` 重试。提示词长期接近上限的话，精简项目的附加要求 / 经验文件。" \
         "提示词交不出去"
+}
+
+# ── Checking the agent command before a worker starts, and the worker's exit code (GitHub#731); read before changing ──
+# 2026-11-26 codex upgraded itself into a directory that the PATH the daemon hands to workers did not
+# contain. Every launch died with `command not found` (exit 127) within a second; the daemon read that as
+# "session corrupted", re-dispatched three times and handed the items to a human pointing at an empty
+# pane history. Two parts:
+#
+# 1. **Check before launching** (`agent_bin_gate`, called by the four places that start a program:
+#    dispatch-new-issue, the "session gone" branch of dispatch-issue-comment, the two launch branches of
+#    dispatch-pr-comment — before `agent_session_plan` and before the item is claimed). The check runs
+#    `command -v <agent>` the same way tmux will start the worker, so it sees the worker's PATH, shell and
+#    shell start-up files, not the poller's:
+#      branch `new`    (no session / a session rebuilt from scratch) → a throw-away session on the same
+#                      server, same `-e` arguments, same working directory;
+#      branch `window` (session there, worker pane gone)           → a throw-away detached window in that
+#                      very session, same `-e` arguments and working directory;
+#      branch `respawn` (worker pane still there)                  → **not checked**: tmux restarts that
+#                      pane with the shell it was created with, which can differ from the session's current
+#                      setting (review round 3 of #731 measured it), so no throw-away pane can prove what
+#                      it would see. A missing command there shows up as exit code 127 (part 2).
+#    Only a definite "not found" / "not executable" written by the check itself stops the launch. Anything
+#    else — the window or session cannot be made, no result within the wait, a result file that is missing
+#    or malformed, a tmux read that fails — is "unknown" and the launch goes ahead exactly as before. A
+#    negative result is only acted on after the basis it was taken on is read again right before the
+#    GitHub write (`agent_bin_check_basis`: branch, global and session shell setting, the `-e` arguments,
+#    the working directory); any difference or failed read turns it into "unknown". Acting = the existing
+#    pre-claim hand-over (`dispatch_to_human`: re-read, comment, add pending/human, remove the trigger
+#    labels, read back after each step); only when every step succeeded is the item's self-heal counter
+#    reset (a session that vanished was already counted once before this re-dispatch). A step that failed
+#    or whose result is unknown is not taken for "not written": nothing is written after it and the counter
+#    stays. The comment shows the PATH the check saw, with the daemon user's home directory written as `~`.
+#    CAVIL_AGENT_BIN_CHECK_WAIT (1–60, anything else = 10) is for tests only.
+# 2. **Record the exit code** (`agent_exit_wrap`): the launch command is followed by a few shell words that
+#    write `<code> <launch token>` to `$STATE_DIR/worker-exit/<tmux session>` and exit with the same code,
+#    so the session still disappears when the program ends. The token is written to `<file>.launch`
+#    before the launch; a record whose token differs (an old run, a failed overwrite) is never read as this
+#    run's. The words are POSIX shell, so they are only added when the shell tmux will use is one of the
+#    POSIX family; otherwise the command is unchanged and the reader says it has no exit code. Readers: the
+#    new-issue quick-exit check, the "resume died within 2 s" fallback and self-heal in agent-poll.sh — none
+#    of them says "session corrupted" any more. `cleanup-issue.sh` deletes both files.
+# Tests: tests/agent-bin-check.test.sh (real tmux on a private server, the real dispatch scripts and poll).
+AGENT_BIN_CHECK=""; AGENT_BIN_CHECK_WHERE=""; AGENT_BIN_CHECK_SEEN_PATH=""; AGENT_BIN_CHECK_BASIS=""
+AGENT_EXIT_DIR="$STATE_DIR/worker-exit"
+
+agent_bin_check_wait() {
+    local w="${CAVIL_AGENT_BIN_CHECK_WAIT:-}"
+    case "$w" in ''|*[!0-9]*) w=10 ;; *) if [ "${#w}" -gt 2 ] || [ "$w" -lt 1 ] || [ "$w" -gt 60 ]; then w=10; fi ;; esac
+    printf '%s' "$w"
+}
+
+# tmux 全局 shell 设置。没有 tmux 服务时，下一条 tmux 命令新起的服务取的是什么就输出什么：
+# tmux 用调用方的 SHELL（绝对路径、可执行），否则 /bin/sh。其余读失败 → 1
+tmux_global_shell() {
+    local out err rc=0
+    err=$(mktemp) || return 1
+    out=$(tmux show-options -gv default-shell 2>"$err") || rc=$?
+    if [ "$rc" = 0 ]; then rm -f "$err"; printf '%s' "$out"; return 0; fi
+    if grep -qE '^(no server running on |error connecting to .*\(No such file or directory\))' "$err"; then
+        rm -f "$err"
+        case "${SHELL:-}" in /*) if [ -x "$SHELL" ]; then printf '%s' "$SHELL"; return 0; fi ;; esac
+        printf '/bin/sh'; return 0
+    fi
+    rm -f "$err"; return 1
+}
+
+# 这次起 worker 会走哪条路：new / window / respawn；读不到 → 1。<mode> = new 时固定新建会话（新 issue 派工）
+agent_bin_check_branch() {   # <tmux_session> <mode: new|auto>
+    local e=0 st
+    if [ "$2" = new ]; then echo new; return 0; fi
+    worker_session_exists "$1" || e=$?
+    case "$e" in 1) echo new; return 0 ;; 0) ;; *) return 1 ;; esac
+    read -r st _ <<<"$(worker_pane_lookup "$1")"
+    case "$st" in
+        gone) echo window ;;
+        multi) echo new ;;          # 认不出 worker 窗格：整个会话删掉重建
+        found|single) echo respawn ;;
+        *) return 1 ;;
+    esac
+}
+
+# 检查所依据的条件，一行文字；任何一项读不到 → 1
+agent_bin_check_basis() {   # <tmux_session> <mode> <cwd> [tmux -e 参数…]
+    local sess="$1" mode="$2" cwd="$3" branch gs ss="" envh
+    shift 3
+    branch=$(agent_bin_check_branch "$sess" "$mode") || return 1
+    gs=$(tmux_global_shell) || return 1
+    if [ "$branch" = window ]; then
+        ss=$(tmux show-options -qv -t "=$sess:" default-shell 2>/dev/null) || return 1
+    fi
+    [ -d "$cwd" ] || return 1
+    envh=$(printf '%s\0' "$@" | _pace_hash | awk '{print $1}') || return 1
+    [ -n "$envh" ] || return 1
+    printf 'branch=%s|global=%s|session=%s|cwd=%s|env=%s' "$branch" "$gs" "$ss" "$cwd" "$envh"
+}
+
+# 检查。在当前 shell 里调（设全局）：AGENT_BIN_CHECK = found / missing / noexec / unknown
+agent_bin_check() {   # <tmux_session> <mode> <cwd> [tmux -e 参数…]
+    local sess="$1" mode="$2" cwd="$3" bin branch dir id file cmd target="" i lines wait chan waiter
+    shift 3
+    AGENT_BIN_CHECK=unknown; AGENT_BIN_CHECK_WHERE=""; AGENT_BIN_CHECK_SEEN_PATH=""; AGENT_BIN_CHECK_BASIS=""
+    bin="$(agent_bin 2>/dev/null)" || bin=""
+    if ! [[ "$bin" =~ ^[A-Za-z0-9._+-]+$ ]] || [[ "$bin" == -* ]]; then
+        log "  起 worker 前检查：agent 命令名「${bin}」认不出，不检查"; return 0
+    fi
+    if ! AGENT_BIN_CHECK_BASIS=$(agent_bin_check_basis "$sess" "$mode" "$cwd" "$@"); then
+        AGENT_BIN_CHECK_BASIS=""
+        log "  起 worker 前检查：读不到这次的启动方式（tmux 查询失败或工作目录不在），不检查"; return 0
+    fi
+    branch="${AGENT_BIN_CHECK_BASIS#branch=}"; branch="${branch%%|*}"
+    if [ "$branch" = respawn ]; then
+        log "  起 worker 前检查：这次在原窗格里换程序，窗格沿用它创建时的 shell，检查不了，照常起"; return 0
+    fi
+    dir="$STATE_DIR/agent-bin-check"
+    id="$(agent_session_new_uuid 2>/dev/null)" || id=""
+    if ! [[ "$id" =~ ^[0-9a-f-]+$ ]] || ! mkdir -p "$dir" 2>/dev/null; then
+        log "  起 worker 前检查：建不出结果文件，不检查"; return 0
+    fi
+    file="$dir/check-$id"
+    case "$file" in *"'"*) log "  起 worker 前检查：状态目录路径带单引号，不检查"; return 0 ;; esac
+    chan="cavil-bincheck-$id"
+    # sh 的 command -v 跳过没有执行权限的同名文件，所以找不到时再按 PATH 逐个目录看一眼有没有这样的文件
+    cmd="p=\$(command -v $bin 2>/dev/null) || p=''; if [ -z \"\$p\" ]; then r=missing; o=\$IFS; IFS=:; for d in \$PATH; do [ -n \"\$d\" ] || d=.; if [ -e \"\$d/$bin\" ]; then r=noexec; p=\"\$d/$bin\"; break; fi; done; IFS=\$o; else case \"\$p\" in */*) if [ -f \"\$p\" ] && [ -x \"\$p\" ]; then r=found; else r=noexec; fi ;; *) r=found ;; esac; fi; printf 'cavil-bin-check %s\\npath %s\\nwhere %s\\nend\\n' \"\$r\" \"\$PATH\" \"\$p\" > '$file'; tmux wait-for -S '$chan'"
+    if [ "$branch" = window ]; then
+        target=$(tmux new-window -d -P -F '#{pane_id}' -t "=$sess:" "$@" -c "$cwd" "$cmd" 2>/dev/null) || target=""
+        [ -n "$target" ] || { log "  起 worker 前检查：在 $sess 里开不出检查窗口，不检查"; return 0; }
+    else
+        target="cavil-bincheck-${id%%-*}"
+        if ! tmux new-session -d -s "$target" "$@" -c "$cwd" "$cmd" 2>/dev/null; then
+            log "  起 worker 前检查：起不了检查会话，不检查"; rm -f "$file"; return 0
+        fi
+    fi
+    # 等检查写完：检查命令最后发一个 tmux 信号（先发后等也收得到）；tmux 不回应、
+    # 检查窗口里的 shell 起不来时最多等这么久，之后按不知道处理
+    wait=$(agent_bin_check_wait)
+    tmux wait-for "$chan" >/dev/null 2>&1 &
+    waiter=$!
+    for ((i = 0; i < wait * 10; i++)); do
+        [ "$(tail -n 1 "$file" 2>/dev/null)" = end ] && break
+        kill -0 "$waiter" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill "$waiter" 2>/dev/null || true
+    wait "$waiter" 2>/dev/null || true
+    if [ "$branch" = window ]; then
+        tmux kill-pane -t "$target" 2>/dev/null || true
+    else
+        tmux kill-session -t "=$target" 2>/dev/null || true
+    fi
+    lines=$(cat "$file" 2>/dev/null) || lines=""
+    rm -f "$file" 2>/dev/null || true
+    if [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" != 4 ] || [ "$(printf '%s\n' "$lines" | sed -n 4p)" != end ]; then
+        log "  起 worker 前检查：${wait} 秒内没拿到完整结果，按不知道处理，照常起"; return 0
+    fi
+    case "$(printf '%s\n' "$lines" | sed -n 1p)" in
+        'cavil-bin-check found') AGENT_BIN_CHECK=found ;;
+        'cavil-bin-check missing') AGENT_BIN_CHECK=missing ;;
+        'cavil-bin-check noexec') AGENT_BIN_CHECK=noexec ;;
+        *) log "  起 worker 前检查：结果认不出，按不知道处理，照常起"; return 0 ;;
+    esac
+    AGENT_BIN_CHECK_SEEN_PATH="$(printf '%s\n' "$lines" | sed -n 2p)"; AGENT_BIN_CHECK_SEEN_PATH="${AGENT_BIN_CHECK_SEEN_PATH#path }"
+    AGENT_BIN_CHECK_WHERE="$(printf '%s\n' "$lines" | sed -n 3p)"; AGENT_BIN_CHECK_WHERE="${AGENT_BIN_CHECK_WHERE#where}"; AGENT_BIN_CHECK_WHERE="${AGENT_BIN_CHECK_WHERE# }"
+    return 0
+}
+
+# 给人看的路径：daemon 用户的家目录写成 ~，去掉反引号
+agent_bin_public_path() {   # <PATH 文本>
+    local h="${HOME:-}" out="" part
+    local IFS=:
+    for part in $1; do
+        if [ -n "$h" ] && { [ "$part" = "$h" ] || [ "${part#"$h"/}" != "$part" ]; }; then part="~${part#"$h"}"; fi
+        out="${out:+$out:}$part"
+    done
+    printf '%s' "$out" | tr -d '`'
+}
+
+# 派工脚本用：检查；明确找不到 / 不能执行且依据没变 → 转人工后退出；其余 return 0 照常起
+agent_bin_gate() {   # <编号> <自愈计数的 key> <tmux_session> <mode> <cwd> [tmux -e 参数…]
+    local num="$1" key="$2" sess="$3" mode="$4" cwd="$5" now bin what seen trig r=0 reason next
+    shift 5
+    agent_bin_check "$sess" "$mode" "$cwd" "$@"
+    case "$AGENT_BIN_CHECK" in missing|noexec) ;; *) return 0 ;; esac
+    if ! now=$(agent_bin_check_basis "$sess" "$mode" "$cwd" "$@") || [ "$now" != "$AGENT_BIN_CHECK_BASIS" ]; then
+        log "  起 worker 前检查：找不到命令，但检查依据在写之前变了或读不到，按不知道处理，照常起"
+        return 0
+    fi
+    bin="$(agent_bin)"
+    seen="$(agent_bin_public_path "$AGENT_BIN_CHECK_SEEN_PATH")"
+    if [ "$AGENT_BIN_CHECK" = missing ]; then
+        what="daemon 交给 worker 的 PATH 里找不到 \`$bin\` 命令"
+    else
+        what="找到了 \`$(agent_bin_public_path "$AGENT_BIN_CHECK_WHERE")\`，但它不能执行（没有执行权限或不是普通文件）"
+    fi
+    log "❌ #$num 起 worker 前检查：${what}（worker 看到的 PATH：${seen}）→ 不起会话，转 $LABEL_PENDING_HUMAN"
+    trig=""
+    if now=$(dispatch_item_doc "$num" 2>/dev/null) && [ -n "$now" ]; then
+        [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+        trig=$({ printf '%s\n' "${TRIGGER_LABELS_ALL[@]}"; } | jq -R . | jq -rs --argjson d "$now" \
+            '[.[] | select(. != "" and (. as $l | $d.labels | index($l)))] | unique | if length == 1 then .[0] else "" end' 2>/dev/null) || trig=""
+    fi
+    reason="daemon 准备起 worker 之前，用 worker 实际会拿到的环境检查了一下：${what}。没有起会话，这一次不计入自动重试次数。
+
+worker 当时看到的 PATH：\`$seen\`"
+    next="1. 在 daemon 所在机器上让 \`$bin\` 出现在上面那个 PATH 里：软链进其中已有的目录（例如 \`ln -s <$bin 的新位置> ~/.local/bin/$bin\`，不要加 \`-f\`；目标已存在时它会报错不覆盖，先看清那是什么），或者在 \`~/.config/cavil-loop/<项目>.conf\` 里改 PATH。
+2. 摘掉 \`$LABEL_PENDING_HUMAN\`，确认${trig:+原来的派工标签 \`$trig\`}${trig:-派工标签（多为 \`$LABEL_PENDING_AGENT\`）}挂着，没挂就加上。
+3. daemon 下一轮会在 worker 的实际环境里再查一次；还找不到会再留一条同样的说明。"
+    dispatch_to_human "$num" "$reason" "$next" "worker 环境里找不到 agent 命令" || r=$?
+    DISPATCH_PHASE=done
+    if [ "$r" = 0 ]; then selfheal_reset "$key"; fi
+    exit "$r"
+}
+
+# ── worker 的退出码 ──
+agent_exit_file() { printf '%s/%s' "$AGENT_EXIT_DIR" "$1"; }
+
+# 这条会话的程序会由哪种 shell 起：是 POSIX 一族（sh / bash / dash / zsh / ksh …）才包退出码记录
+agent_exit_shell_posix() {   # <tmux_session>
+    local s=""
+    if session_alive "$1"; then
+        s=$(tmux show-options -qv -t "=$1:" default-shell 2>/dev/null) || return 1
+    fi
+    if [ -z "$s" ]; then
+        s=$(tmux_global_shell) || return 1
+    fi
+    [ -n "$s" ] || s=/bin/sh
+    case "${s##*/}" in sh|bash|dash|zsh|ksh|mksh|ash|yash|ksh93|busybox) return 0 ;; esac
+    return 1
+}
+
+# stdout：包好的启动命令（不能包时原样）。在 tmux 起程序之前调用
+agent_exit_wrap() {   # <tmux_session> <命令>
+    local sess="$1" cmd="$2" f tok
+    f="$(agent_exit_file "$sess")"
+    rm -f "$f" "$f.launch" 2>/dev/null || true
+    case "$f" in *"'"*) printf '%s' "$cmd"; return 0 ;; esac
+    if [ -e "$f" ] || ! agent_exit_shell_posix "$sess" || ! mkdir -p "$AGENT_EXIT_DIR" 2>/dev/null; then
+        printf '%s' "$cmd"; return 0
+    fi
+    tok="$(agent_session_new_uuid 2>/dev/null)" || tok=""
+    if ! [[ "$tok" =~ ^[0-9a-f-]+$ ]] || ! printf '%s\n' "$tok" > "$f.launch" 2>/dev/null; then
+        printf '%s' "$cmd"; return 0
+    fi
+    printf "%s; __cavil_rc=\$?; printf '%%s %%s\\\\n' \"\$__cavil_rc\" '%s' > '%s' 2>/dev/null; exit \$__cavil_rc" "$cmd" "$tok" "$f"
+}
+
+# 这次启动的退出码（数字），读不到 / 不是这次的 → 空
+agent_exit_read() {   # <tmux_session>
+    local f code tok want
+    f="$(agent_exit_file "$1")"
+    want=$(cat "$f.launch" 2>/dev/null) || return 0
+    read -r code tok < "$f" 2>/dev/null || return 0
+    [[ "$code" =~ ^[0-9]{1,3}$ ]] && [ -n "$want" ] && [ "$tok" = "$want" ] || return 0
+    printf '%s' "$code"
+}
+
+# 一句白话：「退出码 127：……」；读不到时也给一句
+agent_exit_explain() {   # <退出码或空>
+    local c="$1"
+    case "$c" in
+        '') printf '没读到最后一次的退出码。常见原因：agent 命令不在 worker 的 PATH 里、agent CLI 正在自动升级、新目录的信任确认框、对话记录异常' ;;
+        0) printf '退出码 0：程序自己正常结束了，没有报错' ;;
+        126) printf '退出码 126：命令找到了但不能执行（没有执行权限，或提示词超过命令行长度上限）' ;;
+        127) printf '退出码 127：找不到命令（agent 程序不在 worker 的 PATH 里）' ;;
+        *) if [ "$c" -gt 128 ] && [ "$c" -lt 193 ]; then printf '退出码 %s：程序被信号 %s 结束（9 = 强制结束，15 = 请求结束）' "$c" "$((c - 128))"
+           else printf '退出码 %s：程序报错退出' "$c"; fi ;;
+    esac
+}
+
+agent_exit_forget() {   # <tmux_session>
+    local f; f="$(agent_exit_file "$1")"
+    rm -f "$f" "$f.launch"
 }
 
 # 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的

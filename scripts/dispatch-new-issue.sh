@@ -142,16 +142,20 @@ fi
 #    新 issue 一律起全新会话（worktree 刚建）；仍走这条路径是为了让本次
 #    会话的 id 登记到注册表里，后面同角色再派工才认得回来。
 #    agent_session_plan 要在当前 shell 里调（它设的全局在 $( ) 子 shell 里会丢）。
-agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
-log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
-CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-    || dispatch_refused_exit "$ISSUE"
-# 先认领（doing/agent 打上、触发标签摘掉、读回确认），再起会话交任务（GitHub#700）
-dispatch_claim "$ISSUE"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
+# 起会话之前，用 worker 实际会拿到的环境查一下 agent 命令在不在（GitHub#731）：
+# 明确找不到就不起会话、直接转人工并退出；查不清照常往下走
+agent_bin_gate "$ISSUE" "$ISSUE" "$TMUX_SESSION" new "$WORKTREE" "${tmux_env[@]}"
+agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
+log "spawn $TMUX_SESSION in $WORKTREE (agent=$WORKER_AGENT, 角色=$WORKER_SESSION_ROLE, $AGENT_LAUNCH_KIND)"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+    || dispatch_refused_exit "$ISSUE"
+CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"   # 程序退出时记下退出码（GitHub#731）
+# 先认领（doing/agent 打上、触发标签摘掉、读回确认），再起会话交任务（GitHub#700）
+dispatch_claim "$ISSUE"
 # remain-on-exit 用 `\;` 链在同一次 tmux 调用里设上：worker 秒退时 pane 留尸，
 # verify_fresh_session 才 capture 得到死因。隔语句再设会被亚毫秒级秒退抢跑（race）。
 # 动用人的恢复指令的派工（GitHub#339）：启动会话之前的最后一次核对，起来之后把本次派工的记号
@@ -175,9 +179,10 @@ start_session_logging "$TMUX_SESSION"
 #     必须就地 capture 死因（否则 pipe-pane 一挂日志全空），并保持 label 干净
 #     —— 起会话前已经认领（doing/agent）；没活起来就转人工（转之前先核对条目没被别人改过）。
 if ! verify_fresh_session "$TMUX_SESSION"; then
-    log "dispatch-new-issue: #$ISSUE worker 秒退 → 翻 $LABEL_PENDING_AGENT 回 ${LABEL_PENDING_HUMAN}（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
+    _exit_note="$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION")")"
+    log "dispatch-new-issue: #$ISSUE worker 秒退（${_exit_note}）→ 翻 $LABEL_PENDING_AGENT 回 ${LABEL_PENDING_HUMAN}（死因见上方 capture，偶发的话重标 pending/agent 即可重试）"
     _r=0; dispatch_to_human "$ISSUE" \
-        "worker 启动后立刻退出了（常见：agent CLI 正在自动升级、新目录的信任确认弹窗）。死因已截在 daemon 机器的 poll.log 里。" \
+        "worker 启动后立刻退出了（${_exit_note}）。死因已截在 daemon 机器的 poll.log 里。" \
         "偶发的话直接把标签改回 \`$LABEL_PENDING_AGENT\` 重试；再秒退就去 poll.log 看截下来的 pane 输出。" \
         "worker 秒退" || _r=$?
     DISPATCH_PHASE=done; [ "$_r" != 0 ] || _r=1

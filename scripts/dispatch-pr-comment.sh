@@ -159,11 +159,14 @@ if [ -d "$WORKTREE" ]; then
     while IFS= read -r -d '' _tmux_e; do
         tmux_env+=("$_tmux_e")
     done < <(tmux_env_args)
+    # 起程序之前查 agent 命令在不在（GitHub#731）：明确找不到就转人工并退出，查不清照常走
+    agent_bin_gate "$PR" "$ISSUE_N" "$TMUX_SESSION" auto "$WORKTREE" "${tmux_env[@]}"
 
     # 按角色决定续哪条会话 / 起全新（见 _lib.sh 的 agent_session_plan）
     agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
         || dispatch_refused_exit "$PR"
+    CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"   # 程序退出时记下退出码（GitHub#731）
     dispatch_claim "$PR"
     dispatch_handing
     log "PR #$PR -> 在 $TMUX_SESSION 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
@@ -180,10 +183,11 @@ if [ -d "$WORKTREE" ]; then
             exit "$DISPATCH_RC_UNKNOWN"
         fi
         if [ "$_alive" = 1 ]; then
-            log "PR #$PR -> resume 启动后 2s 内 session 死了（可能 transcript state 异常），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
+            log "PR #$PR -> resume 启动后 2s 内 session 死了（$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION")")），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 PR context 仍可工作）"
             agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
                 || dispatch_refused_exit "$PR"
+            CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi
@@ -309,16 +313,19 @@ done
 
 commit_identity_apply "$WORKTREE" "$PR" "$ISSUE_N"
 
-agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
-CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
-    || dispatch_refused_exit "$PR"
-dispatch_claim "$PR"
-dispatch_handing
-log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
 tmux_env=()
 while IFS= read -r -d '' _tmux_e; do
     tmux_env+=("$_tmux_e")
 done < <(tmux_env_args)
+# 起程序之前查 agent 命令在不在（GitHub#731）：明确找不到就转人工并退出，查不清照常走
+agent_bin_gate "$PR" "$ISSUE_N" "$TMUX_SESSION" auto "$WORKTREE" "${tmux_env[@]}"
+agent_session_plan "$ISSUE_N" "$WORKTREE" "$PROMPT_FILE"
+CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
+    || dispatch_refused_exit "$PR"
+CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"   # 程序退出时记下退出码（GitHub#731）
+dispatch_claim "$PR"
+dispatch_handing
+log "PR #$PR -> 重建 worktree 后起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
 # 工作目录是重建出来的，旧 session 可能还在：照样原地换程序，不删 session（GitHub#197）
 worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
 # 卡在目录信任确认框上 = 起了也不会干活：截屏、杀会话、转人工（GitHub#108）

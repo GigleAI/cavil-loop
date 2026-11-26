@@ -119,3 +119,11 @@ COMPAT_MERGE_STATE_JQ='walk(if type == "object" then del(.["[]"]) else . end)
 compat_cut_after_merge() {   # stdin：调用记录（可以是几轮拼在一起的）；stdout：到合并请求那一行为止
     awk '{ print } / -X PUT [^ ]*\/pulls\/[0-9]+\/merge( |$)/ { exit }'
 }
+# ── 起 worker 前的 agent 命令检查和退出码记录（GitHub#731）──
+# 每次起程序之前多一次检查（读 shell 设置、起一个检查会话 / 窗口、等它的信号、收掉它），启动命令末尾多一段记退出码。
+# 和改动前比 tmux 调用时把这些去掉：检查本身在 tests/agent-bin-check.test.sh 测。
+# 窗格编号（%N）从头数，检查窗格占掉了号，一并换成同一个占位
+compat_bincheck_tmux() {   # stdin：tmux 调用记录；stdout：统一后的记录
+    { grep -vE '^(tmux )?(show-options -gv default-shell|new-session -d -s cavil-bincheck-|new-window -d -P -F #\{pane_id\} .*cavil-bin-check |wait-for (-S )?cavil-bincheck-|kill-session -t =cavil-bincheck-|kill-pane -t %[0-9]+$|show-options -qv -t =[^ ]+ default-shell$)' || true; } \
+        | sed -E "s/; __cavil_rc=\\\$\?; printf .*; exit \\\$__cavil_rc//; s/%[0-9]+/%N/g"
+}
