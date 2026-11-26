@@ -46,7 +46,9 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 # system's toast API (the `windows` crate Tauri already builds on, with the parts it needs)
 [target.'cfg(windows)'.dependencies]
 tauri = { version = "2.12", features = ["tray-icon"] }
-windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+# GitHub#730: opening a web address through the shell (Win32_UI_Shell; its info record needs
+# Win32_System_Registry, which the Windows-only test also uses to register a throw-away address type)
+windows = { version = "0.62", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_System_Com", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [workspace]
 members = [".", "crates/core", "crates/harness"]
