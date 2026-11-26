@@ -44,8 +44,9 @@ async function boot() {
   if (smoke) return;
   void controller.runDesktopEvents();
   // GitHub#733: the window watches its own syncing (a beat that stopped coming, a round that stopped
-  // moving). Not in UI-test builds: there the test gives every beat, and nothing may start by itself.
-  if (!CAVIL_TEST_BRIDGE) controller.startWatch();
+  // moving). Not in UI-test builds by default: there the test gives every beat, and nothing may start by itself.
+  // A UI test that is about the watch asks for it (test/e2e/bridge.ts `watch`).
+  if (!CAVIL_TEST_BRIDGE || (globalThis as any).__cavilWatch === true) controller.startWatch();
   await controller.start();
 }
 

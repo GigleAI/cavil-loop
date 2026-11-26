@@ -18,7 +18,7 @@ import { Controller, type SyncTimers } from '../../src/app/controller';
 import type { Backend } from '../../src/backend/backend';
 import type { Desktop, DesktopEvent } from '../../src/app/desktop';
 import { createController } from '../support/controller';
-import { headerText, hoverLines, stallText } from '../../src/renderer/syncTimes';
+import { headerStatus, headerText, hoverLines, stallText } from '../../src/renderer/syncTimes';
 import { WATCH_EVERY_MS, WATCH_QUIET_TICKS } from '../../src/shared/config';
 import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
@@ -165,7 +165,7 @@ function quietDesktop(): Desktop {
   };
 }
 
-async function boot(opts: { desktop?: boolean } = {}) {
+async function boot(opts: { desktop?: boolean; /** hold this call of the very first round (before any check succeeded) */ holdFirst?: (cmd: string) => boolean } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -192,6 +192,13 @@ async function boot(opts: { desktop?: boolean } = {}) {
   });
   controllers.push(c);
   c.addSource(REPO);
+  if (opts.holdFirst) {
+    backend.hold(opts.holdFirst);
+    c.startWatch();
+    void c.start();
+    await waitUntil(() => backend.held() === 1, 'the first round is held');
+    return { c, clock, backend };
+  }
   await c.start();
   expect(c.getState().phase).toBe('ready');
   c.startWatch();
@@ -277,6 +284,81 @@ describe('a round stuck while reading GitHub', () => {
     backend.releaseAll();
     await waitUntil(idle(c), 'ends');
   });
+});
+
+describe("only the round's own answers are its progress (code review round 1, problem 1)", () => {
+  it('a stuck read while other operations get answers every wake: still dropped after 12 quiet wakes', async () => {
+    const { c, clock, backend } = await boot();
+    const before = rounds();
+    backend.hold(isRepoRead);
+    void c.syncNow();
+    await waitUntil(() => backend.held() === 1, 'the read is held');
+    await wakes(clock, 1); // the round's own first answers (who am I)
+    // another operation through the same back end answers before every wake
+    let others = 0;
+    for (let i = 0; i < WATCH_QUIET_TICKS - 1; i++) {
+      await (c as any).backend.call('grantInfo');
+      others++;
+      clock.by(WAKE);
+    }
+    expect(others).toBe(WATCH_QUIET_TICKS - 1); // the other answers did come
+    expect(c.getState().sync.stall ?? null).toBeNull();
+    await (c as any).backend.call('grantInfo');
+    clock.by(WAKE);
+    expect(c.getState().sync.stall?.kind).toBe('restarted');
+    await waitUntil(idle(c), 'the new round ends');
+    expect(rounds()).toBe(before + 1);
+  });
+
+  it("a dropped round's late answers do not move the new round's watch", async () => {
+    const { c, clock, backend } = await boot();
+    // the first round's read and the next round's read are both held
+    backend.hold(isRepoRead);
+    void c.syncNow();
+    await waitUntil(() => backend.held() === 1, 'first read held');
+    backend.hold(isRepoRead);
+    await wakes(clock, 1);
+    await wakes(clock, WATCH_QUIET_TICKS - 1);
+    clock.by(WAKE); // dropped; the new round starts and is held too
+    expect(c.getState().sync.stall?.kind).toBe('restarted');
+    await waitUntil(() => backend.held() === 2, 'the new round is held');
+    await wakes(clock, 1); // the new round's own first answers
+    // the dropped round's held read now answers: not the new round's progress
+    backend.releaseOne();
+    await breathe();
+    const quiet = (c as any).watchQuiet as number;
+    clock.by(WAKE);
+    expect((c as any).watchQuiet).toBe(quiet + 1);
+    backend.releaseAll();
+    await waitUntil(idle(c), 'ends');
+  });
+});
+
+describe('a first sync stuck, before any check succeeded (code review round 1, problem 2)', () => {
+  for (const [step, name, match] of [
+    ['renew', '续期登录', (cmd: string) => cmd === 'ensureFresh'],
+    ['store', '存到本机', (cmd: string) => cmd === 'replaceSnapshots'],
+  ] as const) {
+    it(`${name}: the header shows the stall with no "上次检查", the hover says which step and how to recover`, async () => {
+      const { c, clock, backend } = await boot({ holdFirst: match });
+      expect(c.getState().sync.checkedFrom).toBeNull(); // nothing checked yet
+      expect(headerStatus(c.getState().sync, clock.now())).toBeNull(); // nothing to show yet
+      await wakes(clock, WATCH_QUIET_TICKS + 1);
+      const sync = c.getState().sync;
+      expect(sync.checkedFrom).toBeNull();
+      expect(sync.stall).toMatchObject({ kind: 'waiting', step });
+      expect(headerStatus(sync, clock.now())).toEqual({ text: null, stall: '同步卡住' });
+      const lines = hoverLines(sync, () => '仓库', clock.now());
+      expect(lines[0]).toContain(`卡在「${name}」已 3 分钟没有进展`);
+      expect(lines.some((l) => l.includes('完全退出客户端再打开'))).toBe(true);
+      backend.releaseAll();
+      await waitUntil(() => c.getState().sync.checkedFrom !== null && idle(c)(), 'the first check succeeds');
+      // the yellow is gone; the check time is the read's (a stuck save lands the read it was saving)
+      const after = headerStatus(c.getState().sync, clock.now())!;
+      expect(after.stall).toBeNull();
+      expect(after.text).toMatch(/^上次检查 (不到 1|\d+) 分钟前$/);
+    });
+  }
 });
 
 describe('a round stuck at a step that is never cut', () => {

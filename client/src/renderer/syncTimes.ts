@@ -91,6 +91,16 @@ export function stallText(sync: SyncState): string | null {
   return s.kind === 'restarted' ? t('同步卡住，已重来') : t('同步卡住');
 }
 
+/**
+ * GitHub#733: what the header shows: the last check, and / or a round that stopped moving. A stall
+ * is shown even before any check succeeded (a first sync stuck at its first save); null = nothing.
+ */
+export function headerStatus(sync: SyncState, now: number): { text: string | null; stall: string | null } | null {
+  const text = headerText(sync, now);
+  const stall = stallText(sync);
+  return text === null && stall === null ? null : { text, stall };
+}
+
 /** GitHub#733: the first lines of the hover when a round stopped moving */
 export function stallLines(sync: SyncState, now: number): string[] {
   const s = shownStall(sync);

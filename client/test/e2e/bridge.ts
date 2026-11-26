@@ -59,6 +59,8 @@ export interface AppEnv {
 export interface RunningApp {
   page: Page;
   backend: HarnessBackend;
+  /** GitHub#733: hold the window's next back-end call that matches, until the returned function is called */
+  holdCall(match: (cmd: string) => boolean): () => void;
   desktop: FakeDesktop;
   close(): Promise<void>;
 }
@@ -138,8 +140,10 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number; /** GitHub#577: the system the fake shell names (default: none) */ system?: 'macos' | 'windows' | 'other'; /** GitHub#728: the window has a touchscreen, so `page.touchscreen` sends real touch input */ touch?: boolean } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number; /** GitHub#577: the system the fake shell names (default: none) */ system?: 'macos' | 'windows' | 'other'; /** GitHub#728: the window has a touchscreen, so `page.touchscreen` sends real touch input */ touch?: boolean; /** GitHub#733: the window watches its own syncing, as the app does (off by default: nothing starts by itself in a UI test) */ watch?: boolean } = {}): Promise<RunningApp> {
   const opened: string[] = [];
+  // GitHub#733: calls held by the test (`holdCall`)
+  const holds: { match: (cmd: string) => boolean; gate: Promise<void> }[] = [];
   const desktop = fakeDesktop();
   if (opts.system) desktop.system = opts.system;
   const backend = new HarnessBackend({
@@ -165,6 +169,11 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
         let reply: unknown;
         try {
           const { cmd, args } = JSON.parse(body);
+          const h = holds.find((x) => x.match(cmd));
+          if (h) {
+            holds.splice(holds.indexOf(h), 1);
+            await h.gate;
+          }
           reply = { ok: (await backend.call(cmd, args)) ?? null };
         } catch (e) {
           reply = { err: (e as Error).message };
@@ -293,11 +302,17 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
   page.on('pageerror', (e) => console.error('[window]', e.message));
   // the window takes its clock when it starts: installing one after the page loaded changes nothing (GitHub#572)
   if (opts.clockAt !== undefined) await page.clock.install({ time: opts.clockAt });
+  if (opts.watch) await context.addInitScript(() => ((globalThis as any).__cavilWatch = true));
   await page.goto(`${origin}/index.html`);
   await page.waitForSelector('[data-testid="app-root"]');
   return {
     page,
     backend,
+    holdCall(match) {
+      let release!: () => void;
+      holds.push({ match, gate: new Promise<void>((r) => (release = r)) });
+      return () => release();
+    },
     desktop,
     async close() {
       desktop.stop();

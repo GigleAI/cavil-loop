@@ -606,17 +606,7 @@ export class Controller {
     private readonly deps: ControllerDeps,
     init: BackendInit,
   ) {
-    // GitHub#733: every answer from the back end while a round runs is that round's progress (a dropped
-    // round's late answer counts too: it only makes the watch wait longer, never act sooner)
-    const inner = deps.backend;
-    const progressed = () => this.noteProgress();
-    this.backend = {
-      call: <T = any>(cmd: string, args?: Record<string, unknown>): Promise<T> => {
-        const p = inner.call<T>(cmd, args);
-        p.then(progressed, progressed);
-        return p;
-      },
-    };
+    this.backend = deps.backend;
     this.cache = new Settings(deps.backend, init.settings);
     this.defaultClientIds = {
       oauth: deps.defaultClientId ?? DEFAULT_OAUTH_CLIENT_ID,
@@ -853,10 +843,26 @@ export class Controller {
     this.watchTimer = this.timers.setInterval(() => this.watchTick(), WATCH_EVERY_MS);
   }
 
-  private noteProgress(): void {
-    if (this.syncing === null) return;
+  /**
+   * GitHub#733: an answer the round `run` got. Only the round running now moves the watch: another
+   * operation's answers, and a dropped round's late ones, are not this round's progress.
+   */
+  private noteProgress(run: SyncRun): void {
+    if (this.round !== run || run.signal.aborted) return;
     this.progressSeen = true;
     this.lastProgressAt = this.now();
+  }
+
+  /** GitHub#733: `p`, counted as progress of `run` when it settles (either way) */
+  private tracked<T>(run: SyncRun, p: Promise<T>): Promise<T> {
+    const done = () => this.noteProgress(run);
+    p.then(done, done);
+    return p;
+  }
+
+  /** GitHub#733: the back end as the round `run` uses it — each answer is that round's progress */
+  private roundBackend(run: SyncRun): Backend {
+    return { call: <T = any>(cmd: string, args?: Record<string, unknown>) => this.tracked(run, this.backend.call<T>(cmd, args)) };
   }
 
   /**
@@ -2107,12 +2113,12 @@ export class Controller {
     };
     if (!this.signedIn) return;
     at('renew');
-    const { result: fresh, reason: freshReason } = await this.freshOut();
+    const { result: fresh, reason: freshReason } = await this.tracked(run, this.freshOut());
     if (fresh === 'ended' || !this.signedIn) return;
     at('saveCredential');
-    await this.saveUnsaved();
+    await this.tracked(run, this.saveUnsaved());
     at('grant');
-    const info = await this.backend.call<GrantInfo>('grantInfo');
+    const info = await this.tracked(run, this.backend.call<GrantInfo>('grantInfo'));
     if (!info.signedIn || info.session !== this.session) return;
     // GitHub#401: the failure explanations speak of the app this sign-in used
     const kind = info.githubApp ? 'github-app' : 'oauth';
@@ -2171,7 +2177,8 @@ export class Controller {
       queue: this.sendQueue,
       ...(this.deps.readRetrySleep ? { sleep: this.deps.readRetrySleep } : {}),
     };
-    const client = this.client(session, run.signal, reads);
+    // GitHub#733: every answer this client gets (sources, notifications, comments) is this round's progress
+    const client = this.client(session, run.signal, reads, this.roundBackend(run));
     const forceFull = new Set(
       [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
     );
@@ -2218,7 +2225,7 @@ export class Controller {
     // GitHub says who this token belongs to; data of anybody else goes first.
     if (round.viewer) {
       at('adopt');
-      const a = await this.backend.call<{ wiped?: boolean; stale?: boolean; problem?: string; problemSaid?: unknown }>('adoptViewer', { session, login: round.viewer });
+      const a = await this.roundBackend(run).call<{ wiped?: boolean; stale?: boolean; problem?: string; problemSaid?: unknown }>('adoptViewer', { session, login: round.viewer });
       if (a.problem) this.setProblem(a.problem, readSaid(a.problemSaid));
       if (a.stale || session !== this.session) return over();
       if (a.wiped) this.dropMirror();
@@ -2230,7 +2237,7 @@ export class Controller {
       this.state.sources.some((s) => s.key === key) && (this.epochs.get(key) ?? 0) === epochAtStart.get(key);
     // GitHub#229: an item re-read after this round started keeps that newer copy
     at('store');
-    const landing = await this.landSnapshots(session, () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt), current);
+    const landing = await this.tracked(run, this.landSnapshots(session, () => this.roundRows(round.replaced.filter((snap) => current(snap.sourceKey)), issuedAt), current));
     if (landing.kind === 'failed' && landing.error !== undefined) throw landing.error;
     // a source removed while the write was on its way: not shown either
     if (landing.kind !== 'landed') return over();
@@ -2288,7 +2295,8 @@ export class Controller {
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
     if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
       at('catchUp');
-      await this.catchUpReads(session);
+      // GitHub#733: each item re-read is this round's progress
+      await this.catchUpReads(session, () => this.noteProgress(run));
       // GitHub#359: and check again what an operation's answer that never came left open
       this.catchUpChecks(session);
       // GitHub#489: and what a reply's / an edit's
@@ -2299,7 +2307,7 @@ export class Controller {
       // the token this round used, not one that changed meanwhile.
       if (!retried && session === this.session && info.canRefresh) {
         at('renew');
-        const { result: r, reason } = await this.freshOut(true, info.gen);
+        const { result: r, reason } = await this.tracked(run, this.freshOut(true, info.gen));
         if (r === 'ok') return this.runRound(run, true);
         if (r === 'unreachable') this.set({ sync: { ...this.state.sync, ...offlineFields(true, reason) } });
         if (r !== 'changed') return; // 'failed': kept signed in with the problem shown; 'ended': already signed out
@@ -2343,8 +2351,8 @@ export class Controller {
   }
 
   /** A GitHub client whose requests the back end signs for `session`; `reads`: the sync's own (GitHub#374). */
-  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4]): GitHubClient {
-    return new GitHubClient(this.deps.endpoints, null, proxyFetch(this.backend, session), signal, reads);
+  private client(session: number, signal?: AbortSignal, reads?: ConstructorParameters<typeof GitHubClient>[4], via: Backend = this.backend): GitHubClient {
+    return new GitHubClient(this.deps.endpoints, null, proxyFetch(via, session), signal, reads);
   }
 
   /**
@@ -5785,7 +5793,7 @@ export class Controller {
    * prove the item was read, so it is never taken for that. Skipped: a record put away, one whose own
    * requests / re-reads still run, one already being caught up.
    */
-  private async catchUpReads(session: number): Promise<void> {
+  private async catchUpReads(session: number, progressed: () => void = () => {}): Promise<void> {
     const due = [...this.ops.values()].filter((r) => r.readProblem && !r.dismissed && !r.running && !this.opJobs.has(r.id) && !this.catchingUp.has(r.id) && opPhase(r) !== 'waiting');
     for (const r of due) {
       if (session !== this.session || !this.signedIn) return;
@@ -5794,7 +5802,9 @@ export class Controller {
         // the merged / closed PR itself is what its linked issues are asked for (the cache may no longer carry it)
         const item = this.cachedItems().find((i) => i.key === r.key) ?? ({ key: r.key, repo: r.repo, number: r.number, kind: 'pr' } as Item);
         await this.opReread(r.id, item, { client: this.client(session), session }, true);
+        progressed();
       } catch {
+        progressed();
         // a re-read never throws on GitHub's account; anything else: the next round tries again
       } finally {
         this.catchingUp.delete(r.id);
