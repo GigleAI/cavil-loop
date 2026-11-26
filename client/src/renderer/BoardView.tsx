@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import type { AppState, BoardData, ColumnMode, CreateJob, Layout } from '../shared/types';
 import type { RepoOptions, WriteAction } from '../shared/actions';
 import { sourceLabel } from '../shared/sources';
-import { retryByHand, ago, headerText, hoverLines, offlineDataText, retryText } from './syncTimes';
+import { retryByHand, ago, headerText, hoverLines, offlineDataText, retryText, stallText } from './syncTimes';
 import { buildBoard, dropPlan, isOwnColumn, writesEnabled, type Card, type Column, type ColumnSub, type DropPlan } from '../data/board';
 import { api } from './api';
 import { labelStyle, useDarkMode } from './colors';
@@ -875,13 +875,24 @@ export function BoardView({
               {/* GitHub#324: the oldest check, not "GitHub answered"; the hover has every source's two times */}
               {headerText(sync, now) !== null && (
                 <span
-                  className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}`}
+                  className={`sync-status${writesEnabled(sync) ? '' : ' offline'}${failed.length ? ' partial' : ''}${stallText(sync) ? ' stalled' : ''}`}
                   data-testid="sync-status"
                   title={hoverLines(sync, labelOf, now).join('\n')}
                   {...verbatimParts('github', state.sources.map((s) => labelOf(s.key)))}
                 >
                   <span className="dot" />
-                  <span className="sync-text">{headerText(sync, now)}</span>
+                  <span className="sync-text">
+                    {headerText(sync, now)}
+                    {/* GitHub#733: a round stopped moving; the hover says which step and what the client did */}
+                    {stallText(sync) && (
+                      <>
+                        {' · '}
+                        <b className="sync-stall" data-testid="sync-stall">
+                          {stallText(sync)}
+                        </b>
+                      </>
+                    )}
+                  </span>
                 </span>
               )}
               {okShown && (

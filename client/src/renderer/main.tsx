@@ -43,6 +43,9 @@ async function boot() {
   const smoke = await mounted(`${rootUp ? 'mounted' : 'NOT mounted'}; back end answered (${Object.keys(init.settings).length} settings, persistent=${init.persistent})`);
   if (smoke) return;
   void controller.runDesktopEvents();
+  // GitHub#733: the window watches its own syncing (a beat that stopped coming, a round that stopped
+  // moving). Not in UI-test builds: there the test gives every beat, and nothing may start by itself.
+  if (!CAVIL_TEST_BRIDGE) controller.startWatch();
   await controller.start();
 }
 

@@ -205,7 +205,8 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .hdr-right button.icon-only { width: 32px; min-height: 32px; padding: 0; }
 .sync-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .sync-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--state-open-fg); flex: none; }
-.sync-status.offline .dot, .sync-status.partial .dot { background: var(--warn-icon); }
+.sync-status.offline .dot, .sync-status.partial .dot, .sync-status.stalled .dot { background: var(--warn-icon); }
+.sync-status .sync-stall { color: var(--warn-icon); font-weight: 600; }
 .hdr-right .viewer { display: inline-flex; }
 /* narrow windows: the sync words go first (the dot stays, the words are in its hover), then the open search box gives way */
 @media (max-width: 1100px) { .sync-status .sync-text { display: none; } }

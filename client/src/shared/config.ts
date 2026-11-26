@@ -13,6 +13,18 @@ export const DEFAULT_GITHUB_APP_CLIENT_ID = '';
 export const SYNC_INTERVAL_MS = 60_000;
 
 /**
+ * GitHub#733: the window's own watch over syncing. It wakes this often; a round with no progress
+ * (no answer from the back end) for WATCH_QUIET_TICKS wakes in a row has stopped moving. Two wakes
+ * further apart than WATCH_GAP_MS mean the timer did not run in between (the machine slept): the
+ * count starts again. With no timed round asked for WATCH_FALLBACK_MS (the shell's beat did not
+ * come), the watch asks for one itself.
+ */
+export const WATCH_EVERY_MS = 15_000;
+export const WATCH_QUIET_TICKS = 12;
+export const WATCH_GAP_MS = 45_000;
+export const WATCH_FALLBACK_MS = 90_000;
+
+/**
  * After a change succeeded, one more sync round this long after the last one
  * (GigleAI/cavil-loop#177): GitHub's own Project automations (closed / merged →
  * Done, auto-add by label, …) run on GitHub's side a little later, so the

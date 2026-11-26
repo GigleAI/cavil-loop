@@ -494,6 +494,28 @@ export interface SourceTimes {
   fullAt?: number;
 }
 
+/** GitHub#733: the step a sync round is at (what the header's hover names when it stops moving) */
+export type SyncStep = 'renew' | 'saveCredential' | 'grant' | 'read' | 'adopt' | 'store' | 'activity' | 'catchUp';
+
+/**
+ * GitHub#733: a round that made no progress for a while. 'restarted': it was at the one step that may
+ * be given up on (reading GitHub) and was dropped, a new round started; 'waiting': it is at a step that
+ * is never cut, the client waits for it. Kept until a round's check succeeds.
+ */
+export interface SyncStall {
+  kind: 'restarted' | 'waiting';
+  step: SyncStep;
+  /** epoch ms the stalled round started */
+  roundStartedAt: number;
+}
+
+/** GitHub#733: the round running now, as the watch last saw it */
+export interface SyncRoundAt {
+  startedAt: number;
+  /** epoch ms of its last progress (any answer from the back end) */
+  lastProgressAt: number;
+}
+
 export interface SyncProgress {
   startedAt: number;
   /** sources this round is through with (read, confirmed unchanged or failed) */
@@ -682,6 +704,12 @@ export interface SyncState {
   times: SourceTimes[];
   /** GitHub#324: the round reading GitHub right now; null whenever none is */
   progress: SyncProgress | null;
+  /** GitHub#733: a round stopped moving (absent / null = none since the last successful check) */
+  stall?: SyncStall | null;
+  /** GitHub#733: the round running now, as the watch last saw it (absent / null = none, or no watch) */
+  roundAt?: SyncRoundAt | null;
+  /** GitHub#733: epoch ms of the shell's latest sync beat (absent / null = none yet, or no shell) */
+  beatAt?: number | null;
   sources: SourceStatus[];
   /** something the user should know that is not "offline" (e.g. a refresh that failed, a credential not saved); null = none */
   problem: string | null;
