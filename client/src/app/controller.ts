@@ -2295,8 +2295,8 @@ export class Controller {
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
     if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
       at('catchUp');
-      // GitHub#733: each item re-read is this round's progress
-      await this.catchUpReads(session, () => this.noteProgress(run));
+      // GitHub#733: every answer the re-reads get is this round's progress (the round's own back end)
+      await this.catchUpReads(session, this.roundBackend(run));
       // GitHub#359: and check again what an operation's answer that never came left open
       this.catchUpChecks(session);
       // GitHub#489: and what a reply's / an edit's
@@ -5793,7 +5793,7 @@ export class Controller {
    * prove the item was read, so it is never taken for that. Skipped: a record put away, one whose own
    * requests / re-reads still run, one already being caught up.
    */
-  private async catchUpReads(session: number, progressed: () => void = () => {}): Promise<void> {
+  private async catchUpReads(session: number, via: Backend = this.backend): Promise<void> {
     const due = [...this.ops.values()].filter((r) => r.readProblem && !r.dismissed && !r.running && !this.opJobs.has(r.id) && !this.catchingUp.has(r.id) && opPhase(r) !== 'waiting');
     for (const r of due) {
       if (session !== this.session || !this.signedIn) return;
@@ -5801,10 +5801,8 @@ export class Controller {
       try {
         // the merged / closed PR itself is what its linked issues are asked for (the cache may no longer carry it)
         const item = this.cachedItems().find((i) => i.key === r.key) ?? ({ key: r.key, repo: r.repo, number: r.number, kind: 'pr' } as Item);
-        await this.opReread(r.id, item, { client: this.client(session), session }, true);
-        progressed();
+        await this.opReread(r.id, item, { client: this.client(session, undefined, undefined, via), session }, true);
       } catch {
-        progressed();
         // a re-read never throws on GitHub's account; anything else: the next round tries again
       } finally {
         this.catchingUp.delete(r.id);

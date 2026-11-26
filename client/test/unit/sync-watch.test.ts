@@ -334,6 +334,73 @@ describe("only the round's own answers are its progress (code review round 1, pr
   });
 });
 
+describe('catch-up re-reads after a round count each answer (code review round 2, problem 1)', () => {
+  /**
+   * A merged PR whose re-read failed (its notice says so): the next round re-reads it after its check —
+   * the PR's closing issues, then the PR and each of those issues, one request each.
+   */
+  async function mergedWithFailedReread(c: Controller, linked: number) {
+    const list = fake.state.repos.get('gigleai/cavil-loop')!;
+    const pr = list.find((r: any) => r.pull_request)!;
+    Object.assign(pr, { state: 'open', pull_request: { ...pr.pull_request, merged_at: null } });
+    // enough open issues on the repository for the linked list (the recording has fewer open ones)
+    const issues = list.filter((r: any) => !r.pull_request && r.number !== pr.number).slice(0, linked);
+    for (const r of issues) Object.assign(r, { state: 'open', state_reason: null, closed_at: null });
+    expect(issues).toHaveLength(linked);
+    fake.state.w.closingIssues.set(`gigleai/cavil-loop#${pr.number}`, issues.map((r: any) => ({ repo: 'GigleAI/cavil-loop', number: r.number })));
+    await c.syncNow();
+    const d = await c.loadDetail(`gigleai/cavil-loop#${pr.number}`);
+    const headOid = d.ok ? d.detail.pr!.headOid : '';
+    // the merge's re-read cannot read the PR's linked issues: its notice says so, the next round re-reads
+    fake.state.answerOverride = (e) => (e.operation === 'CavilClosingIssues' ? { status: 502, body: { message: 'Bad Gateway' } } : null);
+    const s = c.startOp({ kind: 'merge', key: `gigleai/cavil-loop#${pr.number}`, method: 'merge', headOid });
+    await waitUntil(() => {
+      const r = c.getState().ops.find((x) => x.id === s.id);
+      return Boolean(r?.readProblem) && !r?.running;
+    }, 'merged, its re-read failed');
+    fake.state.answerOverride = null;
+    await waitUntil(idle(c), 'idle');
+    return { pr: pr.number as number, linked: issues.length };
+  }
+  const isCatchUp = (cmd: string, args?: Record<string, unknown>) => cmd === 'request' && /CavilItemRefresh|CavilClosingIssues/.test(String(args?.body ?? ''));
+
+  it('a merged PR with 14 linked issues re-read one request per wake (over 3 minutes): never reported', async () => {
+    const { c, clock, backend } = await boot();
+    const { linked } = await mergedWithFailedReread(c, 14);
+    backend.hold(isCatchUp, false);
+    void c.syncNow();
+    await waitUntil(() => backend.held() === 1, 'the catch-up reached its first request');
+    expect((c as any).step).toBe('catchUp');
+    let answered = 0;
+    while (backend.held() === 1) {
+      clock.by(WAKE);
+      expect(c.getState().sync.stall ?? null).toBeNull();
+      backend.releaseOne();
+      answered++;
+      await waitUntil(() => backend.held() === 1 || idle(c)(), 'the next request, or the end');
+    }
+    // the closing-issues list, the PR and every linked issue: more wakes than the 12 that report
+    expect(answered).toBeGreaterThanOrEqual(linked + 2);
+    expect(answered).toBeGreaterThan(WATCH_QUIET_TICKS);
+    await waitUntil(idle(c), 'ends');
+    expect(c.getState().sync.stall ?? null).toBeNull();
+  });
+
+  it('one catch-up request that never answers: reported at 「补读」, not dropped', async () => {
+    const { c, clock, backend } = await boot();
+    await mergedWithFailedReread(c, 3);
+    backend.hold(isCatchUp);
+    void c.syncNow();
+    await waitUntil(() => backend.held() === 1, 'the catch-up request is held');
+    await wakes(clock, WATCH_QUIET_TICKS + 1);
+    expect(c.getState().sync.stall).toMatchObject({ kind: 'waiting', step: 'catchUp' });
+    expect(hoverLines(c.getState().sync, () => '仓库', clock.now())[0]).toContain('卡在「补读」');
+    expect(backend.held()).toBe(1);
+    backend.releaseAll();
+    await waitUntil(idle(c), 'ends');
+  });
+});
+
 describe('a first sync stuck, before any check succeeded (code review round 1, problem 2)', () => {
   for (const [step, name, match] of [
     ['renew', '续期登录', (cmd: string) => cmd === 'ensureFresh'],
