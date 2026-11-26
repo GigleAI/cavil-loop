@@ -159,74 +159,104 @@ pub fn open_url(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::open_url;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
     use windows::core::HSTRING;
-    use windows::Win32::System::Registry::{RegDeleteTreeW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    use windows::Win32::System::Registry::{RegCloseKey, RegDeleteTreeW, RegOpenKeyExW, RegSetKeyValueW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_SZ};
 
-    fn set(key: &str, name: Option<&str>, value: &str) {
+    fn set(key: &str, name: Option<&str>, value: &str) -> Result<(), String> {
         let wide: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
         let name = name.map(HSTRING::from).unwrap_or_default();
         let r = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, &HSTRING::from(key), &name, REG_SZ.0, Some(wide.as_ptr().cast()), (wide.len() * 2) as u32) };
-        assert!(r.is_ok(), "registry write {key}: {r:?}");
+        r.ok().map_err(|e| format!("registry write {key}: {e}"))
     }
 
-    /// A throw-away address type whose handler writes the address into `out`; removed on drop.
+    fn key_exists(key: &str) -> bool {
+        let mut h = HKEY::default();
+        let r = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(key), None, KEY_READ, &mut h) };
+        if r.is_ok() {
+            let _ = unsafe { RegCloseKey(h) };
+        }
+        r.is_ok()
+    }
+
+    /// A throw-away address type whose handler writes the address it gets into `got.txt`. Everything
+    /// it creates is removed when it is dropped — including when setting it up fails part-way: the
+    /// value that removes them exists before the first thing is created.
     struct Scheme {
         name: String,
         dir: PathBuf,
     }
 
     impl Scheme {
-        fn new(out: &str) -> Scheme {
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            let tag = format!("{:x}-{nanos:x}", std::process::id());
-            let name = format!("cavil-test-{tag}");
-            let dir = std::env::temp_dir().join(&name);
-            std::fs::create_dir_all(&dir).unwrap();
-            let target = dir.join(out);
-            let script = dir.join("handler.ps1");
-            // written to a side file first, then moved: the test never reads half an address
-            std::fs::write(
-                &script,
-                format!(
-                    "param([string]$u)\r\n$t = '{t}.part'\r\n[System.IO.File]::WriteAllText($t, $u, (New-Object System.Text.UTF8Encoding $false))\r\nMove-Item -LiteralPath $t -Destination '{t}'\r\n",
-                    t = target.display()
-                ),
-            )
-            .unwrap();
-            let key = format!("Software\\Classes\\{name}");
-            set(&key, None, &format!("URL:{name}"));
-            set(&key, Some("URL Protocol"), "");
-            set(
-                &format!("{key}\\shell\\open\\command"),
-                None,
-                &format!("powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\" \"%1\"", script.display()),
-            );
-            Scheme { name, dir }
+        fn key(&self) -> String {
+            format!("Software\\Classes\\{}", self.name)
         }
 
-        fn out(&self, file: &str) -> PathBuf {
-            self.dir.join(file)
+        fn out(&self) -> PathBuf {
+            self.dir.join("got.txt")
+        }
+
+        fn new() -> Result<Scheme, String> {
+            let s = Scheme::begin();
+            s.register(usize::MAX)?;
+            Ok(s)
+        }
+
+        /// Names only, nothing created yet — so the value that cleans up exists before anything does.
+        fn begin() -> Scheme {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            let name = format!("cavil-test-{:x}-{nanos:x}", std::process::id());
+            // a quote and spaces in the folder on purpose: a legal Windows path the handler must cope with
+            Scheme { dir: std::env::temp_dir().join(format!("cavil test O'Connor {name}")), name }
+        }
+
+        /// The folder, the handler, then the three registry writes. `fail_after`: how many registry
+        /// writes succeed before the next one is made to fail (the part-way failure test); `usize::MAX` = none.
+        fn register(&self, fail_after: usize) -> Result<(), String> {
+            let s = self; // short name for the lines below
+            std::fs::create_dir_all(&s.dir).map_err(|e| e.to_string())?;
+            // the output file and the address are arguments, never pasted into the script's text
+            let script = s.dir.join("handler.ps1");
+            std::fs::write(
+                &script,
+                "param([string]$Out, [string]$Url)\r\n$t = $Out + '.part'\r\n[System.IO.File]::WriteAllText($t, $Url, (New-Object System.Text.UTF8Encoding $false))\r\nMove-Item -LiteralPath $t -Destination $Out\r\n",
+            )
+            .map_err(|e| e.to_string())?;
+            let key = s.key();
+            let command = format!(
+                "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{}\" \"{}\" \"%1\"",
+                script.display(),
+                s.out().display()
+            );
+            let writes = [(key.clone(), None, format!("URL:{}", s.name)), (key.clone(), Some("URL Protocol"), String::new()), (format!("{key}\\shell\\open\\command"), None, command)];
+            for (i, (k, n, v)) in writes.iter().enumerate() {
+                if i >= fail_after {
+                    return Err(format!("made to fail at registry write {i}"));
+                }
+                set(k, *n, v)?;
+            }
+            Ok(())
         }
     }
 
     impl Drop for Scheme {
         fn drop(&mut self) {
-            let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(format!("Software\\Classes\\{}", self.name))) };
+            let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(self.key())) };
             let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
-    fn wait_for(path: &Path) -> String {
+    fn wait_for_output(s: &Scheme) -> String {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(60) {
-            if let Ok(s) = std::fs::read_to_string(path) {
-                return s;
+            if let Ok(got) = std::fs::read_to_string(s.out()) {
+                let _ = std::fs::remove_file(s.out());
+                return got;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        panic!("the handler never wrote {}", path.display());
+        panic!("the handler never wrote {}", s.out().display());
     }
 
     /// percent-encoded the way the window builds a new-issue address (URLSearchParams)
@@ -236,7 +266,8 @@ mod tests {
 
     #[test]
     fn hands_the_whole_address_to_its_program() {
-        let s = Scheme::new("got.txt");
+        let s = Scheme::new().expect("registered");
+        assert!(s.dir.to_string_lossy().contains("O'Connor "), "the folder has a quote and a space");
         let title = encoded("wiindows 版新建issue点击 「到 GitHub 网页上继续新建」无法打开浏览器");
         let body = encoded(&"正文里的一段中文，带 & 和 # 号。\n".repeat(20));
         let cases = [
@@ -245,12 +276,30 @@ mod tests {
         ];
         assert!(cases[1].len() > 2000, "the long case is long: {}", cases[1].len());
         for (i, url) in cases.iter().enumerate() {
-            let file = format!("got-{i}.txt");
             open_url(url).expect("the shell accepted the address");
-            let got = wait_for(&s.out("got.txt"));
-            // the handler always writes `got.txt`: moved aside before the next case
-            std::fs::rename(s.out("got.txt"), s.out(&file)).unwrap();
-            assert_eq!(got, *url, "case {i}: the program got exactly the address");
+            assert_eq!(wait_for_output(&s), *url, "case {i}: the program got exactly the address");
+        }
+    }
+
+    #[test]
+    fn a_part_way_failure_while_registering_leaves_nothing_behind() {
+        // the comparison case: a registration that succeeds is there until dropped, then gone
+        let ok = Scheme::new().expect("registered");
+        let (key, dir) = (ok.key(), ok.dir.clone());
+        assert!(key_exists(&format!("{key}\\shell\\open\\command")) && dir.is_dir(), "the full registration exists");
+        drop(ok);
+        assert!(!key_exists(&key) && !dir.exists(), "removed on drop");
+        // failing after the first and after the second of the three writes: half a registration exists
+        // when the failure is reported, and is gone once the value is dropped
+        for n in [1, 2] {
+            let s = Scheme::begin();
+            let (key, dir) = (s.key(), s.dir.clone());
+            let err = s.register(n).expect_err("made to fail");
+            assert!(err.contains("made to fail"), "{err}");
+            assert!(key_exists(&key) && dir.is_dir(), "after {n} writes: the part-way registration is there");
+            drop(s);
+            assert!(!key_exists(&key), "after {n} writes: registry key removed");
+            assert!(!dir.exists(), "after {n} writes: folder removed");
         }
     }
 
