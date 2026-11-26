@@ -1342,9 +1342,12 @@ export class Controller {
   private async readInbox(client: GitHubClient): Promise<{ threads: Thread[] | null; etag: string; readAt: number; skew: number; pollSecs: number | null }> {
     const first = await client.conditional('GET', ACTIVITY_PATH, this.activityEtag);
     const local = this.now();
-    const readAt = first.serverAt ?? local;
     // GitHub's clock minus this machine's (the Date header, whole seconds): a source's addition,
-    // taken on this machine's clock, is compared with GitHub's times only after this correction
+    // taken on this machine's clock, is compared with GitHub's times only after this correction.
+    // No usable Date = the skew is unknown, not zero: the read counts as failed (nothing is judged
+    // or remembered, the version tag and the next read time stay), and the next round reads again
+    if (first.serverAt === null) throw new GitHubError('http', t('GitHub 通知列表的回应没有可用的时间'));
+    const readAt = first.serverAt;
     const skew = readAt - local;
     if (first.status === 304) return { threads: null, etag: first.etag, readAt, skew, pollSecs: first.pollSecs };
     const raw: unknown[] = [];

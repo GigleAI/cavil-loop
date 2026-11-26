@@ -684,4 +684,48 @@ describe('the inbox\'s timing and the sources changing around it (PR #719 code r
       dir = tempDir();
     }
   });
+
+  it('a read whose answer carries no usable time judges nothing: restored next round, activity after the source was added reminds exactly once (clock 5 min ahead)', async () => {
+    const h = await started({ sources: ['https://github.com/orgs/GigleAI/projects/11'], skew: 300_000 });
+    const t0 = h.clock.t;
+    h.clock.t = t0 + 20_000;
+    h.c.addSource(REPO);
+    await h.c.settled();
+    const th = thread(OFF_BOARD, { at: t0 + 30_000, comment: 61 });
+    comment(th, 61, OTHER, `@${ME} after`, t0 + 30_000);
+    fake.state.noDate = (e) => e.operation === 'notifications';
+    h.clock.t = t0 + 60_000;
+    const n = reqs('notifications').length;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    // did happen: the inbox was asked, with no Date in the answer
+    expect(reqs('notifications').length).toBeGreaterThan(n);
+    expect(h.items()).toEqual([]);
+    fake.state.noDate = null;
+    h.clock.t = t0 + 120_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    h.clock.t = t0 + 180_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    expect(h.items().map((a) => a.title)).toEqual([`${OTHER} 在 ${REPO}#${OFF_BOARD} 里 @了我`]);
+  });
+
+  it('the first read without a usable time is no baseline: the next read with one is, and only what comes after it reminds', async () => {
+    fake.state.noDate = (e) => e.operation === 'notifications';
+    thread(A, { at: FIXTURE_NOW - 60_000 });
+    const h = await started({ sources: [REPO] });
+    expect(reqs('notifications').length).toBeGreaterThan(0);
+    fake.state.noDate = null;
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    // the inbox's old thread is history under the first usable read
+    expect(h.items()).toEqual([]);
+    thread(B, { at: h.clock.t + 30_000 });
+    h.clock.t += 60_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    expect(h.items().map((a) => a.key)).toEqual([key(B)]);
+  });
 });

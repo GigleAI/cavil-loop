@@ -462,5 +462,6 @@
   "GitHub 没让把通知标成已读（{why}）。下次打开这一条时会再试。": "GitHub did not let the app mark the notification as read ({why}). It tries again the next time you open the item.",
   "能不能读 GitHub 通知": "Reading GitHub notifications",
   "能：设置 →「提醒」里的「也提醒 GitHub 上和我有关的新动态」可以用。": "Yes: \"Also remind me of new GitHub activity that concerns me\" under Settings → Reminders works.",
-  "不能：GitHub 不让 GitHub App 的登录读通知收件箱，设置里这一项会变灰。": "No: GitHub does not let a GitHub App's sign-in read the notification inbox; that option in Settings is greyed out."
+  "不能：GitHub 不让 GitHub App 的登录读通知收件箱，设置里这一项会变灰。": "No: GitHub does not let a GitHub App's sign-in read the notification inbox; that option in Settings is greyed out.",
+  "GitHub 通知列表的回应没有可用的时间": "GitHub's notification list answer carries no usable time"
 }
