@@ -12,6 +12,12 @@
 // between the row and the fold (its count changed), focus goes to where it went (the number in the row, or
 // the fold button); when the fold empties, to the number that left it. The preview draws the folded numbers
 // after a "折叠区" mark instead of behind a button.
+//
+// GitHub#712: a mouse press inside the fold (its button or its panel) never moves keyboard focus. The open panel closes
+// when focus leaves the fold, and in the macOS app's engine (WebKit) a press on a button does not give the button focus:
+// the focus holder just loses it, to nowhere. Without this the panel closed on the press, before the click, so no number
+// in it could be clicked (a lit one not undone, an unlit one not picked) and the fold button reopened it at once. The
+// focus the fold needs is given on purpose instead: to the fold button on opening, back to it after a click in the panel.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { parseFilter, statesStated } from '../shared/filter';
@@ -188,6 +194,8 @@ export function TallyBar({
         ) : (
           <span
             className="tally-fold"
+            // GitHub#712: a press here keeps focus where it is (see the header), on every engine alike
+            onMouseDown={(ev) => ev.preventDefault()}
             onBlur={(ev) => {
               // focus moved on, out of the fold (Tab, a click elsewhere, the board hidden behind a detail tab): the open
               // panel closes behind it. A button removed while focused (its number left the fold) is not a move: the
