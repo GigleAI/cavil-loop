@@ -2,10 +2,9 @@ import type { SourceConfig, SourceSnapshot, SourceStatus } from '../shared/types
 import { GitHubClient, GitHubError, RateLimitError, failureInput } from './github';
 import { t } from '../shared/i18n';
 import { classifyFailure } from '../shared/readFailure';
-import { fetchSource } from './fetchSources';
+import { fetchSource, repoHistoryDue } from './fetchSources';
 import { BOARD_FULL_READ_EVERY_MS, boardCounts, checkSource, FULL_READ_EVERY_MS, type CheckResult, type SourceCheck } from './changeCheck';
 import { deltaReady, readBoardChanges, readRepoChanges, unstableItems } from './delta';
-import { keepInRepo } from './fetchSources';
 import { relationsKnown } from './relations';
 import { labelAt, loopKnown, type LabelFor } from './loopBlocked';
 
@@ -202,20 +201,11 @@ export async function syncRound(
     }
     // GitHub#558: a round meant to read by changes that got no GitHub clock reads every source in full —
     // not even "the check says unchanged" keeps a snapshot then (what the round promises when the clock is missing)
-    const fullDue = !usable || clockMissing || now - usable.fullAt >= fullEvery;
+    // GitHub#718: a repository whose whole history is due (never read: just added, or cached before #718) is read in full now
+    const fullDue = !usable || clockMissing || now - usable.fullAt >= fullEvery || (src.kind === 'repo' && repoHistoryDue(prev, now));
     // GitHub#545: items read too close to their last change are confirmed every round, whatever the check says
     const unsure = byChanges && prev ? unstableItems(prev, src).length > 0 : false;
     if (checked?.unchanged && usable && !fullDue && !unsure) {
-      // GitHub#545: a repository read by changes applies the 14-day rule every round — an item sliding
-      // out of the window goes now, not at the next full read (nothing is asked for it)
-      if (byChanges && src.kind === 'repo' && prev) {
-        const kept = prev.items.filter((it) => keepInRepo(it, now, pendingLabel.trim()));
-        if (kept.length !== prev.items.length) {
-          const snap = { ...prev, items: kept };
-          checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: usable.fullAt });
-          return { kind: 'read', snap };
-        }
-      }
       // the previous snapshot stays exactly as it is: not re-stamped, not written again, and
       // never fed as a new read (a read's time is evidence for edits in flight — GitHub#229)
       checks.set(src.key, { ...checked.record, snapshotAt: usable.snapshotAt, fullAt: usable.fullAt });
@@ -242,7 +232,7 @@ export async function syncRound(
         throw e;
       }
     }
-    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, serverAt);
+    const snap = await fetchSource(client, src, now, loopLabel, pendingLabel, serverAt, prev);
     // the tags were taken before this read began: a change in between is seen again next round
     if (checked) checks.set(src.key, { ...checked.record, snapshotAt: snap.fetchedAt, fullAt: now });
     return { kind: 'read', snap };

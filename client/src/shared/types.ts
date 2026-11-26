@@ -474,6 +474,12 @@ export interface SourceSnapshot {
   lastRead?: { kind: 'full' | 'delta'; at: number; count?: number };
   /** GitHub#545: epoch ms of the latest full read this snapshot goes back to (kept through reads of changes) */
   fullReadAt?: number;
+  /**
+   * GitHub#718, repository sources: epoch ms (this machine's clock) of the read of the whole history
+   * (every issue / PR, open or closed) whose older closed items this snapshot keeps. Absent = never
+   * read: the next read is one.
+   */
+  historyAt?: number;
 }
 
 export interface SourceTimes {

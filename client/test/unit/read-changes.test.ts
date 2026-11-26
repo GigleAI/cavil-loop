@@ -345,7 +345,7 @@ describe('a board: only the changed items are read again', () => {
   });
 });
 
-describe('a repository: read by its changes, and the 14-day rule every round', () => {
+describe('a repository: read by its changes, its whole history kept (GitHub#718)', () => {
   it('a label added: the list since the last read, no full read; equal to a full read', async () => {
     const { c, cache, clock } = await ready({ sources: [REPO] });
     await round(c, clock);
@@ -357,7 +357,8 @@ describe('a repository: read by its changes, and the 14-day rule every round', (
     expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, clock.t));
   });
 
-  it('a closed item slides out of the 14 days with nothing changed: gone at the next round, without a full read', async () => {
+  // GitHub#718: a repository source keeps its whole history — an item leaving the 14 days is not dropped
+  it('a closed item slides out of the 14 days with nothing changed: it stays, without a full read', async () => {
     const { c, cache, clock } = await ready({ sources: [REPO] });
     const closed = fake.state.repos.get('gigleai/cavil-loop')!.find((i) => i.state === 'closed' && !i.pull_request)!;
     // inside the 14 days by 30 s when read in full now, outside them 2 minutes later
@@ -368,7 +369,7 @@ describe('a repository: read by its changes, and the 14-day rule every round', (
     const sent = await round(c, clock, 2);
     expect(repoFullReads(sent)).toBe(0);
     expect(sent.some((e) => e.method === 'HEAD')).toBe(true);
-    expect(shown(c, closed.number)).toBeNull();
+    expect(shown(c, closed.number)?.updatedAt).toBe(closed.updated_at);
     expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, clock.t));
   });
 
@@ -376,6 +377,113 @@ describe('a repository: read by its changes, and the 14-day rule every round', (
     const { c, clock } = await ready({ sources: [REPO] });
     expect(repoFullReads(await round(c, clock))).toBe(0);
     expect(repoFullReads(await round(c, clock, 10))).toBe(1);
+  });
+});
+
+/** GitHub#718: the history read's list — every closed issue / PR, no label, no time */
+const historyLists = (l: LoggedRequest[]) => l.filter((e) => e.method === 'GET' && e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?') && e.path.includes('state=closed') && !e.path.includes('labels=') && !e.path.includes('since='));
+const repoIssues = () => fake.state.repos.get('gigleai/cavil-loop')!;
+
+/** a closed issue of the recording made old: last changed `days` before the test's start */
+function oldClosed(days = 30) {
+  const i = repoIssues().find((x) => x.state === 'closed' && !x.pull_request && !x.labels.some((l: any) => String(l.name ?? l).startsWith('pending/')))!;
+  i.updated_at = new Date(FIXTURE_NOW - days * 86_400_000).toISOString();
+  return i;
+}
+
+describe('GitHub#718: a repository source reads its whole history once, keeps it, and reads it again hourly', () => {
+  it('added: the first round reads every closed item, however old; the snapshot says when', async () => {
+    const old = oldClosed();
+    const { c, cache } = await ready({ sources: [REPO] });
+    // "did happen": the history list was asked for and answered
+    expect(historyLists(fake.log).filter((e) => e.status === 200).length).toBeGreaterThan(0);
+    expect(shown(c, old.number)?.state).toBe('closed');
+    expect(cache.loadSnapshots().get(REPO_KEY)!.historyAt).toBe(FIXTURE_NOW);
+    expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, FIXTURE_NOW));
+  });
+
+  it('kept through quiet rounds, reads of changes and regular full reads — none of them reads the history again', async () => {
+    const old = oldClosed();
+    const { c, cache, clock } = await ready({ sources: [REPO] });
+    const quiet = await round(c, clock);
+    expect(quiet.some((e) => e.method === 'HEAD' && e.status === 304)).toBe(true);
+    await labelOnGitHub(138, 'bug', clock.t + 30_000);
+    const changes = await round(c, clock);
+    expect(sinceLists(changes)).toHaveLength(1);
+    const full = await round(c, clock, 10);
+    // "did happen": a full read went out (the open list), only not the history
+    expect(repoFullReads(full)).toBe(1);
+    for (const sent of [quiet, changes, full]) expect(historyLists(sent)).toHaveLength(0);
+    expect(shown(c, old.number)?.state).toBe('closed');
+    expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, clock.t));
+    expect(cache.loadSnapshots().get(REPO_KEY)!.historyAt).toBe(FIXTURE_NOW);
+  });
+
+  it('the old item reopened on GitHub: the next round shows it as it is now', async () => {
+    const old = oldClosed();
+    const { c, cache, clock } = await ready({ sources: [REPO] });
+    await round(c, clock);
+    old.state = 'open';
+    old.updated_at = new Date(clock.t + 30_000).toISOString();
+    const sent = await round(c, clock);
+    expect(historyLists(sent)).toHaveLength(0);
+    expect(shown(c, old.number)?.state).toBe('open');
+    expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, clock.t));
+  });
+
+  it('the old item deleted on GitHub: kept until the history is an hour old, then the history read drops it', async () => {
+    const old = oldClosed();
+    const { c, cache, clock } = await ready({ sources: [REPO] });
+    repoIssues().splice(repoIssues().indexOf(old), 1);
+    // a regular full read 10 minutes on cannot see it went: it stays, and the history is not read
+    const regular = await round(c, clock, 10);
+    expect(repoFullReads(regular)).toBe(1);
+    expect(historyLists(regular)).toHaveLength(0);
+    expect(shown(c, old.number)).not.toBeNull();
+    // the history an hour old: read again, the item is gone, the time moves on
+    clock.t = FIXTURE_NOW + 60 * MIN;
+    const n = fake.log.length;
+    await c.syncNow();
+    expect(historyLists(fake.log.slice(n)).filter((e) => e.status === 200).length).toBeGreaterThan(0);
+    expect(shown(c, old.number)).toBeNull();
+    expect(cache.loadSnapshots().get(REPO_KEY)!.historyAt).toBe(clock.t);
+    expect(shownOf(cache, REPO_KEY)).toEqual(await fullReadNow(REPO_KEY, clock.t));
+  });
+
+  it('a snapshot cached before the history read existed (no history time): the next round reads the history, even with nothing changed', async () => {
+    const old = oldClosed();
+    const first = await ready({ sources: [REPO] });
+    // what an older version left: no history time, and only the open + last-14-days items
+    const before = first.cache.loadSnapshots().get(REPO_KEY)!;
+    const { historyAt: _h, ...rest } = before;
+    first.c.stopTimer();
+    first.cache.replaceSnapshots([{ ...rest, items: before.items.filter((i) => i.key !== K(old.number)) }]);
+    // the app starts again on that cache
+    const n = fake.log.length;
+    const { c, cache, clock } = await ready({ sources: [REPO] });
+    clock.t = FIXTURE_NOW + MIN;
+    await c.syncNow();
+    expect(historyLists(fake.log.slice(n)).filter((e) => e.status === 200).length).toBeGreaterThan(0);
+    expect(shown(c, old.number)?.state).toBe('closed');
+    expect(typeof cache.loadSnapshots().get(REPO_KEY)!.historyAt).toBe('number');
+  });
+
+  it('a history page failing fails the source: the previous snapshot stays as it was, the history time too', async () => {
+    const old = oldClosed();
+    const { c, cache, clock } = await ready({ sources: [REPO] });
+    repoIssues().splice(repoIssues().indexOf(old), 1);
+    const kept = shownOf(cache, REPO_KEY);
+    fake.state.restPageSize = 20;
+    fake.state.answerOverride = (e) => (historyLists([e]).length && /[?&]page=2(&|$)/.test(e.path) ? { status: 502, body: { message: 'Server Error' } } : null);
+    clock.t = FIXTURE_NOW + 60 * MIN;
+    const n = fake.log.length;
+    await c.syncNow();
+    // "did happen": the history's second page was asked for and refused
+    expect(historyLists(fake.log.slice(n)).some((e) => e.status === 502)).toBe(true);
+    expect(c.getState().sync.sources.find((s) => s.sourceKey === REPO_KEY)?.ok).toBe(false);
+    expect(shown(c, old.number)).not.toBeNull();
+    expect(shownOf(cache, REPO_KEY)).toEqual(kept);
+    expect(cache.loadSnapshots().get(REPO_KEY)!.historyAt).toBe(FIXTURE_NOW);
   });
 });
 

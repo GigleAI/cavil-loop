@@ -4986,8 +4986,10 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await app.close();
 });
 
-test('GitHub#572: the recordings follow the test clock — long after the recording, with the window, the fake GitHub and the data at one moment, the closed #122 is still read and "no status" is still there; served as recorded, it ages out', async () => {
+test('GitHub#572: the recordings follow the test clock — long after the recording, with the window, the fake GitHub and the data at one moment, the closed #122 is still read and "no status" is still there; served as recorded, it is read too (GitHub#718)', async () => {
   // 56 days after the recording (2026-11-05): as recorded, every closed item is past the client's 14-day window
+  // GitHub#718: a repository source reads its whole history, so the old #122 is read either way; the shift
+  // is told by what the fake serves (its update time), the table no longer tells the two apart
   const SIM = Date.UTC(2026, 11, 31, 12, 0, 0);
   const DAY = 86_400_000;
   const rowsOf = async (page: Page) => (await tableShape(page)).flatMap((g) => g.rows);
@@ -5032,13 +5034,8 @@ test('GitHub#572: the recordings follow the test clock — long after the record
     await expect.poll(() => page.evaluate(async () => (await (window as any).cavil.get()).state.sync.syncing), { timeout: 15_000 }).toBe(false);
     expect(await page.evaluate(async () => (await (window as any).cavil.get()).state.sync.problem)).toBeNull();
     const shape = await tableShape(page);
-    if (shifted) {
-      expect(shape.at(-1)!.title).toBe('无状态');
-      expect(shape.at(-1)!.rows).toContain('gigleai/cavil-loop#122');
-    } else {
-      expect(shape.map((g) => g.title)).not.toContain('无状态');
-      expect(shape.flatMap((g) => g.rows)).not.toContain('gigleai/cavil-loop#122');
-    }
+    expect(shape.at(-1)!.title).toBe('无状态');
+    expect(shape.at(-1)!.rows).toContain('gigleai/cavil-loop#122');
     await app.close();
   }
 });
