@@ -43,3 +43,16 @@ export function assigneeRows(assigned: readonly string[], candidates: readonly s
   for (const c of candidates) add(c, false);
   return rows;
 }
+
+/**
+ * The rows in the order they were first seen while the picker is open (PR #716 review round 1):
+ * taking someone off must only move the tick, never the rows — or the row under the pointer becomes
+ * another person, and the next click / Enter changes that one. `seen` is the order so far (logins,
+ * any case); rows not in it yet go after, in their own order. Returns the rows and the order to keep.
+ */
+export function keepRowOrder<T extends { login: string }>(rows: readonly T[], seen: readonly string[]): { rows: T[]; seen: string[] } {
+  const order = [...seen];
+  for (const r of rows) if (!order.some((l) => sameLogin(l, r.login))) order.push(r.login);
+  const at = (login: string) => order.findIndex((l) => sameLogin(l, login));
+  return { rows: [...rows].sort((a, b) => at(a.login) - at(b.login)), seen: order };
+}

@@ -1,9 +1,9 @@
 // The assignee picker (GitHub#711): the label picker with the rows of shared/assignees.ts. The detail
 // and the table cell both open this one, so they offer the same rows and send the same two writes —
 // one account in or out per Enter / click, never the whole list.
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type { RepoAssignees, WriteAction } from '../shared/actions';
-import { assigneeRows } from '../shared/assignees';
+import { assigneeRows, keepRowOrder } from '../shared/assignees';
 import { t } from '../shared/i18n';
 import type { Item } from '../shared/types';
 import { LabelPicker } from './LabelPicker';
@@ -28,7 +28,13 @@ export function AssigneePicker({
   act: (action: WriteAction, done: string) => void;
   onClose: () => void;
 }) {
-  const rows = useMemo(() => assigneeRows(item.assignees, candidates?.logins ?? [], viewer), [item.assignees, candidates, viewer]);
+  // the order rows had since the picker opened: a change moves ticks only (PR #716 review round 1)
+  const seen = useRef<string[]>([]);
+  const rows = useMemo(() => {
+    const kept = keepRowOrder(assigneeRows(item.assignees, candidates?.logins ?? [], viewer), seen.current);
+    seen.current = kept.seen;
+    return kept.rows;
+  }, [item.assignees, candidates, viewer]);
   const hint = !candidates ? (
     <span data-testid="assignee-candidates" data-state="loading">
       {t('读取可指派的账号…')}

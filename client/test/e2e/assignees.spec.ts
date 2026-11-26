@@ -160,6 +160,42 @@ test('GitHub#711: the table\'s 负责人 cell and the detail\'s header both add 
   await app.close();
 });
 
+test('PR #716 review round 1: two assignees — taking the first off keeps the rows; the same row again adds that one back, the other stays', async () => {
+  setAssignees(['alice', 'user-1']);
+  const app = await launchApp(env);
+  const page = app.page;
+  await ready(page);
+  await page.locator(`[data-testid="row"][data-key="${KEY}"] [data-testid="row-title"]`).first().click();
+  const detail = page.getByTestId('detail');
+  await detail.getByTestId('assignee-edit').click();
+  const picker = detail.getByTestId('assignee-picker');
+  const rowNames = () => picker.locator('[data-testid="picker-item"]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-name')}:${e.getAttribute('data-checked')}`));
+  await expect.poll(rowNames).toEqual(['alice:yes', 'user-1:yes', `${ME}:no`]);
+  // the first row, clicked where it is (not found by name): alice off
+  const first = picker.locator('[data-testid="picker-item"]').first();
+  await first.click();
+  await expect.poll(assigneeWrites).toEqual([['DELETE', { assignees: ['alice'] }]]);
+  await expect.poll(() => shown(page)).toEqual(['user-1']);
+  await expect.poll(rowNames).toEqual(['alice:no', 'user-1:yes', `${ME}:no`]);
+  // the same position again: alice back, user-1 untouched
+  await first.click();
+  await expect.poll(() => assigneeWrites().length).toBe(2);
+  expect(assigneeWrites()[1]).toEqual(['POST', { assignees: ['alice'] }]);
+  await expect.poll(() => shown(page)).toEqual(['alice', 'user-1']);
+  await expect.poll(rowNames).toEqual(['alice:yes', 'user-1:yes', `${ME}:no`]);
+  // and by the keyboard on the row under the cursor (Enter twice): the same one person each time
+  await first.hover();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => assigneeWrites().length).toBe(3);
+  await expect.poll(rowNames).toEqual(['alice:no', 'user-1:yes', `${ME}:no`]);
+  await page.keyboard.press('Enter');
+  await expect.poll(() => assigneeWrites().length).toBe(4);
+  expect(assigneeWrites().slice(2)).toEqual([['DELETE', { assignees: ['alice'] }], ['POST', { assignees: ['alice'] }]]);
+  expect(onGitHub()).toEqual(['alice', 'user-1']);
+  expect(wholeList()).toEqual([]);
+  await app.close();
+});
+
 test('GitHub#711: the candidates cannot be read — the picker says why and still lets the current assignee be taken off', async () => {
   setAssignees(['user-1']);
   env.fake.state.w.failAssignees.add('gigleai/cavil-loop');

@@ -15,7 +15,8 @@ import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub } from '../fake-github/server';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import type { EditMark, Item } from '../../src/shared/types';
-import { MAX_ASSIGNEES, assigneeRows, sameLogin } from '../../src/shared/assignees';
+import { MAX_ASSIGNEES, assigneeRows, keepRowOrder, sameLogin } from '../../src/shared/assignees';
+import { pickOrder } from '../../src/shared/pickOrder';
 import { assigneeAnswer } from '../../src/data/actions';
 import { fieldId, fieldValue, isEditRecord, overlayItem, startEdit, targetText, type EditRecord } from '../../src/data/edits';
 import { noteEditOf } from '../../src/renderer/noteEdits';
@@ -209,6 +210,30 @@ describe('pure rules', () => {
     expect(full.filter((r) => r.checked).every((r) => !r.blocked)).toBe(true);
     expect(full.find((r) => r.name === 'x')?.blocked).toContain(String(MAX_ASSIGNEES));
     expect(assigneeRows(Array.from({ length: MAX_ASSIGNEES - 1 }, (_, i) => `u${i}`), ['x'], null).find((r) => r.name === 'x')?.blocked).toBeUndefined();
+  });
+
+  it('PR #716 review round 1: while the picker is open, taking someone off (or adding) moves the tick only, never the rows', () => {
+    // what the window shows: the rows kept in their first order, then the picker's own grouping (checked at open first)
+    const shownNames = (assigned: string[], seen: string[], checkedAtOpen: Set<string>) => {
+      const kept = keepRowOrder(assigneeRows(assigned, ['alice', 'bob', 'carol'], null), seen);
+      return { names: pickOrder(kept.rows, checkedAtOpen).map((r) => `${r.name}${r.checked ? '✓' : ''}`), seen: kept.seen };
+    };
+    const atOpen = new Set(['alice', 'bob']);
+    const open = shownNames(['alice', 'bob'], [], atOpen);
+    expect(open.names).toEqual(['alice✓', 'bob✓', 'carol']);
+    // first row (alice) taken off: alice stays first, unticked; bob keeps the second row
+    const off = shownNames(['bob'], open.seen, atOpen);
+    expect(off.names).toEqual(['alice', 'bob✓', 'carol']);
+    // the same first row again is alice again (added back), not bob
+    const back = shownNames(['bob', 'alice'], off.seen, atOpen);
+    expect(back.names).toEqual(['alice✓', 'bob✓', 'carol']);
+    // adding a candidate does not move it up either
+    const added = shownNames(['bob', 'alice', 'carol'], back.seen, atOpen);
+    expect(added.names).toEqual(['alice✓', 'bob✓', 'carol✓']);
+    // without the kept order the rows do move (what the review saw): the test tells the two apart
+    expect(pickOrder(assigneeRows(['bob'], ['alice', 'bob', 'carol'], null), atOpen).map((r) => r.name)).toEqual(['bob', 'alice', 'carol']);
+    // a login seen in another case keeps its place
+    expect(keepRowOrder([{ login: 'Bob' }, { login: 'alice' }], ['alice', 'bob']).rows.map((r) => r.login)).toEqual(['alice', 'Bob']);
   });
 
   it('GitHub\'s answer: the login present after an add / gone after a remove; no readable list is unknown', () => {
