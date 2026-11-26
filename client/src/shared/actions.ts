@@ -239,6 +239,11 @@ export interface ItemDetail {
    * Absent (a detail cached by an older version) = not known: no edit button until it is read again
    */
   canEdit?: boolean;
+  /**
+   * GitHub#726: GitHub's `updatedAt` of the item as this read saw it — the same field the board's
+   * copy carries, so the two say which is newer. Absent (an older cached detail, or GitHub gave none) = not known
+   */
+  updatedAt?: string;
 }
 
 export type DetailResult = { ok: true; detail: ItemDetail } | { ok: false; error: string };

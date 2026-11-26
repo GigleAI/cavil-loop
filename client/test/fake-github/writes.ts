@@ -1159,6 +1159,7 @@ export function handleGraphql(store: Store, op: string | undefined, v: Record<st
       url: content.url,
       state: content.state,
       createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: content.updatedAt,
       bodyHTML: w.bodySources.has(ikey) ? renderMarkdown(w.bodySources.get(ikey)!) : (w.bodies.get(ikey) ?? '<p>fixture body</p>'),
       body: w.bodySources.get(ikey) ?? '',
       viewerCanUpdate: !w.cannotUpdate.has(content.id) && !w.readOnlyRepos.has(c.repo.toLowerCase()),

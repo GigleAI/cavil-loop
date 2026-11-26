@@ -100,3 +100,13 @@ export function applyFreshItem(snapshots: SourceSnapshot[], fresh: FreshItem): S
   }
   return changed;
 }
+
+/**
+ * GitHub#726: `a` is a later GitHub time than `b` (two `updatedAt` values). A time missing or not
+ * readable on either side is "not known", never "newer".
+ */
+export function newerThan(a: string | undefined, b: string | undefined): boolean {
+  const x = a ? Date.parse(a) : NaN;
+  const y = b ? Date.parse(b) : NaN;
+  return Number.isFinite(x) && Number.isFinite(y) && x > y;
+}

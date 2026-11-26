@@ -26,7 +26,7 @@ export function stillSettling(detail: ItemDetail | null): boolean {
 export interface AutoRefreshInput {
   /** the board's copy of the item now (after the round) */
   item: Pick<Item, 'updatedAt'> | null;
-  /** the board's `updatedAt` when the detail on screen was read; null = nothing read yet */
+  /** the board's `updatedAt` when the detail on screen was read, or the detail's own (GitHub#726); null = nothing read yet */
   readAt: string | null;
   /** the detail on screen (null: the first read has not landed) */
   detail: ItemDetail | null;
@@ -40,7 +40,8 @@ export interface AutoRefreshInput {
 export function shouldAutoRefresh({ item, readAt, detail, busy, loading }: AutoRefreshInput): boolean {
   if (!item || busy || loading) return false;
   if (!detail) return true; // the first read failed: try again with the round
-  if (item.updatedAt !== readAt) return true;
+  // GitHub#726: the two times may come from different reads (the board's, the detail's own): the same moment is the same version
+  if (item.updatedAt !== readAt && !(readAt !== null && Date.parse(item.updatedAt) === Date.parse(readAt))) return true;
   return stillSettling(detail);
 }
 

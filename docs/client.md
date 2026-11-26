@@ -59,7 +59,7 @@ Download the client from this repository's [Releases](https://github.com/GigleAI
 
 ## Sources
 
-A source is a GitHub Project or a repository; add as many as you like under Settings → "数据来源" (sources). While the app is open it syncs about once a minute, and the refresh button or ⌘R syncs now; a failed read keeps the previous copy, so items never "disappear".
+A source is a GitHub Project or a repository; add as many as you like under Settings → "数据来源" (sources). While the app is open it syncs about once a minute, and the refresh button or ⌘R syncs now; when an opened item's detail shows it newer on GitHub than the list's copy, that one item is updated in the list at once, without waiting for the next round; a failed read keeps the previous copy, so items never "disappear".
 
 <details><summary>Details: sources, merging, importing a saved web view, organization Projects</summary>
 
