@@ -223,3 +223,85 @@ test('GitHub#689 (PR #698 review round 1): an account with nothing of its own �
   await expect.poll(() => mineState(page)).toEqual({ on: false, author: true, assignee: true });
   await app.close();
 });
+
+// GitHub#721: while off, 「只看我的」 read as the label of the "显示已关闭" switch after it — grey text with no border
+// and no fill. It is now an ordinary bordered button with a down arrow, and a thin line keeps it apart from that
+// switch. Checked on the drawn window: the computed style (a ghost button of the same bar, 视图设置, is the old look
+// it is compared with), the arrow, the line sitting between the two, the button, line and switch on one row, in
+// the board and table layouts, in Chinese and in English. In Chinese the whole bar still fits one line at 1280
+// wide (its last control, 快捷键, on the same row); the English board bar already took two lines before this change.
+test('GitHub#721: 「只看我的」 looks like a button while off, with a down arrow, and a line keeps it apart from 「显示已关闭」', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  await ready(page);
+  const TRANSPARENT = 'rgba(0, 0, 0, 0)';
+  const look = (testid: string) =>
+    page.getByTestId(testid).evaluate((b) => {
+      const s = getComputedStyle(b);
+      return { bg: s.backgroundColor, border: s.borderTopColor, borderWidth: parseFloat(s.borderTopWidth), color: s.color, cls: b.className };
+    });
+  const box = async (testid: string) => (await page.getByTestId(testid).boundingBox())!;
+  const mid = (r: { y: number; height: number }) => r.y + r.height / 2;
+  const separated = async (where: string, wholeBar: boolean) => {
+    const b = await box('mine-filter-toggle');
+    const sep = await box('mine-filter-sep');
+    const closed = await box('show-closed-toggle');
+    // the line is drawn, and sits between the button and the switch
+    expect(sep.width, where).toBeGreaterThan(0);
+    expect(sep.height, where).toBeGreaterThan(10);
+    expect(sep.x, where).toBeGreaterThanOrEqual(b.x + b.width);
+    expect(sep.x + sep.width, where).toBeLessThanOrEqual(closed.x);
+    expect(Math.abs(mid(sep) - mid(b)), where).toBeLessThan(4);
+    expect(Math.abs(mid(closed) - mid(b)), where).toBeLessThan(4);
+    if (wholeBar) expect(Math.abs(mid(await box('open-shortcuts')) - mid(b)), where).toBeLessThan(4);
+  };
+  const offLook = async (where: string) => {
+    await expect(button(page)).toHaveAttribute('data-on', 'no');
+    const mine = await look('mine-filter-toggle');
+    const ghost = await look('open-view-panel'); // a ghost button of the same bar: the old look
+    expect(ghost.bg, where).toBe(TRANSPARENT); // not vacuous: the comparison really is the borderless look
+    expect(mine.cls, where).not.toContain('ghost');
+    expect(mine.bg, where).not.toBe(TRANSPARENT);
+    expect(mine.borderWidth, where).toBeGreaterThan(0);
+    expect(mine.border, where).not.toBe(TRANSPARENT);
+    expect(mine.border, where).not.toBe(ghost.border);
+    expect(mine.color, where).not.toBe(ghost.color); // the text is the normal colour, not the muted grey
+    await expect(button(page).locator('svg.icon'), where).toHaveCount(1); // the down arrow
+  };
+
+  for (const l of ['table', 'board']) {
+    await layout(page, l);
+    await offLook(l);
+    await separated(l, true);
+  }
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: join(screens, 'mine-721-board-off.png'), clip: { x: 0, y: 0, width: 1280, height: 130 } });
+
+  // on: still the highlighted look, still the arrow, still apart
+  await open(page);
+  await page.getByTestId('mine-on').check();
+  await expect(button(page)).toHaveAttribute('data-on', 'yes');
+  expect((await look('mine-filter-toggle')).cls).toBe('on');
+  await expect(button(page).locator('svg.icon')).toHaveCount(1);
+  await page.getByTestId('mine-on').press('Escape');
+  await expect(page.getByTestId('mine-filter-pop')).toHaveCount(0);
+  await separated('board, on', true);
+  await open(page);
+  await page.getByTestId('mine-on').uncheck();
+  await page.getByTestId('mine-on').press('Escape');
+
+  // English: the same look; the button, the line and the switch on one row
+  await page.getByTestId('open-settings').click();
+  await page.getByTestId('lang-en').check();
+  await expect(page.getByTestId('back')).toContainText('Back to board');
+  await page.getByTestId('back').click();
+  await expect(button(page)).toContainText('Only mine');
+  for (const l of ['table', 'board']) {
+    await layout(page, l);
+    await offLook(`${l}, English`);
+    await separated(`${l}, English`, false);
+  }
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: join(screens, 'mine-721-board-off-en.png'), clip: { x: 0, y: 0, width: 1280, height: 130 } });
+  await app.close();
+});
