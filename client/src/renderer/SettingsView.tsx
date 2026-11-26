@@ -162,6 +162,8 @@ export function SettingsView({
   const inputBox = useRef<HTMLInputElement>(null);
   // GitHub#577: Windows cannot run the daemon — no local daemon section, no "接上 daemon", nothing read
   const win = state.desktopSystem === 'windows';
+  // GitHub#713: GitHub does not let a GitHub App's sign-in read the notification inbox
+  const appOnly = state.signedInAppKind === 'github-app';
   // GitHub#591: the 「高级设置」 block, folded each time Settings opens; going to a card in it opens it first
   const advanced = advancedCards(win);
   const [advOpen, setAdvOpen] = useState(false);
@@ -388,6 +390,49 @@ export function SettingsView({
             <input type="radio" name="notify-scope" data-testid="notify-scope-mine" checked={state.notifyScope === 'mine'} onChange={() => api().setNotifyScope('mine')} />
             <span>{tNode('只提醒和我（{viewer}）有关的', { viewer: <b>{state.viewer ? <Verbatim from="github">{state.viewer}</Verbatim> : '…'}</b> })}</span>
           </label>
+        </div>
+        {/* GitHub#713: GitHub's own activity concerning the account, read from its notification inbox */}
+        <div className="github-activity" data-testid="github-activity">
+          <label className="row small">
+            <input
+              type="checkbox"
+              data-testid="github-activity-toggle"
+              disabled={appOnly}
+              checked={state.githubActivity && !appOnly}
+              onChange={(e) => api().setGithubActivity(e.target.checked)}
+            />
+            {t('也提醒 GitHub 上和我有关的新动态（有人 @我、回复我开的或参与过的讨论、请我 review、指派给我）')}
+          </label>
+          {!appOnly && <div className="muted small github-activity-note">{t('只提醒数据来源里的条目：加进来的仓库里的，和加进来的 Project 里的。')}</div>}
+          <label className="row small github-activity-sub">
+            <input
+              type="checkbox"
+              data-testid="github-activity-mark-read"
+              disabled={appOnly || !state.githubActivity}
+              checked={state.githubActivityMarkRead && state.githubActivity && !appOnly}
+              onChange={(e) => api().setGithubActivityMarkRead(e.target.checked)}
+            />
+            {t('在 App 里打开一条时，把 GitHub 上这一条的通知也标成已读')}
+          </label>
+          {!appOnly && <div className="muted small github-activity-note sub">{t('默认不勾：GitHub 收件箱里的未读不受影响。')}</div>}
+          {appOnly && (
+            <div className="banner warn" data-testid="github-activity-app-only">
+              <Icon name="warn" />
+              <span>{t('现在用 GitHub App 登录，GitHub 不让这种登录读通知。要用这两项，在「账号 → 高级 → 登录方式」改用 OAuth 应用并重新登录。')}</span>
+            </div>
+          )}
+          {!appOnly && state.githubActivity && state.githubActivityProblem && (
+            <div className="banner warn" data-testid="github-activity-problem">
+              <Icon name="warn" />
+              <span>{tNode('GitHub 不让读通知（{why}）。退出登录再登录一次通常能解决；其他提醒不受影响。', { why: <Verbatim from="github">{state.githubActivityProblem}</Verbatim> })}</span>
+            </div>
+          )}
+          {!appOnly && state.githubActivity && state.githubActivityMarkRead && state.githubMarkReadProblem && (
+            <div className="banner warn" data-testid="github-mark-read-problem">
+              <Icon name="warn" />
+              <span>{tNode('GitHub 没让把通知标成已读（{why}）。下次打开这一条时会再试。', { why: <Verbatim from="github">{state.githubMarkReadProblem}</Verbatim> })}</span>
+            </div>
+          )}
         </div>
         {state.notifyProblem && (
           <div className="banner warn" data-testid="notify-problem">

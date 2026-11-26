@@ -597,6 +597,12 @@ label.radio { display: inline-flex; gap: 6px; align-items: center; }
 .notify-scope { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 10px 0 12px; }
 .notify-scope-title { font-weight: 600; }
 .notify-scope-note { margin: 2px 0 0 20px; }
+/* GitHub#713: GitHub's own activity — the option, its note, the indented "mark read" under it */
+.github-activity { margin: 0 0 12px; }
+.github-activity-note { margin: 0 0 6px 22px; }
+.github-activity-note.sub { margin-left: 44px; }
+.github-activity-sub { margin-left: 22px; }
+.github-activity .banner { margin-top: 6px; }
 /* GitHub#514: a card's longer explanation, folded at its bottom; a field's one-line purpose under it */
 .set-more { margin-top: 10px; }
 .set-more > summary { cursor: pointer; width: fit-content; }

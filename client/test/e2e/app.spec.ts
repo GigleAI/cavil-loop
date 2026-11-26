@@ -319,7 +319,7 @@ test('sign-in method: OAuth app by default; GitHub App needs its own ID; the "wh
   await page.getByTestId('app-kind-help-link').click();
   const help = page.getByTestId('app-kind-help');
   await expect(help).toBeVisible();
-  await expect(help.locator('table.compare tbody tr')).toHaveCount(7);
+  await expect(help.locator('table.compare tbody tr')).toHaveCount(8);
   await expect(help).toContainText('看 App 的设置');
   await expect(help).not.toContainText('碰不到代码');
   await shot(page, '12-app-kind-help');
@@ -2327,6 +2327,75 @@ test('GitHub#373: "which items remind" in Settings — every pending item by def
   assignTo(theirs, [env.fake.state.viewer]);
   app.desktop.push({ kind: 'tick' });
   await expect.poll(notes).toEqual([`gigleai/cavil-loop#${theirs}`]);
+  await app.close();
+});
+
+test('GitHub#713: GitHub activity in Settings — on by default, "mark read" off and under it; a new @ in a data source notifies; a GitHub App sign-in greys both out and reads nothing', async () => {
+  // the window runs on the real clock: GitHub's gap between inbox reads made short, so each beat may read it
+  env.fake.state.inbox.pollSecs = 1;
+  env.fake.state.inbox.threads = [];
+  let { app, page } = await launch(env);
+  await signInForReminders(page, ['GigleAI/cavil-loop']);
+  const toggle = page.getByTestId('github-activity-toggle');
+  const markRead = page.getByTestId('github-activity-mark-read');
+  await expect(toggle).toBeChecked();
+  await expect(toggle).toBeEnabled();
+  await expect(markRead).not.toBeChecked();
+  await expect(markRead).toBeEnabled();
+  await expect(page.getByTestId('github-activity')).toContainText('只提醒数据来源里的条目');
+  await expect(page.getByTestId('github-activity-app-only')).toHaveCount(0);
+  await page.getByTestId('github-activity').scrollIntoViewIfNeeded();
+  await shot(page, '22b-github-activity');
+  // the reminder switched off: "mark read" under it greys out; on again, it is usable
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(markRead).toBeDisabled();
+  const switchedOn = env.fake.log.length;
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(markRead).toBeEnabled();
+  // switched on again, the next complete read is the baseline: only what comes after it notifies
+  const readsSince = () => env.fake.log.slice(switchedOn).filter((e) => e.operation === 'notifications' && e.status === 200).length;
+  await expect.poll(async () => (app.desktop.push({ kind: 'tick' }), readsSince()), { timeout: 15_000 }).toBeGreaterThan(0);
+  const [n] = openUnlabelled();
+  const url = `${env.fake.api}/repos/GigleAI/cavil-loop/issues/${n}`;
+  const at = new Date(Date.now() + 2000).toISOString();
+  env.fake.state.inbox.comments.set('/repos/GigleAI/cavil-loop/issues/comments/9001', { id: 9001, user: { login: 'someone-else' }, created_at: at, body: `@${env.fake.state.viewer} 请看一下`, html_url: null });
+  env.fake.state.inbox.threads.push({ id: '9001', unread: true, reason: 'mention', updated_at: at, subject: { title: 'x', url, latest_comment_url: `${env.fake.api}/repos/GigleAI/cavil-loop/issues/comments/9001`, type: 'Issue' }, repository: { full_name: 'GigleAI/cavil-loop' } });
+  const notes = () => app.desktop.records.filter((a) => a.op === 'notify' && a.alert.kind === 'item').map((a) => (a.alert as { title: string }).title);
+  await expect.poll(async () => (app.desktop.push({ kind: 'tick' }), notes()), { timeout: 15_000 }).toEqual([`someone-else 在 GigleAI/cavil-loop#${n} 里 @了我`]);
+  // "mark read" off (the default): nothing was written to GitHub
+  expect(env.fake.log.filter((e) => e.operation === 'markThreadRead')).toEqual([]);
+  await app.close();
+
+  // signed in through a GitHub App: GitHub does not let that sign-in read notifications
+  env.fake.state.inbox.threads = [];
+  ({ app, page } = await launch(env));
+  await expect(page.getByTestId('board')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('open-settings').click();
+  await unfoldSettings(page);
+  await page.getByTestId('logout').click();
+  await expect(page.getByTestId('login')).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId('app-kind-github-app').click();
+  await expect(page.getByTestId('app-kind-github-app')).toBeChecked();
+  await page.getByTestId('client-id').fill(env.fake.state.appClientId);
+  await page.getByTestId('save-client-id').click();
+  await page.getByTestId('start-login').click();
+  await expect(page.getByTestId('user-code')).toBeVisible();
+  env.fake.resolveGrant('approved');
+  // signed in again from Settings: the window comes back to Settings, signed in
+  await expect(page.getByTestId('logout')).toBeVisible({ timeout: 15_000 });
+  const before = env.fake.log.length;
+  await expect(page.getByTestId('github-activity-app-only')).toContainText('GitHub 不让这种登录读通知');
+  await expect(page.getByTestId('github-activity-toggle')).toBeDisabled();
+  await expect(page.getByTestId('github-activity-toggle')).not.toBeChecked();
+  await expect(page.getByTestId('github-activity-mark-read')).toBeDisabled();
+  await page.getByTestId('github-activity').scrollIntoViewIfNeeded();
+  await shot(page, '22c-github-activity-app');
+  // "did happen": rounds ran under this sign-in, and none of them asked for the inbox
+  app.desktop.push({ kind: 'tick' });
+  await expect.poll(() => env.fake.log.slice(before).filter((e) => e.path.startsWith('/api/repos/')).length, { timeout: 15_000 }).toBeGreaterThan(0);
+  expect(env.fake.log.slice(before).filter((e) => e.operation === 'notifications')).toEqual([]);
   await app.close();
 });
 

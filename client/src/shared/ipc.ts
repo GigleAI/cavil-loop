@@ -217,6 +217,9 @@ export interface CavilApi {
   setClearAllOnActivate(on: boolean): Promise<void>;
   /** which pending items remind: every one, or only the signed-in account's (GitHub#373) */
   setNotifyScope(scope: NotifyScope): Promise<void>;
+  /** GitHub#713 */
+  setGithubActivity(on: boolean): Promise<void>;
+  setGithubActivityMarkRead(on: boolean): Promise<void>;
   /** GitHub#471: the interface language ('auto' = follow the system); takes effect at once */
   setUiLanguage(setting: LangSetting): Promise<void>;
   /** GitHub#516: light / dark ('system' = follow the system); takes effect at once */

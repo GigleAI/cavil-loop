@@ -196,6 +196,14 @@ export interface FakeState {
   /** GitHub#401: X-OAuth-Scopes sent with every API answer; null = not sent (a GitHub App's token) */
   oauthScopes: string | null;
   /**
+   * GitHub#713: the account's notification inbox, as GitHub keeps it — threads in GitHub's own shape
+   * (`id`, `unread`, `reason`, `updated_at`, `subject`, `repository`), newest first when listed; the
+   * comments their `latest_comment_url` points at (key: the API path, e.g.
+   * `/repos/o/r/issues/comments/7`); `refuse` = every inbox read and mark-read answers this status
+   * (a GitHub App's token gets 403), `refuseMark` = only mark-read does; `pollSecs` = X-Poll-Interval.
+   */
+  inbox: { threads: any[]; comments: Map<string, any>; refuse: number | null; refuseMark: number | null; pollSecs: number };
+  /**
    * GitHub#545: the account's two hourly quotas, as GitHub keeps them. Every API answer carries the
    * x-ratelimit-* headers of the quota it drew on (a 304 too); a REST answer other than a 304 costs 1,
    * a GraphQL answer `graphqlCost(entry)` points. `resetAt` in epoch s. (GitHub#558: the client no longer
@@ -371,6 +379,7 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
     serverNow: () => Date.now(),
     noDate: null,
     itemTimes: false,
+    inbox: { threads: [], comments: new Map(), refuse: null, refuseMark: null, pollSecs: 60 },
     ...init,
   };
   const store: Store = { projects: state.projects, repos: state.repos, w: state.w };
@@ -720,6 +729,50 @@ export async function startFakeGitHub(init: Partial<FakeState> = {}): Promise<Fa
       const body = { login: login() };
       await held();
       return conditional(req, res, entry, body);
+    }
+
+    // ---- GitHub#713: the notification inbox, one thread marked read, one comment ----
+    if (req.method === 'GET' && url.pathname === '/api/notifications') {
+      entry.operation = 'notifications';
+      if (!authed()) return;
+      if (state.inbox.refuse) return send(state.inbox.refuse, { message: 'Resource not accessible by integration' });
+      // default: unread only (all=true lists read ones too); `participating` is GitHub's own filter, the fixture holds only such threads
+      const all = url.searchParams.get('all') === 'true';
+      const list = state.inbox.threads.filter((th) => all || th.unread).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+      const per = Math.min(Number(url.searchParams.get('per_page') ?? 50), state.restPageSize);
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const headers: Record<string, string> = { 'X-Poll-Interval': String(state.inbox.pollSecs) };
+      if (page * per < list.length) {
+        const next = new URL(`${fake.api}${url.pathname.replace(/^\/api/, '')}`);
+        url.searchParams.forEach((val, k) => next.searchParams.set(k, val));
+        next.searchParams.set('page', String(page + 1));
+        headers.Link = `<${next.toString()}>; rel="next"`;
+      }
+      const frozen = JSON.parse(JSON.stringify(list.slice((page - 1) * per, page * per)));
+      await held();
+      return conditional(req, res, entry, frozen, headers);
+    }
+    const markThread = req.method === 'PATCH' ? url.pathname.match(/^\/api\/notifications\/threads\/([^/]+)$/) : null;
+    if (markThread) {
+      entry.operation = 'markThreadRead';
+      if (!authed()) return;
+      const refuse = state.inbox.refuseMark ?? state.inbox.refuse;
+      if (refuse) return send(refuse, { message: 'Resource not accessible by integration' });
+      const th = state.inbox.threads.find((x) => String(x.id) === decodeURIComponent(markThread[1]));
+      if (!th) return send(404, { message: 'Not Found' });
+      th.unread = false;
+      await held();
+      entry.status = 205;
+      res.writeHead(205);
+      return res.end();
+    }
+    if (req.method === 'GET' && /^\/api\/repos\/[^/]+\/[^/]+\/(issues|pulls)\/comments\/\d+$/.test(url.pathname)) {
+      entry.operation = 'comment';
+      if (!authed()) return;
+      const c = state.inbox.comments.get(url.pathname.replace(/^\/api/, ''));
+      if (!c) return send(404, { message: 'Not Found' });
+      await held();
+      return send(200, c);
     }
 
     // ---- GitHub#395: releases, their attachments, and the files themselves ----

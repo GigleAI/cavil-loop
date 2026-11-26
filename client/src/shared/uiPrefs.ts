@@ -79,6 +79,22 @@ export function normalizeClearAllOnActivate(raw: unknown): boolean {
 }
 
 /**
+ * GitHub#713: also remind of GitHub's own activity concerning the account. Anything but an explicit
+ * `false` is on — a value this build cannot read must never make reminders fewer.
+ */
+export function normalizeGithubActivity(raw: unknown): boolean {
+  return raw !== false;
+}
+
+/**
+ * GitHub#713: opening an item marks its GitHub notification read. Anything but an explicit `true` is
+ * off — the app writes to GitHub only when the user asked for it (the maintainer's choice on GitHub#713).
+ */
+export function normalizeGithubActivityMarkRead(raw: unknown): boolean {
+  return raw === true;
+}
+
+/**
  * GitHub#373: which pending items remind. Anything but an explicit 'mine' is 'all' — a value this
  * build cannot read must never make reminders fewer.
  */

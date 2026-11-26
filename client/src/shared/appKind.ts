@@ -76,6 +76,12 @@ export const appKindFacts = (): { topic: string; oauth: string; app: string }[] 
     app: t('GitHub 网页 → 头像 → Settings → Applications → Authorized GitHub Apps；组织管理员也可以直接卸载这个 App。'),
   },
   {
+    // GitHub#713: GitHub does not let a GitHub App's user token read the notification inbox
+    topic: t('能不能读 GitHub 通知'),
+    oauth: t('能：设置 →「提醒」里的「也提醒 GitHub 上和我有关的新动态」可以用。'),
+    app: t('不能：GitHub 不让 GitHub App 的登录读通知收件箱，设置里这一项会变灰。'),
+  },
+  {
     topic: t('这一版的支持'),
     oauth: t('已内置，直接点「用 GitHub 登录」。'),
     app: t('预览：还没有内置的 GitHub App，要填你自己（或组织）建的 GitHub App 的 Client ID（以 Iv 开头），那个 App 要勾上「Enable Device Flow」。填的 ID 和所选方式对不上时不让登录。'),
