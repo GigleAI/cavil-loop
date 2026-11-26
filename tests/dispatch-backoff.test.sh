@@ -63,7 +63,7 @@ echo "gh $*" >> "$GH_CALLS"
 if [ $# = 2 ] && [ "$1" = api ]; then
     case "$2" in
         repos/example/none/issues/[0-9]*) printf '{"state":"open","pull_request":{},"labels":[{"name":"pending/agent"}]}' ;;
-        repos/example/none/pulls/[0-9]*) printf '{"merged":false,"base":{"ref":"main"},"head":{"sha":"abc","repo":{"full_name":"example/none"}}}' ;;
+        repos/example/none/pulls/[0-9]*) printf '{"state":"open","merged":false,"base":{"ref":"main"},"head":{"sha":"abc","repo":{"full_name":"example/none"}}}' ;;
     esac
 fi
 exit 0

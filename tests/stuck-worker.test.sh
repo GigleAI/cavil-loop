@@ -1003,14 +1003,15 @@ tick 5
 chk "13c① 重新授权 · 人再打一次：派工一次，换成 doing/agent，停住记录清掉，失败计数清零" \
     "$(( $(disp "$P") - d0 ))/$(labels_of "$P")/$(entry "$N")/$([ -e "$W/state/dispatch-fail/pr-$P" ] && echo kept || echo reset)" "1/doing/agent/{}/reset"
 
-# 13c② 新建路径：认领时加 doing/agent 失败（GitHub#700 起认领在起会话之前）→ 不起会话、不复原，交给统一收尾
+# 13c② 新建路径：认领时加 doing/agent 失败（GitHub#700 起认领在起会话之前）→ 不起会话，交给统一收尾
 frozen_is use2; human_resume "$N" pending/agent doing/agent pending/agent
 T kill-session -t "=$(sess_of "$N")"; gq -C "$W/project" worktree remove --force "$W/wt/issue-$N"
 tok=$(ff "$N" token); touch "$GD/F_post_labels"
 tick 5
 rm -f "$GD/F_post_labels"
 chk "13c② 夹具：没起会话，派工标签还在、没有 doing/agent" "$(alive "$N")/$(labels_of "$N")" "no/pending/agent"
-after_refreeze "13c②" "$N" "退出码 77" "$tok"
+# 加标签没生效、读回仍是派工前的样子 → 确定失败（退出码 1）；恢复派工不复原，照样由统一收尾重新停住
+after_refreeze "13c②" "$N" "退出码 1" "$tok"
 
 # 13c③ issue 评论路径：认领时摘派工标签失败（结果：两个标签都在）→ 不送任务、不复原，交给统一收尾
 frozen_is use3; human_resume "$N" pending/agent doing/agent pending/agent
@@ -1027,8 +1028,8 @@ tok=$(ff "$N" token)
 hook_after_add "$N" touch "$GD/F_issues_$N"
 tick 5
 rm -f "$GD/F_issues_$N"
-chk "13c④ 到达性：翻标签之后才读不到" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent"
-# 认领后的读回就读不到了：派工脚本以结果不明（77）退出，任务没送出
+chk "13c④ 到达性：加上 doing/agent 之后才读不到" "$(hook_ran)/$(labels_of "$N")" "yes/doing/agent,pending/agent"
+# 加完第一个标签的读回就读不到了：之后一个都不再写（派工标签不摘），派工脚本以结果不明（77）退出，任务没送出
 after_refreeze "13c④" "$N" "退出码 77" "$tok"
 
 # 13c⑤ 「指令已用掉」写不进本地 → 不派工，什么都没送出，指令没用掉；写得进之后正常派工

@@ -503,15 +503,16 @@ dispatch_failed() {
         return 0
     fi
     log "⚠️ ${kind} #${num} 连续 $tries 次派工失败 → 摘掉触发 label 转人工 ${LABEL_PENDING_HUMAN}（停止重试）：$reason"
-    notify_bounced_to_human "$num" \
+    # 留言、再核对、再一步一步翻标签（每一步写完读回，人在中间改了就停）
+    rc=0
+    dispatch_human_steps "$num" "$DISPATCH_PRE_DOC" \
         "daemon 连续 $tries 次没能把这条活派出去，为防止空转已停止重试。最后一次的错误：\`$(printf '%s' "$reason" | tr '`' "'")\`" \
-        "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。"
-    run_gh "label 翻转 (${kind} #${num} 连续派工失败 → $LABEL_PENDING_HUMAN)" \
-        gh_label_flip "$num" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
-    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。
-    dispatch_fail_reset "$key"
+        "按上面的错误排除问题（完整上下文在 daemon 机器的 poll.log），然后把标签改回 \`$LABEL_PENDING_AGENT\`，重试次数会重新计。" || rc=$?
+    # 清零：人工重标 pending/agent 后重新计数，而不是第一次失败就立刻又升级。读不到 / 没写全时计数留着，下轮再判
+    case "$rc" in
+        0|"$DISPATCH_RC_WITHDRAWN") dispatch_fail_reset "$key" ;;
+        *) log "${kind} #${num} 转人工没写全（停在某一步），计数留着，下轮再判" ;;
+    esac
 }
 
 # 派工脚本的结果（GitHub#700，表在 _lib.sh 的 dispatch_claim 上方）。三条派工路径共用这一个。

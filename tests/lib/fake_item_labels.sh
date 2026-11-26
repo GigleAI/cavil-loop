@@ -39,7 +39,7 @@ if [[ "$_fil_path" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)$ ]] && [ "$_fil_m" = GE
     exit 0
 fi
 if [[ "$_fil_path" =~ ^repos/([^/]+/[^/]+)/pulls/([0-9]+)$ ]] && [ "$_fil_m" = GET ] && [ "$#" = 2 ]; then
-    jq -cn --arg r "${BASH_REMATCH[1]}" '{merged: false, base: {ref: "main"}, head: {sha: "0000000000000000000000000000000000000001", repo: {full_name: $r}}}'
+    jq -cn --arg r "${BASH_REMATCH[1]}" '{state: "open", merged: false, base: {ref: "main"}, head: {sha: "0000000000000000000000000000000000000001", repo: {full_name: $r}}}'
     exit 0
 fi
 if [[ "$_fil_path" =~ ^repos/[^/]+/[^/]+/issues/([0-9]+)/labels$ ]] && [ "$_fil_m" = POST ]; then

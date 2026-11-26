@@ -238,6 +238,34 @@ DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label DISPATCH_
 fresh; mkpr 43 "pending/agent"; live 43
 DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label DISPATCH_PR_BASE=release DISPATCH_PR_HEAD="$HEAD_SHA" \
     pre_case "PR 换了目标分支" 78 dispatch-pr-comment 43 feature/issue-43 0
+PRX=(DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label DISPATCH_PR_BASE=main DISPATCH_PR_HEAD="$HEAD_SHA" DISPATCH_PR_SOURCE=example/dc)
+# PR 详情读到的样子不对：轮询主程序派工时的完整参数，只改 PR 详情（条目接口照常说开着）
+pr_case() {   # <说明> <期望退出码> <PR 编号> <PR 详情上套的 jq>
+    fresh; mkpr "$3" "pending/agent"; live "$3"
+    echo "$4" > "$GD/jq_pulls_$3"
+    RC=0
+    (cd "$W/project" && env "${PRX[@]}" CODING_AGENT_CONFIG="$CONF" timeout 120 \
+        bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" "$3" "feature/issue-$3" 0 >/dev/null 2>&1) || RC=$?
+    chk "$1：退出 $2，没有标签写入、没有送任务" "$RC/$(label_writes)/$(delivered)" "$2/0/0"
+}
+fresh; mkpr 44 "pending/agent"; live 44
+RC=0; (cd "$W/project" && env "${PRX[@]}" CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" 44 feature/issue-44 0 >/dev/null 2>&1) || RC=$?
+chk "PR 正例对照：退出 0、认领并送出任务" "$RC/$(labels_of 44)/$(delivered)" "0/doing/agent/1"
+pr_case "条目接口说开着、PR 详情说已关闭" 78 45 '.state = "closed"'
+pr_case "PR 详情的状态是不认识的值" 77 46 '.state = "unexpected"'
+pr_case "PR 详情缺状态字段" 77 47 'del(.state)'
+pr_case "PR 详情缺来源仓库字段" 77 48 'del(.head.repo)'
+pr_case "PR 详情缺目标分支" 77 49 'del(.base.ref)'
+fresh; mkpr 50 "pending/agent"; live 50
+RC=0; (cd "$W/project" && env DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label DISPATCH_PR_BASE=main DISPATCH_PR_SOURCE=example/dc \
+    CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" 50 feature/issue-50 0 >/dev/null 2>&1) || RC=$?
+chk "轮询主程序派工却没传 PR 最新提交（依据不全）：退出 77，不写、不送" "$RC/$(label_writes)/$(delivered)" "77/0/0"
+fresh; mkpr 51 "pending/agent"; live 51
+# 来源仓库被删（GitHub 给 head.repo = null）是已知状态：派工时快照里也是空，照常派
+echo '.head.repo = null' > "$GD/jq_pulls_51"
+RC=0; (cd "$W/project" && env DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label DISPATCH_PR_BASE=main DISPATCH_PR_HEAD="$HEAD_SHA" DISPATCH_PR_SOURCE= \
+    CODING_AGENT_CONFIG="$CONF" timeout 120 bash "$REPO_DIR/scripts/dispatch-pr-comment.sh" 51 feature/issue-51 0 >/dev/null 2>&1) || RC=$?
+chk "来源仓库已删（详情里是 null、派工依据也是空）：照常认领送出" "$RC/$(labels_of 51)/$(delivered)" "0/doing/agent/1"
 fresh; mkissue 24 "pending/agent"; live 24; touch "$GD/F_issues_24"
 DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label pre_case "认领前读不到条目" 77 dispatch-issue-comment 24 0
 fresh; mkissue 25 "pending/agent"; live 25; echo 'del(.labels)' > "$GD/jq_issues_25"
@@ -277,14 +305,34 @@ chk "不复原：doing/agent 没被 daemon 摘掉" "$(grep -cE "^gh api -X DELET
 chk "不复原：没往回加派工标签" "$(grep -cE "^gh api -X POST $R/issues/33/labels" "$CALLS")" 1
 
 fresh; mkissue 34 "pending/agent"; live 34
-# 认领期间人关了条目
+# 加上 doing/agent 之后、摘派工标签之前，人关了条目：之后一个写请求都不发
 printf 'jq ".[\\"34\\"].state = \\"closed\\"" "%s/items.json" > "%s/i.tmp" && mv "%s/i.tmp" "%s/items.json"\n' "$GD" "$GD" "$GD" "$GD" \
-    > "$GD/hook_DELETE_issues_34_labels_1"
+    > "$GD/hook_after_POST_issues_34_labels_1"
 DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label run_dispatch dispatch-issue-comment 34 0
-chk "认领期间人关了条目：退出 78" "$RC" 78
-chk "认领期间人关了条目：没有送任务" "$(delivered)" 0
-chk "认领期间人关了条目：读回之后没再写标签" "$(label_writes)" 2
+chk "加上 doing/agent 后人关了条目：退出 78" "$RC" 78
+chk "加上 doing/agent 后人关了条目：没有送任务" "$(delivered)" 0
+chk "加上 doing/agent 后人关了条目：只发过加 doing/agent 那一次写，没再摘派工标签" \
+    "$(label_writes)/$(grep -cE "^gh api -X DELETE $R/issues/34/labels" "$CALLS")" "1/0"
+fresh; mkissue 36 "pending/agent"; live 36
+# 同样的位置，人改的是标签（打上 pending/human）
+printf 'jq ".[\\"36\\"] += [\\"pending/human\\"]" "%s/labels.json" > "%s/l.tmp" && mv "%s/l.tmp" "%s/labels.json"\n' "$GD" "$GD" "$GD" "$GD" \
+    > "$GD/hook_after_POST_issues_36_labels_1"
+DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label run_dispatch dispatch-issue-comment 36 0
+chk "加上 doing/agent 后人打了 pending/human：退出 78、之后没再写" "$RC/$(label_writes)/$(delivered)" "78/1/0"
+fresh; mkissue 37 "pending/agent,pending/blocked"; live 37
+# 正例：要摘两个标签时，两次摘之间读回都对得上，照常做完
+DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label run_dispatch dispatch-issue-comment 37 0
+chk "连续三次写（加一个、摘两个）都照常做完" "$RC/$(label_writes)/$(labels_of 37)/$(delivered)" "0/3/doing/agent/1"
 
+fresh; mkissue 38 "pending/agent,pending/blocked"; live 38
+# 摘第二个标签失败 → 复原：加回 pending/agent 之后人关了条目 → 复原停下，doing/agent 不再摘
+printf ': > "%s/F_delete_labels"\n' "$GD" > "$GD/hook_DELETE_issues_38_labels_2"
+printf 'rm -f "%s/F_delete_labels"; jq ".[\\"38\\"].state = \\"closed\\"" "%s/items.json" > "%s/i.tmp" && mv "%s/i.tmp" "%s/items.json"\n' "$GD" "$GD" "$GD" "$GD" "$GD" \
+    > "$GD/hook_after_POST_issues_38_labels_2"
+DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label run_dispatch dispatch-issue-comment 38 0
+chk "复原途中人关了条目：退出 78" "$RC" 78
+chk "到达性 · 复原确实开始了（加回过 pending/agent）" "$(grep -cE "^gh api -X POST $R/issues/38/labels -f labels\[\]=pending/agent" "$CALLS")" 1
+chk "复原途中人关了条目：之后没再摘 doing/agent、没送任务" "$(grep -cE "^gh api -X DELETE $R/issues/38/labels/doing%2Fagent" "$CALLS")/$(delivered)" "0/0"
 fresh; mkissue 35 "pending/agent"; live 35
 printf "echo 'del(.labels)' > '%s/jq_issues_35'\n" "$GD" > "$GD/hook_DELETE_issues_35_labels_1"
 DISPATCH_PENDING_AGENT_LABEL=pending/agent DISPATCH_CLAIM_SOURCE=label run_dispatch dispatch-issue-comment 35 0
@@ -320,6 +368,14 @@ chk "确定失败（新 issue 入口）：照旧转人工" "$(labels_of 61)" "pe
 chk "确定失败：留了转人工说明" "$(comments_on 61)" 1
 chk "到达性 · 这一轮确实派了它" "$(grep -c "^gh api -X POST $R/issues/61/labels -f labels\[\]=doing/agent" "$CALLS")" 1
 
+fresh; mkissue 67 "pending/agent"; preset_fail issue-67
+mkdir -p "$GD/F_post_label_doing"; touch "$GD/F_post_label_doing/agent"
+# 确定失败满次转人工：留言之后、翻标签之前，人摘掉了派工标签 → 不再翻标签
+printf 'jq ".[\\"67\\"] -= [\\"pending/agent\\"]" "%s/labels.json" > "%s/l.tmp" && mv "%s/l.tmp" "%s/labels.json"\n' "$GD" "$GD" "$GD" "$GD" \
+    > "$GD/hook_after_POST_issues_67_comments_1"
+poll
+chk "满次转人工 · 留言后人摘了派工标签：留言发了，但一个标签都没再写" \
+    "$(comments_on 67)/$(grep -cE "^gh api -X (POST|DELETE) $R/issues/67/labels.*(pending/human|pending%2Fagent)" "$CALLS")/$(labels_of 67)" "1/0/"
 fresh; mkissue 62 "pending/agent"; preset_fail issue-62; touch "$TD/fail_new"
 poll_case "新 issue 入口 · 结果不明（起程序报错）" issue-62 62 "doing/agent"
 chk "到达性 · 确实试过起程序" "$(grep -c '^tmux new-session' "$CALLS")" 1
@@ -327,8 +383,8 @@ chk "到达性 · 确实试过起程序" "$(grep -c '^tmux new-session' "$CALLS"
 fresh; mkissue 63 "pending/agent"; preset_fail issue-63
 printf 'jq ".[\\"63\\"] += [\\"pending/human\\"]" "%s/labels.json" > "%s/l.tmp" && mv "%s/l.tmp" "%s/labels.json"\n' "$GD" "$GD" "$GD" "$GD" \
     > "$GD/hook_POST_issues_63_labels_1"
-# daemon 自己摘掉 pending/agent 之后才读回发现：人加的标签和 doing/agent 都留着，daemon 不再替人改
-poll_case "新 issue 入口 · 认领期间人改了标签（78）" issue-63 63 "doing/agent,pending/human"
+# 加完 doing/agent 读回就发现了：派工标签没再摘，人加的标签和 doing/agent 都留着，daemon 不再替人改
+poll_case "新 issue 入口 · 认领期间人改了标签（78）" issue-63 63 "doing/agent,pending/agent,pending/human"
 
 fresh; mkissue 64 "pending/agent"; preset_fail issue-64; live 64; touch "$GD/F_issues_64"
 poll_case "issue 新评论入口 · 认领前读不到（77）" issue-64 64 "pending/agent"
@@ -337,7 +393,7 @@ chk "到达性 · 这一轮确实把它派给了评论派工" "$(grep -c "issues
 fresh; mkissue 65 "pending/agent"; preset_fail issue-65; live 65
 printf 'jq ".[\\"65\\"].state = \\"closed\\"" "%s/items.json" > "%s/i.tmp" && mv "%s/i.tmp" "%s/items.json"\n' "$GD" "$GD" "$GD" "$GD" \
     > "$GD/hook_POST_issues_65_labels_1"
-poll_case "issue 新评论入口 · 认领期间人关了条目（78）" issue-65 65 "doing/agent"
+poll_case "issue 新评论入口 · 认领期间人关了条目（78）" issue-65 65 "doing/agent,pending/agent"
 
 fresh; mkpr 44 "pending/agent"; preset_fail pr-44; live 44
 echo '.head.sha = "3333333333333333333333333333333333333333"' > "$GD/jq_pulls_44"

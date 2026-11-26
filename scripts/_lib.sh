@@ -443,7 +443,9 @@ dispatch_clear_labels() {
 }
 
 # 读一次条目，stdout 一行紧凑 JSON：{state, pr, merged, base, head, src, labels（排序去重）}。
-# 原始字段先验形状再取：缺 labels / 不认识的状态值 / PR 缺分支或提交 = 读不到（返回 1），绝不当成「没有」。
+# 原始字段先验形状再取，只认已知的状态词：缺 labels、不认识的状态值、PR 详情缺状态 / 分支 / 提交 /
+# 来源仓库字段 = 读不到（返回 1），绝不当成「没有」。PR 的状态取两处读到的：任一处是 closed 就是 closed。
+# 来源仓库被删（GitHub 给 head.repo = null）是已知状态，记成空串；整个字段缺失才算读不到。
 # 正文没有上限，走管道不走参数（AGENTS.md）。
 dispatch_item_doc() {   # <编号>
     local num="$1" ij pj="null"
@@ -453,12 +455,15 @@ dispatch_item_doc() {   # <编号>
         and all(.labels[]; type == "object" and (.name | type) == "string" and (.name | length) > 0)' >/dev/null 2>&1 || return 1
     if printf '%s' "$ij" | jq -e '.pull_request != null' >/dev/null 2>&1; then
         pj=$(gh api "repos/$REPO/pulls/$num" 2>/dev/null) || return 1
-        printf '%s' "$pj" | jq -e 'type == "object" and (.merged | type) == "boolean"
+        printf '%s' "$pj" | jq -e 'type == "object" and (.state == "open" or .state == "closed")
+            and (.merged | type) == "boolean"
             and (.base.ref | type) == "string" and (.base.ref | length) > 0
-            and (.head.sha | type) == "string" and (.head.sha | length) > 0' >/dev/null 2>&1 || return 1
+            and (.head.sha | type) == "string" and (.head.sha | length) > 0
+            and (.head | has("repo")) and (.head.repo == null or ((.head.repo.full_name | type) == "string"))' >/dev/null 2>&1 || return 1
     fi
     { printf '%s\n' "$ij"; printf '%s\n' "$pj"; } | jq -cs '.[0] as $i | .[1] as $p
-        | {state: $i.state, pr: ($p != null), merged: ($p.merged // false),
+        | {state: (if $i.state == "closed" or ($p != null and $p.state == "closed") then "closed" else "open" end),
+           pr: ($p != null), merged: ($p.merged // false),
            base: ($p.base.ref // ""), head: ($p.head.sha // ""), src: ($p.head.repo.full_name // ""),
            labels: ([$i.labels[].name] | unique)}' 2>/dev/null
 }
@@ -467,25 +472,30 @@ dispatch_item_doc() {   # <编号>
 #   来源 label    ：本次触发标签还在（collect_queue_rows 收进来的）
 #   来源 autopilot：只挂托管标签当作派工的那种——托管标签还在，而且没有挡工标签
 #   来源 free     ：greedy 兜底——没有挡工标签（greedy_skip_reason）
-# 都要：打开（PR 还要未合并）；给了 PR 的目标分支 / 最新提交 / 来源仓库的，读到的要一样。
+# 都要：打开（PR 还要未合并）。轮询主程序派工时（有来源）PR 的目标分支、最新提交、来源仓库三样都要传，
+# 读到的要逐样相同；传缺了 = 依据不全，按读不到处理。人在终端直接跑（没有来源）不比这三样。
 # 0 = 符合（DISPATCH_PRE_DOC = 这次读到的）；78 = 不符（DISPATCH_PRECHECK_WHY）；77 = 读不到。
 DISPATCH_PRE_DOC=""
 DISPATCH_PRECHECK_WHY=""
-dispatch_precheck() {   # <编号> <来源 label|autopilot|free> <触发标签> <PR 目标分支> <PR 最新提交> <PR 来源仓库>
+dispatch_precheck() {   # <编号> <来源 label|autopilot|free|""> <触发标签> <PR 目标分支> <PR 最新提交> <PR 来源仓库>
     local num="$1" src="$2" trig="$3" base="$4" head="$5" from="$6" doc csv why=""
     DISPATCH_PRE_DOC=""; DISPATCH_PRECHECK_WHY=""
     if ! doc=$(dispatch_item_doc "$num") || [ -z "$doc" ]; then
         DISPATCH_PRECHECK_WHY="读不到条目"
         return "$DISPATCH_RC_UNKNOWN"
     fi
+    if [ -n "$src" ] && printf '%s' "$doc" | jq -e '.pr' >/dev/null && { [ -z "$base" ] || [ -z "$head" ]; }; then
+        DISPATCH_PRECHECK_WHY="派工依据不全（没拿到 PR 的目标分支 / 最新提交）"
+        return "$DISPATCH_RC_UNKNOWN"
+    fi
     csv=$(printf '%s' "$doc" | jq -r '.labels | join(",")')
     if ! printf '%s' "$doc" | jq -e '.state == "open" and (.merged | not)' >/dev/null; then
         why="条目已关闭或已合并"
-    elif [ -n "$base$head$from" ] && ! printf '%s' "$doc" | jq -e --arg b "$base" --arg h "$head" --arg s "$from" \
-            '($b == "" or .base == $b) and ($h == "" or .head == $h) and ($s == "" or .src == $s)' >/dev/null; then
+    elif [ -n "$src" ] && printf '%s' "$doc" | jq -e '.pr' >/dev/null \
+         && ! printf '%s' "$doc" | jq -e --arg b "$base" --arg h "$head" --arg s "$from" '.base == $b and .head == $h and .src == $s' >/dev/null; then
         why="PR 的目标分支 / 最新提交 / 来源和派工时不一样了"
     else
-        case "$src" in
+        case "${src:-label}" in
             label)
                 case ",$csv," in *",$trig,"*) ;; *) why="触发标签 $trig 已不在" ;; esac ;;
             autopilot|free)
@@ -518,36 +528,51 @@ dispatch_claim_reexport() {
     [ -n "$DISPATCH_PHASE" ] || return 0
     export DISPATCH_CLAIM_PHASE="$DISPATCH_PHASE" DISPATCH_CLAIM_PRE="$DISPATCH_PRE_DOC" DISPATCH_CLAIM_POST="$DISPATCH_CLAIM_DOC"
 }
-# 派工脚本收到的期望（轮询主程序传入；人在终端直接跑时没有来源：按「本次触发标签还在」核对，
+# 派工脚本收到的期望（轮询主程序传入来源和 PR 依据；人在终端直接跑时没有来源：按「本次触发标签还在」核对，
 # 触发标签没传就是配置的默认派工标签——和派工脚本自己用的 LABEL_PENDING_AGENT 同一个值）
 dispatch_env_precheck() {   # <编号>
-    dispatch_precheck "$1" "${DISPATCH_CLAIM_SOURCE:-label}" "${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT}" \
+    dispatch_precheck "$1" "${DISPATCH_CLAIM_SOURCE:-}" "${DISPATCH_PENDING_AGENT_LABEL:-$LABEL_PENDING_AGENT}" \
         "${DISPATCH_PR_BASE:-}" "${DISPATCH_PR_HEAD:-}" "${DISPATCH_PR_SOURCE:-}"
 }
 
-# 标签和期望的比较：same = 打开状态、PR 身份、标签全一样；partial = 身份一样、标签只差在 daemon
-# 这次自己的某几次写入没生效（pre 去掉要摘的、加上 doing/agent 之间的某个状态）；changed = 其余。
-dispatch_doc_cmp() {   # <读到的> <期望的> <认领前的>（第三个只用于判 partial）
-    { printf '%s\n' "$1"; printf '%s\n' "$2"; printf '%s\n' "${3:-null}"; } | jq -rs --arg d "$LABEL_AGENT_DOING" '
-        .[0] as $now | .[1] as $want | .[2] as $pre
-        | ($now | del(.labels)) as $ni | ($want | del(.labels)) as $wi
-        | if $ni != $wi then "changed"
-          elif $now.labels == $want.labels then "same"
-          elif $pre == null then "changed"
-          else
-            # 认领的写入 = 加 doing/agent + 摘 ($pre − $want)；读到的应是 ($pre ∩ $want) 加上这些写入各自生效或没生效
-            (($pre.labels - $want.labels)) as $rm
-            | ([$pre.labels[] | select(. as $l | $want.labels | index($l))]) as $keep
-            | (($now.labels - $keep) - $rm - [$d]) as $extra
-            | (($keep - $now.labels)) as $lost
-            | if ($extra | length) == 0 and ($lost | length) == 0 then "partial" else "changed" end
-          end'
+# 两份读到的条目是否完全一样（状态、PR 身份、标签）
+dispatch_doc_eq() { [ "$(printf '%s\n%s\n' "$1" "$2" | jq -cs '.[0] == .[1]' 2>/dev/null)" = true ]; }
+
+# 一次只写一个标签，写完立刻读回：读到的必须恰好是「写之前读到的 + 这一次写入」。这一次读回就是下一次
+# 写之前的核对——两次写之间没有任何没核对过的空档；人在两次写之间改了任何东西，下一次就不写。
+# 先加（$add 里的，逐个），再摘（$rm 里的，逐个）。DISPATCH_NOW_DOC = 最后一次读回的条目。
+#   0 = 全部生效；1 = 某一次写没生效（读回和写之前一样，后面的不再写）；77 = 读不回；78 = 读回有别的变化
+DISPATCH_NOW_DOC=""
+dispatch_label_steps() {   # <编号> <起点条目> <要加的标签 JSON 数组> <要摘的标签 JSON 数组> <日志前缀>
+    local num="$1" add="$3" rm="$4" what="$5" l want now op
+    DISPATCH_NOW_DOC="$2"
+    while IFS=$'\t' read -r op l; do
+        [ -n "$l" ] || continue
+        if [ "$op" = add ]; then
+            want=$(printf '%s' "$DISPATCH_NOW_DOC" | jq -c --arg l "$l" '.labels = (.labels + [$l] | unique)')
+            run_gh "$what #${num}：加 $l" gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$l" >/dev/null || true
+        else
+            want=$(printf '%s' "$DISPATCH_NOW_DOC" | jq -c --arg l "$l" '.labels -= [$l]')
+            run_gh "$what #${num}：摘 $l" \
+                gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$l" | jq -sRr @uri)" >/dev/null || true
+        fi
+        if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
+            log "$what #${num}：写完读不回条目，之后不再写"; return "$DISPATCH_RC_UNKNOWN"
+        fi
+        if dispatch_doc_eq "$now" "$want"; then DISPATCH_NOW_DOC="$now"; continue; fi
+        if dispatch_doc_eq "$now" "$DISPATCH_NOW_DOC"; then
+            log "$what #${num}：这一次写入没生效（${op} ${l}），之后不再写"; return 1
+        fi
+        log "$what #${num}：读回发现条目被别人改过（状态 / 标签 / PR 和预期不符），之后不再写"
+        DISPATCH_NOW_DOC="$now"; return "$DISPATCH_RC_WITHDRAWN"
+    done < <({ printf '%s' "$add" | jq -r '.[] | "add\t" + .'; printf '%s' "$rm" | jq -r '.[] | "rm\t" + .'; })
+    return 0
 }
 
 # 交任务之前认领。成功 return 0（DISPATCH_PHASE=claimed）；否则按上表以 1 / 77 / 78 退出（失败
 # 之前已把条目原样复原并读回确认）。已认领过（含从上一个派工脚本交过来的）直接 return 0。
 dispatch_claim() {   # <编号>
-    local num="$1" rc=0 pre want post v l
+    local num="$1" rc=0 pre add rm
     [ -z "$DISPATCH_PHASE" ] || return 0
     # 恢复派工（GitHub#339）：第一次对外动作之前的最后一次核对；平时什么都不做
     stuck_release_gate
@@ -557,40 +582,26 @@ dispatch_claim() {   # <编号>
         DISPATCH_PHASE=done; exit "$rc"
     fi
     pre="$DISPATCH_PRE_DOC"
-    want=$(dispatch_clear_labels | jq -R . | jq -cs --argjson pre "$pre" --arg d "$LABEL_AGENT_DOING" \
-        '. as $rm | $pre | .labels = ((.labels - $rm) + [$d] | unique)')
+    add=$(printf '%s' "$pre" | jq -c --arg d "$LABEL_AGENT_DOING" 'if (.labels | index($d)) then [] else [$d] end')
+    rm=$(dispatch_clear_labels | jq -R . | jq -cs --argjson pre "$pre" '[.[] | select(. as $l | $pre.labels | index($l))]')
     STUCK_RELEASE_FLIP_OK=1
-    # 加 doing/agent 报错就不再摘：读回为准（报错但其实加上了的，读回会按「只做成一部分」复原）
-    v=ok
-    if ! printf '%s' "$pre" | jq -e --arg d "$LABEL_AGENT_DOING" '.labels | index($d)' >/dev/null; then
-        run_gh "认领 #${num}：加 $LABEL_AGENT_DOING" \
-            gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$LABEL_AGENT_DOING" >/dev/null || v=failed
-    fi
-    if [ "$v" = ok ]; then
-        while IFS= read -r l; do
-            [ -n "$l" ] || continue
-            run_gh "认领 #${num}：摘 $l" \
-                gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$l" | jq -sRr @uri)" >/dev/null || true
-        done < <(printf '%s' "$pre" | jq -r --argjson want "$want" '.labels - $want.labels | .[]')
-    fi
+    rc=0; dispatch_label_steps "$num" "$pre" "$add" "$rm" "认领" || rc=$?
     STUCK_RELEASE_FLIP_OK=""
-    if ! post=$(dispatch_item_doc "$num") || [ -z "$post" ]; then
-        log "派工 #${num}：认领后读不回条目 → 结果不明，不交任务、不再写"
-        DISPATCH_PHASE=done; exit "$DISPATCH_RC_UNKNOWN"
-    fi
-    v=$(dispatch_doc_cmp "$post" "$want" "$pre")
-    case "$v" in
-        same)
-            DISPATCH_CLAIM_DOC="$post"; DISPATCH_PHASE=claimed
-            log "派工 #${num}：已认领（$LABEL_AGENT_DOING 已打上、触发标签已摘，读回确认）"
+    case "$rc" in
+        0)
+            DISPATCH_CLAIM_DOC="$DISPATCH_NOW_DOC"; DISPATCH_PHASE=claimed
+            log "派工 #${num}：已认领（$LABEL_AGENT_DOING 已打上、触发标签已摘，每一步都读回确认）"
             return 0 ;;
-        partial)
+        1)
+            if dispatch_doc_eq "$DISPATCH_NOW_DOC" "$pre"; then
+                log "派工 #${num}：认领的第一步就没生效，条目原样 → 派工失败，下一轮重试"
+                DISPATCH_PHASE=done; exit 1
+            fi
             log "派工 #${num}：认领只做成一部分 → 不交任务，复原成认领前的样子"
-            DISPATCH_CLAIM_DOC="$post"
+            DISPATCH_CLAIM_DOC="$DISPATCH_NOW_DOC"
             dispatch_claim_restore "$num" ;;
         *)
-            log "派工 #${num}：认领期间条目被别人改过（标签或状态和预期不符）→ 已撤回，不交任务、不再写"
-            DISPATCH_PHASE=done; exit "$DISPATCH_RC_WITHDRAWN" ;;
+            DISPATCH_PHASE=done; exit "$rc" ;;
     esac
 }
 
@@ -599,10 +610,11 @@ flip_to_doing() {   # <编号> [日志描述，已不用]
     ( dispatch_claim "$1" )
 }
 
-# 认领做了（一部分），任务没交出：把条目复原成认领前读到的样子，读回一致才算「失败」（退出 1）。
-# 写之前先核对条目仍是上一次读到的样子（只有 daemon 自己的写入）；恢复派工里不复原（统一收尾判）。
+# 认领做了（一部分），任务没交出：把条目一步一步复原成认领前读到的样子（每一步同样先核对、写完读回），
+# 全部生效才算「失败」（退出 1）。起点是认领时最后一次读回的样子，复原前再读一次核对它没变。
+# 恢复派工里不复原（统一收尾判）。
 dispatch_claim_restore() {   # <编号>
-    local num="$1" now v l
+    local num="$1" now add rm rc=0
     DISPATCH_PHASE=done
     if [ -n "${STUCK_REL_CTX:-}" ]; then
         log "派工 #${num}：恢复派工里不复原标签，结果交给统一收尾"
@@ -611,60 +623,70 @@ dispatch_claim_restore() {   # <编号>
     if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
         log "派工 #${num}：复原前读不到条目 → 结果不明，不写"; exit "$DISPATCH_RC_UNKNOWN"
     fi
-    v=$(dispatch_doc_cmp "$now" "$DISPATCH_CLAIM_DOC")
-    if [ "$v" != same ]; then
+    if ! dispatch_doc_eq "$now" "$DISPATCH_CLAIM_DOC"; then
         log "派工 #${num}：复原前条目被别人改过 → 已撤回，不写"; exit "$DISPATCH_RC_WITHDRAWN"
     fi
-    while IFS= read -r l; do
-        [ -n "$l" ] || continue
-        run_gh "复原 #${num}：加回 $l" gh_write api -X POST "repos/$REPO/issues/$num/labels" -f "labels[]=$l" >/dev/null || true
-    done < <(printf '%s' "$DISPATCH_PRE_DOC" | jq -r --argjson now "$now" '.labels - $now.labels | .[]')
-    while IFS= read -r l; do
-        [ -n "$l" ] || continue
-        run_gh "复原 #${num}：摘 $l" \
-            gh_write api -X DELETE "repos/$REPO/issues/$num/labels/$(printf '%s' "$l" | jq -sRr @uri)" >/dev/null || true
-    done < <(printf '%s' "$now" | jq -r --argjson pre "$DISPATCH_PRE_DOC" '.labels - $pre.labels | .[]')
-    if now=$(dispatch_item_doc "$num") && [ -n "$now" ] && [ "$(dispatch_doc_cmp "$now" "$DISPATCH_PRE_DOC")" = same ]; then
-        log "派工 #${num}：已复原成认领前的样子（读回确认）→ 派工失败，下一轮重试"
+    add=$(printf '%s\n%s\n' "$DISPATCH_PRE_DOC" "$now" | jq -cs '.[0].labels - .[1].labels')
+    rm=$(printf '%s\n%s\n' "$DISPATCH_PRE_DOC" "$now" | jq -cs '.[1].labels - .[0].labels')
+    dispatch_label_steps "$num" "$now" "$add" "$rm" "复原" || rc=$?
+    if [ "$rc" = 0 ] && dispatch_doc_eq "$DISPATCH_NOW_DOC" "$DISPATCH_PRE_DOC"; then
+        log "派工 #${num}：已复原成认领前的样子（每一步读回确认）→ 派工失败，下一轮重试"
         exit 1
     fi
-    log "派工 #${num}：复原后读回和认领前不一致或读不到 → 结果不明，不再写"
+    [ "$rc" = "$DISPATCH_RC_WITHDRAWN" ] && exit "$rc"
+    log "派工 #${num}：复原没能全部生效 → 结果不明，不再写"
     exit "$DISPATCH_RC_UNKNOWN"
 }
 
 # 派工期间 daemon 自己的转人工（提示词交不出、分支被占、目录信任框、新会话秒退）写之前问这个：
-# 认领前 = 条目仍是这次该派的；认领后 = 条目仍恰好是认领后读到的样子。0 = 可以写；
-# 否则返回 77 / 78（调用方以它退出，什么都不写）。
+# 认领前 = 条目仍是这次该派的；认领后 = 条目仍恰好是认领后读到的样子。0 = 可以写（DISPATCH_NOW_DOC =
+# 这次读到的）；否则返回 77 / 78（调用方以它退出，什么都不写）。
 dispatch_write_check() {   # <编号>
     local num="$1" rc=0 now
     if [ -z "$DISPATCH_PHASE" ]; then
         dispatch_env_precheck "$num" || rc=$?
         [ "$rc" = 0 ] || log "派工 #${num}：转人工前核对没过（${DISPATCH_PRECHECK_WHY}），不写"
+        DISPATCH_NOW_DOC="$DISPATCH_PRE_DOC"
         return "$rc"
     fi
     if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
         log "派工 #${num}：转人工前读不到条目，不写"; return "$DISPATCH_RC_UNKNOWN"
     fi
-    if [ "$(dispatch_doc_cmp "$now" "$DISPATCH_CLAIM_DOC")" != same ]; then
+    if ! dispatch_doc_eq "$now" "$DISPATCH_CLAIM_DOC"; then
         log "派工 #${num}：转人工前条目被别人改过，不写"; return "$DISPATCH_RC_WITHDRAWN"
     fi
+    DISPATCH_NOW_DOC="$now"
     return 0
 }
 
-# 派工脚本里 daemon 自己转人工：先过 dispatch_write_check；过了才留言 + 翻 pending/human。
-# 返回 0 = 已转（调用方照原来的退出码退出）；否则返回 77 / 78，什么都没写。
+# 已核对过的条目转人工：留言，再读一次核对没变，然后一步一步加 pending/human、摘触发标签和 doing/agent
+# （每一步都写完读回）。轮询主程序的「失败满次转人工」也用它。0 = 已转；1 / 77 / 78 = 停在某一步，之后没再写。
+dispatch_human_steps() {   # <编号> <核对过的条目> <原因> <怎么继续>
+    local num="$1" doc="$2" now rm
+    notify_bounced_to_human "$num" "$3" "$4"
+    if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
+        log "转人工 #${num}：留言后读不到条目，不翻标签"; return "$DISPATCH_RC_UNKNOWN"
+    fi
+    if ! dispatch_doc_eq "$now" "$doc"; then
+        log "转人工 #${num}：留言后条目被别人改过，不翻标签"; return "$DISPATCH_RC_WITHDRAWN"
+    fi
+    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
+    rm=$({ printf '%s\n' "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING"; } | jq -R . \
+        | jq -cs --argjson d "$now" --arg h "$LABEL_PENDING_HUMAN" '[.[] | select(. != "" and . != $h and (. as $l | $d.labels | index($l)))] | unique')
+    dispatch_label_steps "$num" "$now" "$(printf '%s' "$now" | jq -c --arg h "$LABEL_PENDING_HUMAN" 'if (.labels | index($h)) then [] else [$h] end')" "$rm" "转人工"
+}
+
+# 派工脚本里 daemon 自己转人工：先过 dispatch_write_check，再 dispatch_human_steps。
+# 返回 0 = 已转（调用方照原来的退出码退出）；否则返回 1 / 77 / 78（1 也按结果不明报给调用方）。
 dispatch_to_human() {   # <编号> <原因> <怎么继续> <日志描述>
     local rc=0
     dispatch_write_check "$1" || rc=$?
     [ "$rc" = 0 ] || return "$rc"
-    [ -n "${TRIGGER_LABELS_ALL+x}" ] || trigger_labels_array
-    notify_bounced_to_human "$1" "$2" "$3"
-    run_gh "label 翻转 (#$1 $4 → $LABEL_PENDING_HUMAN)" \
-        gh_label_flip "$1" \
-        --add "$LABEL_PENDING_HUMAN" \
-        --remove "${TRIGGER_LABELS_ALL[@]}" "$LABEL_AGENT_DOING" || true
+    dispatch_human_steps "$1" "$DISPATCH_NOW_DOC" "$2" "$3" || rc=$?
     DISPATCH_PHASE=done
-    return 0
+    [ "$rc" != 1 ] || rc="$DISPATCH_RC_UNKNOWN"
+    [ "$rc" != 0 ] || log "派工 #${1}：$4 → 已转 $LABEL_PENDING_HUMAN"
+    return "$rc"
 }
 
 # 派工脚本开头装上：认领了、还没交任务就意外退出 → 复原（失败 / 结果不明 / 已撤回）；交任务的动作
