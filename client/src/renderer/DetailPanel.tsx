@@ -34,6 +34,7 @@ import { opDraftLeft, opLockOf, opReusableDraft, opText, type OpRecord } from '.
 import { sendHolds, sendSlot, sendTakeable, sendTakeText } from '../shared/sends';
 import { BlockedDialog } from './BlockedDialog';
 import { entryState } from '../shared/blocked';
+import { handOffCommentFor } from '../shared/handoff';
 import type { AutoCloseKind } from '../shared/tabs';
 import { editsTone, resultTone } from '../shared/noticeTone';
 import { useAutoDismiss } from './autoDismiss';
@@ -1512,7 +1513,11 @@ export function DetailPanel({
   const pressHandBack = () => void handOff('handBack', false);
   // GitHub#451: the reply box's text goes out first — the buttons and the 托管 dialog say so
   const boxComment = reply.trim() ? reply : '';
-  const dialogComment = ask === 'autopilot' ? handOffComment().comment : '';
+  // GitHub#722: with nothing to send, a new hand-over sends this (the controller decides by the same rule)
+  const autoComment = handOffCommentFor('', false);
+  const dialogGiven = ask === 'autopilot' ? handOffComment().comment : '';
+  const dialogComment = ask === 'autopilot' ? handOffCommentFor(dialogGiven, Boolean(retryFrom)) : '';
+  const dialogAuto = Boolean(dialogComment) && !dialogGiven.trim();
   // the hand-back label names (the settings' / GitHub's) in the autopilot dialog's sentences
   const labelCodes = {
     autopilot: (
@@ -2159,7 +2164,7 @@ export function DetailPanel({
                   renameWhy ??
                   (boxComment
                     ? t('先把回复框里的字作为评论发出，发成功后再加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') })
-                    : t('加上「{agent}」、去掉「{human}」（标签名在设置里改，{key}）', { agent: hb.agent, human: hb.human, key: keyText('handBack') }))
+                    : t('先发一条评论「{comment}」，发成功后再加上「{agent}」、去掉「{human}」（回复框里写了字就改发那段字；标签名在设置里改，{key}）', { comment: autoComment, agent: hb.agent, human: hb.human, key: keyText('handBack') }))
                 }
                 {...verbatimParts('github', offlineWhy || lockWhy || renameWhy ? [] : [hb.agent, hb.human])}
                 onClick={pressHandBack}
@@ -2181,8 +2186,8 @@ export function DetailPanel({
                         ? t('先把回复框里的字作为评论发出，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
                         : t('先把回复框里的字作为评论发出，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
                       : state.autopilotConfirm
-                        ? t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）（{key}）', { label: hb.autopilot, key: keyText('autopilot') })
-                        : t('加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { label: hb.autopilot, key: keyText('autopilot') }))
+                        ? t('先发一条评论「{comment}」，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（回复框里写了字就改发那段字；标签名在设置里改）（{key}）', { comment: autoComment, label: hb.autopilot, key: keyText('autopilot') })
+                        : t('先发一条评论「{comment}」，发成功后再加上「{label}」再交给 agent：复审通过、检查通过后由 daemon 自动合并（回复框里写了字就改发那段字；标签名在设置里改）；已设为不再提示，点了直接托管（设置里可改回）（{key}）', { comment: autoComment, label: hb.autopilot, key: keyText('autopilot') }))
                   }
                   {...verbatimParts('github', offlineWhy || lockWhy || renameWhy ? [] : [hb.autopilot])}
                   onClick={pressAutopilot}
@@ -2249,7 +2254,7 @@ export function DetailPanel({
           <div data-testid="autopilot-explain">
             {dialogComment ? (
               <>
-                <p data-testid="autopilot-explain-comment">{retryFrom ? t('先发出上一次没发出去的评论：') : t('先发出回复框里的评论：')}</p>
+                <p data-testid="autopilot-explain-comment">{dialogAuto ? t('回复框是空的，先发一条评论：') : retryFrom ? t('先发出上一次没发出去的评论：') : t('先发出回复框里的评论：')}</p>
                 <blockquote className="op-comment" data-testid="autopilot-comment">
                   <Verbatim from="user">{dialogComment}</Verbatim>
                 </blockquote>

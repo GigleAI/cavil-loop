@@ -172,18 +172,24 @@ describe('refused for sure: 「重试」 does it again with the same choices, no
     expect(sendOf(c, r.id!).state).toBe('ok');
   });
 
-  it('hand-back refused on its label → redo: the labels again, exactly once', async () => {
+  it('hand-back refused on its first step → redo: the comment and the labels again, exactly once', async () => {
     waitingForHuman();
     const c = await ready();
-    fake.state.w.failLabel = 'pending/agent';
+    // GitHub#722: a hand-back with no comment of its own sends 「继续」 first — that is the step refused here
+    fake.state.w.failComment = true;
     const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
-    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['refused', 'unsent', 'unsent']);
     expect(opActions(opOf(c, s.id!)).retry).toBe('redo');
-    fake.state.w.failLabel = null;
+    fake.state.w.failComment = false;
     expect(c.opRedo(s.id!).ok).toBe(true);
     await idle(c);
-    expect(labelAdds('pending/agent')).toHaveLength(2);
+    // the redo carries the comment that did not go out, then the labels
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续', '继续']);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['继续']);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
   });
 });
 

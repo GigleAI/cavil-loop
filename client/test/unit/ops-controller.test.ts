@@ -128,6 +128,14 @@ function waitingForHuman(n = ISSUE) {
   for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n && !r.labels.some((l: any) => l.name === 'pending/human')) r.labels.push({ name: 'pending/human', color: 'ededed' });
 }
 
+/** #ISSUE without the autopilot label (the fixture has it): the autopilot step really has to go out (GitHub#722: a label
+ * after a hand-over's comment is judged on a read made right before it, and one already there is not sent) */
+const noAutopilot = () => {
+  for (const p of fake.state.projects.get('org/gigleai/11')!)
+    for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = node.content.labels.nodes.filter((l: any) => l.name !== 'autopilot');
+  for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = r.labels.filter((l: any) => l.name !== 'autopilot');
+};
+
 beforeEach(async () => {
   fake = await startFakeGitHub();
   fake.state.validTokens.add(DAEMON_TOKEN);
@@ -286,20 +294,25 @@ describe('first step refused: settled at once, later steps never sent, draft kep
     expect(opPhase(opOf(c, m.id!))).toBe('settled');
     expect(opDraftLeft(opOf(c, m.id!))).toEqual({ method: 'squash', headOid });
     waitingForHuman();
-    fake.state.w.failLabel = 'autopilot';
+    // GitHub#722: a fresh autopilot / hand-back starts with the comment 「继续」 — that is their first step
+    fake.state.w.failComment = true;
     const a = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
     await idle(c);
-    expect(labelAdds('autopilot')).toHaveLength(1);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(opOf(c, a.id!).steps.map((x) => x.state)).toEqual(['refused', 'unsent', 'unsent', 'unsent']);
+    expect(labelAdds('autopilot')).toHaveLength(0);
     expect(labelAdds('pending/agent')).toHaveLength(0);
     expect(labelRemoves('pending/human')).toHaveLength(0);
     expect(opPhase(opOf(c, a.id!))).toBe('settled');
-    fake.state.w.failLabel = 'pending/agent';
     const h = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
-    expect(labelAdds('pending/agent')).toHaveLength(1);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续', '继续']);
+    expect(opOf(c, h.id!).steps.map((x) => x.state)).toEqual(['refused', 'unsent', 'unsent']);
+    expect(labelAdds('pending/agent')).toHaveLength(0);
     expect(labelRemoves('pending/human')).toHaveLength(0);
     expect(opPhase(opOf(c, h.id!))).toBe('settled');
     expect(opButtons(opOf(c, h.id!))).toContain('retry');
+    fake.state.w.failComment = false;
   });
 });
 
@@ -392,26 +405,28 @@ describe('an answer that never came stays unknown: a read showing the old state 
 describe('the "agent" label is consumed by the daemon: never added twice (plan review rounds 2 and 3)', () => {
   it('autopilot: label added; agent label landed but answer lost; daemon took it; events unreadable while the item re-read works — every entry refused, then the events prove it', async () => {
     waitingForHuman();
+    noAutopilot();
     const c = await ready();
     // GitHub#359: a read showing the label on would prove the step — here the daemon is faster than every read of ours
-    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'), () => daemonPicksUpNow());
-    // the events become unreadable once the first request went out (the read made before it worked)
-    const holdFirst = fake.holdWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('autopilot'));
-    // the daemon picks it up as soon as the label is on GitHub, before any re-read of ours
+    // the daemon picks it up as soon as the label is on GitHub, before any re-read of ours; the events become
+    // unreadable in that same moment (GitHub#722: the reads made before the comment and before each label after it worked)
+    const lost = fake.dropAnswerWhen((e) => e.method === 'POST' && e.path.endsWith(`/issues/${ISSUE}/labels`) && ((e.body as any)?.labels ?? []).includes('pending/agent'), () => {
+      daemonPicksUpNow();
+      fake.state.w.failEvents = true;
+    });
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
-    await until(() => labelAdds('autopilot').length === 1, 'the autopilot label reached GitHub');
-    expect(opOf(c, s.id!).before).not.toBeNull();
-    fake.state.w.failEvents = true;
-    holdFirst();
     await until(() => lost.caught() === 1, 'the agent label reached GitHub');
     lost.stop();
     await idle(c);
-    // it happened: the first add went out, the daemon took the label and put its own on
+    expect(opOf(c, s.id!).before).not.toBeNull();
+    // it happened: the comment 「继续」 and the autopilot label went out, then the agent label; the daemon took it and put its own on
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(labelAdds('autopilot')).toHaveLength(1);
     expect(labelAdds('pending/agent')).toHaveLength(1);
     expect(labelsOnGitHub()).toEqual(expect.arrayContaining(['autopilot', 'doing/agent']));
     expect(labelsOnGitHub()).not.toContain('pending/agent');
     let r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown', 'unsent']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unknown', 'unsent']);
     // the item was re-read after the answers, and it landed: still locked
     expect(r.readAt).not.toBeNull();
     expect(opPhase(r)).toBe('unknown');
@@ -429,7 +444,7 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
     expect((await c.opRecheck(s.id!)).ok).toBe(true);
     await idle(c);
     r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'unsent']);
     expect(opPhase(r)).toBe('settled');
     // GitHub#359: proven, but the label was taken away again (the daemon, or a person taking it back — the app
     // cannot tell): the step left is not sent by itself, and the notice says why
@@ -456,7 +471,8 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
     await idle(c);
     const r = opOf(c, s.id!);
     expect(opPhase(r)).toBe('settled');
-    expect(opText(r)).toContain('已交给 agent');
+    expect(opText(r)).toContain('已评论并交给 agent');
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
     expect(labelAdds('pending/agent')).toHaveLength(1);
     expect(labelsOnGitHub()).toContain('doing/agent');
   });
@@ -483,9 +499,12 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
     c.opUnlock(s.id!);
     expect(opPhase(opOf(c, s.id!))).toBe('unlocked');
     expect(opText(opOf(c, s.id!))).toContain('已由人核对后解除锁定');
+    // GitHub#722: the new hand-back sends 「继续」 first and reads the item before its label — the records are readable again
+    fake.state.w.failEvents = false;
     const again = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     expect(again.ok).toBe(true);
     await idle(c);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续', '继续']);
     expect(labelAdds('pending/agent')).toHaveLength(2);
   });
 });
@@ -493,12 +512,15 @@ describe('the "agent" label is consumed by the daemon: never added twice (plan r
 describe('partly done: each step said, only refused label steps may be finished', () => {
   it('autopilot: agent label refused — "finish" adds it and takes "pending/human" off; a second finish while it prepares is refused', async () => {
     waitingForHuman();
+    noAutopilot();
     const c = await ready();
     fake.state.w.failLabel = 'pending/agent';
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
     await idle(c);
     const r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'refused', 'unsent']);
+    // GitHub#722: the comment 「继续」 first
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'refused', 'unsent']);
     expect(opText(r)).toContain('加「pending/agent」没有成功');
     expect(opPhase(r)).toBe('settled');
     fake.state.w.failLabel = null;
@@ -517,7 +539,8 @@ describe('partly done: each step said, only refused label steps may be finished'
     fake.state.w.failUnlabel = 'pending/human';
     const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
-    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'refused']);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'refused']);
     expect(opText(opOf(c, s.id!))).toContain('摘「pending/human」没有成功');
     fake.state.w.failUnlabel = null;
     expect((await c.opFinish(s.id!)).ok).toBe(true);
@@ -590,13 +613,15 @@ describe('evidence must be newer than the request (code review round 1)', () => 
     await idle(c);
     expect(late.caught()).toBe(1);
     const r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent']);
+    // GitHub#722: the comment 「继续」 went out first
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown', 'unsent']);
     expect(opPhase(r)).toBe('unknown');
     expect(c.startOp({ kind: 'handBack', key: K(ISSUE) }).ok).toBe(false);
     expect(labelsOnGitHub()).not.toContain('pending/agent');
     late.land();
     expect((await c.opRecheck(s.id!)).ok).toBe(true);
-    expect(opOf(c, s.id!).steps[0].state).toBe('ok');
+    expect(opOf(c, s.id!).steps[1].state).toBe('ok');
   });
 
   it('the read before sending failed: the step can never be proven automatically — only a person unlocks', async () => {
@@ -1185,15 +1210,18 @@ describe('GitHub#296: a check problem that no longer stands never keeps a succes
   /** autopilot whose "pending/human" removal reached GitHub late; the evidence read failed: unknown, with a check problem */
   async function unknownWithProblem() {
     waitingForHuman();
+    noAutopilot();
     const c = await ready();
     const late = removal();
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
     await idle(c);
     expect(late.caught()).toBe(1);
+    // GitHub#722: the comment 「继续」 went out first
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
     fake.state.w.failEvents = true;
     expect((await c.opRecheck(s.id!)).ok).toBe(false);
     const r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unknown']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'unknown']);
     expect(opPhase(r)).toBe('unknown');
     expect(r.checkProblem).toBeTruthy();
     expect(opText(r)).toContain('这次没能查证');
@@ -1207,9 +1235,9 @@ describe('GitHub#296: a check problem that no longer stands never keeps a succes
     await c.syncNow();
     await idle(c);
     const r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(opPhase(r)).toBe('settled');
-    expect(opText(r)).toBe('已托管：已加上「autopilot」、已加上「pending/agent」、已摘掉「pending/human」');
+    expect(opText(r)).toBe('已评论并托管：已发出评论、已加上「autopilot」、已加上「pending/agent」、已摘掉「pending/human」');
     expect(opTone(r)).toBe('ok');
     expect(opButtons(r)).toEqual(['dismiss']);
     expect(r.checkProblem).toBeNull();
@@ -1227,7 +1255,7 @@ describe('GitHub#296: a check problem that no longer stands never keeps a succes
     await idle(c);
     // the recheck did read the item (and that failed): the problem it found is about no unknown step any more
     const r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(opPhase(r)).toBe('settled');
     expect(r.checkProblem).toBeNull();
     expect(opAutoDismissable(r)).toBe(true);
@@ -1296,14 +1324,20 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     fake.state.w.labelEvents.delete(K(ISSUE));
     waitingForHuman();
   }
-  /** autopilot whose first request never reaches GitHub until `late.land()`; the check made at once is through */
+  /**
+   * autopilot whose first label request never reaches GitHub until `late.land()`; the check made at once is through.
+   * GitHub#722: the comment 「继续」 goes out before it (step 0), so that label is step 1
+   */
   async function autopilotNotLanded(opts: Parameters<typeof ready>[0] = {}) {
     fresh();
     const c = await ready(opts);
     const late = fake.lateWhen(addOf('autopilot'));
+    const said = comments().length;
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
     await idle(c);
     expect(late.caught()).toBe(1);
+    expect(comments().slice(said).map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(opOf(c, s.id!).steps[0]).toMatchObject({ name: 'comment', state: 'ok' });
     return { c, late, id: s.id! };
   }
 
@@ -1312,8 +1346,8 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     let r = opOf(c, id);
     // the check did read (and read everything)
     expect(snapshots()).toBeGreaterThanOrEqual(2);
-    expect(r.steps.map((x) => x.state)).toEqual(['unknown', 'unsent', 'unsent']);
-    expect(r.steps[0].check).toBe('unseen');
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown', 'unsent', 'unsent']);
+    expect(r.steps[1].check).toBe('unseen');
     expect(opPhase(r)).toBe('unknown');
     expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(id);
     expect(opText(r)).toContain('「autopilot」不确定有没有加上（已核对 1 次，到现在还没查到；原来那次请求仍可能稍后生效；还会继续自动核对）');
@@ -1328,7 +1362,7 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await c.syncNow();
     await idle(c);
     expect(snapshots()).toBeGreaterThan(before);
-    expect(opOf(c, id).steps[0]).toMatchObject({ state: 'unknown', check: 'unseen' });
+    expect(opOf(c, id).steps[1]).toMatchObject({ state: 'unknown', check: 'unseen' });
     expect(opOf(c, id).checks).toBe(2);
     expect(labelAdds('autopilot')).toHaveLength(1);
     // the first request lands late: the next round's check proves it, the offer to send again is gone, the rest goes out
@@ -1337,9 +1371,9 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await c.syncNow();
     await idle(c);
     r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(opButtons(r)).not.toContain('resend');
-    expect(opText(r)).toContain('已托管');
+    expect(opText(r)).toContain('已评论并托管');
     expect(labelAdds('autopilot')).toHaveLength(1);
     expect(labelAdds('pending/agent')).toHaveLength(1);
     expect(labelRemoves('pending/human')).toHaveLength(1);
@@ -1362,8 +1396,8 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     // judged on the check's read and again on one made right before the send
     expect(snapshots() - reads).toBeGreaterThanOrEqual(2);
     let r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
-    expect(r.steps[0].resent).toBe(1);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
+    expect(r.steps[1].resent).toBe(1);
     expect(labelAdds('autopilot')).toHaveLength(2);
     expect(labelAdds('pending/agent')).toHaveLength(1);
     expect(labelRemoves('pending/human')).toHaveLength(1);
@@ -1372,7 +1406,7 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await c.syncNow();
     await idle(c);
     r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(eventsOnGitHub('autopilot')).toEqual(['labeled by user-1']);
     expect(labelsOnGitHub()).toContain('autopilot');
     expect(labelAdds('pending/agent')).toHaveLength(1);
@@ -1389,8 +1423,8 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await idle(c);
     expect(snapshots()).toBeGreaterThan(reads);
     expect(labelAdds('autopilot')).toHaveLength(1);
-    expect(opOf(c, id).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
-    expect(opOf(c, id).steps[0].resent).toBeUndefined();
+    expect(opOf(c, id).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
+    expect(opOf(c, id).steps[1].resent).toBeUndefined();
   });
 
   it('asked to send again after the item was closed, or after somebody touched the label: refused, nothing sent; the read did happen', async () => {
@@ -1414,9 +1448,9 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
       expect(labelAdds('autopilot')).toHaveLength(sent);
       expect(labelAdds('pending/agent')).toHaveLength(0);
       const r = opOf(c, id);
-      expect(r.steps[0].state).toBe('unknown');
+      expect(r.steps[1].state).toBe('unknown');
       if (what === 'touched') {
-        expect(r.steps[0].check).toBe('touched');
+        expect(r.steps[1].check).toBe('touched');
         expect(opButtons(r)).toEqual(['unlock']);
       }
       c.stopTimer();
@@ -1431,14 +1465,17 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     let s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
     let r = opOf(c, s.id!);
-    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unseen', role: 'agent' });
+    // GitHub#722: the comment 「继续」 went out first
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'ok' });
+    expect(r.steps[1]).toMatchObject({ state: 'unknown', check: 'unseen', role: 'agent' });
     expect(opText(r)).toContain('「pending/agent」不确定有没有加上（已核对 1 次，到现在还没查到；原来那次请求仍可能稍后生效');
     expect(opResendConfirm(r)!.lines.join('')).toContain('这一条会被派两次工');
     expect(labelAdds('pending/agent')).toHaveLength(1);
     late.stop();
     expect((await c.opResend(s.id!)).ok).toBe(true);
     await idle(c);
-    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
     expect(labelAdds('pending/agent')).toHaveLength(2);
     expect(labelRemoves('pending/human')).toHaveLength(1);
     c.stopTimer();
@@ -1451,15 +1488,16 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
     r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
-    expect(r.steps[1]).toMatchObject({ check: 'unseen', role: 'human' });
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续', '继续']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unknown']);
+    expect(r.steps[2]).toMatchObject({ check: 'unseen', role: 'human' });
     expect(opText(r)).toContain('「pending/human」不确定有没有摘掉（已核对 1 次，到现在还没查到');
     expect(opResendConfirm(r)).toMatchObject({ title: '再发一次「摘掉 pending/human」？', after: null });
     expect(opResendConfirm(r)!.lines.join('')).toContain('可能被当成待派工');
     late.stop();
     expect((await c.opResend(s.id!)).ok).toBe(true);
     await idle(c);
-    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok']);
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
     expect(labelRemoves('pending/human').length - removesBefore).toBe(2);
     expect(labelsOnGitHub()).not.toContain('pending/human');
   });
@@ -1477,20 +1515,24 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
         if (what === 'closed') me('PATCH', '', { state: 'closed' });
       });
       const reads = snapshots();
+      const said = comments().length;
       const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
       await idle(c);
       lost.stop();
       expect(lost.caught()).toBe(1);
       expect(snapshots()).toBeGreaterThan(reads);
       const r = opOf(c, s.id!);
+      // GitHub#722: the comment 「继续」 went out first
+      expect(comments().slice(said).map((w) => (w.body as any)?.body)).toEqual(['继续']);
+      expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'ok' });
       // done either way: this account's "labeled" record is there
-      expect(r.steps[0].state).toBe('ok');
+      expect(r.steps[1].state).toBe('ok');
       if (what === 'untouched') {
-        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
         expect(labelAdds('pending/agent').length - agents).toBe(1);
         expect(labelRemoves('pending/human').length - removes).toBe(1);
       } else {
-        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
         expect(labelAdds('pending/agent').length - agents).toBe(0);
         expect(labelRemoves('pending/human').length - removes).toBe(0);
         expect(opText(r)).toContain(what === 'revoked' ? '这期间「autopilot」被摘掉了，没有接着往下做' : '这一条已经关闭，没有接着往下做');
@@ -1514,20 +1556,24 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
         me('DELETE', `/labels/${encodeURIComponent('pending/human')}`);
         me('POST', '/labels', { labels: ['pending/human'] });
       });
+      const said = comments().length;
       const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
       await idle(c);
       lost.stop();
       const r = opOf(c, s.id!);
-      expect(r.steps[0].state).toBe('ok');
+      // GitHub#722: the comment 「继续」 went out first
+      expect(comments().slice(said).map((w) => (w.body as any)?.body)).toEqual(['继续']);
+      expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'ok' });
+      expect(r.steps[1].state).toBe('ok');
       expect(snapshots()).toBeGreaterThan(0);
       if (handedBack) {
-        expect(r.steps[1].state).toBe('unsent');
+        expect(r.steps[2].state).toBe('unsent');
         expect(labelRemoves('pending/human').length - removes).toBe(0);
         expect(labelsOnGitHub()).toContain('pending/human');
         expect(opText(r)).toContain('这期间「pending/human」被人动过，没有接着往下做');
         expect(opButtons(r)).toContain('finish');
       } else {
-        expect(r.steps[1].state).toBe('ok');
+        expect(r.steps[2].state).toBe('ok');
         expect(labelRemoves('pending/human').length - removes).toBe(1);
       }
       c.stopTimer();
@@ -1564,7 +1610,9 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     expect(meanwhile.every((x) => !x.ok)).toBe(true);
     expect(meanwhile[0].error).toContain('还在自动处理剩下的步骤');
     const r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    // GitHub#722: the comment 「继续」 went out first
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
     expect(labelAdds('pending/agent')).toHaveLength(0);
     expect(opText(r)).toContain('这期间「autopilot」被摘掉了，没有接着往下做');
   });
@@ -1591,18 +1639,21 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
         if (what === 'does not add up') fake.state.w.staleSnapshotLabels = [{ name: 'pending/human' }, { name: 'autopilot' }, { name: 'from-nowhere' }];
       });
       const pagesBefore = fake.log.filter((e) => e.operation === 'CavilOpSnapshot' && (e.variables as any)?.before).length;
+      const said = comments().length;
       const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
       await idle(c);
       lost.stop();
+      // GitHub#722: the comment 「继续」 went out first
+      expect(comments().slice(said).map((w) => (w.body as any)?.body)).toEqual(['继续']);
       // older pages were asked for
       expect(fake.log.filter((e) => e.operation === 'CavilOpSnapshot' && (e.variables as any)?.before).length).toBeGreaterThan(pagesBefore);
       const r = opOf(c, s.id!);
       if (what === 'paged') {
-        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
         expect(labelAdds('pending/agent').length - agents).toBe(1);
       } else {
         // the label itself is read on / its record found on the newest page: that step is done; whether the rest may go out could not be read
-        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+        expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
         expect(labelAdds('pending/agent').length - agents).toBe(0);
         expect(opButtons(r)).not.toContain('resend');
         expect(r.halt ?? null).toBeNull();
@@ -1611,7 +1662,7 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
         fake.state.w.staleSnapshotLabels = null;
         await c.syncNow();
         await idle(c);
-        expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+        expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
         expect(labelAdds('pending/agent').length - agents).toBe(1);
       }
       c.stopTimer();
@@ -1633,7 +1684,10 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await idle(c);
     await c.opRecheck(s.id!);
     const r = opOf(c, s.id!);
-    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unread' });
+    // GitHub#722: the comment 「继续」 went out first, the autopilot label is step 1
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps[0]).toMatchObject({ name: 'comment', state: 'ok' });
+    expect(r.steps[1]).toMatchObject({ state: 'unknown', check: 'unread' });
     expect(opButtons(r)).toEqual(['unlock']);
     expect(opText(r)).toContain('这次没能查证');
     expect(opText(r)).not.toContain('到现在还没查到');
@@ -1650,23 +1704,41 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     fake.state.w.failEvents = true;
     const late = fake.lateWhen(addOf('autopilot'));
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
-    await until(() => late.caught() === 1, 'the request went out');
+    await idle(c);
+    // GitHub#722: the first request is the comment 「继续」 — it went out; with nothing read from before it, no label after
+    // it is judged, so none is sent, and no round sends one by itself
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(opOf(c, s.id!).before).toBeNull();
+    expect(opOf(c, s.id!).steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent', 'unsent']);
+    expect(opText(opOf(c, s.id!))).toContain('评论发出后没能完整读到这一条现在的状态，没敢接着改标签');
+    expect(opButtons(opOf(c, s.id!))).toContain('finish');
+    expect(opButtons(opOf(c, s.id!))).not.toContain('resend');
+    await c.syncNow();
+    await idle(c);
+    expect(late.caught()).toBe(0);
+    expect(labelAdds('autopilot')).toHaveLength(0);
+    // a person finishes it while the records still cannot be read: its first request is the autopilot label
+    const f = await c.opFinish(s.id!);
+    expect(f.ok).toBe(true);
+    const id = f.id!;
+    await until(() => late.caught() === 1, 'the label request went out');
     fake.state.w.failEvents = false;
     await idle(c);
-    expect(opOf(c, s.id!).before).toBeNull();
+    expect(opOf(c, id).before).toBeNull();
     const reads = snapshots();
-    await c.opRecheck(s.id!);
+    await c.opRecheck(id);
     expect(snapshots()).toBeGreaterThan(reads);
-    let r = opOf(c, s.id!);
-    expect(r.steps[0]).toMatchObject({ state: 'unknown', check: 'unread' });
+    let r = opOf(c, id);
+    expect(r.steps[0]).toMatchObject({ label: 'autopilot', state: 'unknown', check: 'unread' });
     expect(opButtons(r)).toEqual(['unlock']);
     // it lands: the label being on proves the step, but what was there before is not known — the rest waits for a person
     late.land();
     late.stop();
     await c.syncNow();
     await idle(c);
-    r = opOf(c, s.id!);
+    r = opOf(c, id);
     expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(labelAdds('autopilot')).toHaveLength(1);
     expect(labelAdds('pending/agent')).toHaveLength(0);
     expect(opButtons(r)).toContain('finish');
   });
@@ -1680,7 +1752,7 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     const c2 = await ready();
     await idle(c2);
     let r = opOf(c2, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
     expect(labelAdds('pending/agent')).toHaveLength(0);
     expect(opButtons(r)).toContain('finish');
     c2.stopTimer();
@@ -1693,7 +1765,7 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await c.syncNow();
     await idle(c);
     r = opOf(c, id);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unsent', 'unsent']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unsent', 'unsent']);
     expect(labelAdds('pending/agent').length).toBe(adds);
     expect(opText(r)).toContain('离发起已经超过 10 分钟，剩下的步骤不再自动发，没有接着往下做');
     expect(opButtons(r)).toContain('finish');
@@ -1704,18 +1776,20 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     const c = await ready({ opCheckDelaysMs: [150, 150, 150] });
     const late = fake.lateWhen(addOf('autopilot'));
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
-    await until(() => (opOf(c, s.id!).checks ?? 0) >= 1 && opOf(c, s.id!).steps[0].state === 'unknown', 'the check made at once is through');
+    // GitHub#722: the comment 「继续」 is step 0, the autopilot label step 1
+    await until(() => (opOf(c, s.id!).checks ?? 0) >= 1 && opOf(c, s.id!).steps[1].state === 'unknown', 'the check made at once is through');
     let r = opOf(c, s.id!);
     expect(r.checking).toBe(true);
     expect(opTone(r)).toBe('busy');
     expect(opButtons(r)).toEqual([]);
-    expect(opText(r)).toBe('正在托管…「autopilot」发出后没有收到 GitHub 的应答，正在自动核对有没有加上（第 2 次）');
+    expect(opText(r)).toBe('正在评论并托管…「autopilot」发出后没有收到 GitHub 的应答，正在自动核对有没有加上（第 2 次）');
     expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(s.id);
     late.land();
     late.stop();
     await idle(c);
     r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok', 'ok']);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
     expect(r.checking).toBeFalsy();
     expect(labelAdds('autopilot')).toHaveLength(1);
     expect(labelAdds('pending/agent')).toHaveLength(1);
@@ -1743,30 +1817,43 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
 
   it('PR #365 code review round 1: GitHub sends part of the label list and the "human" label is not in it — not taken for removed; the record of the removal proves it once it lands', async () => {
     fresh();
-    // 100 other labels ahead of "pending/human": every read that asks for the first 100 (or 50) leaves it out
+    // 100 other labels ahead of "pending/human": every read that asks for the first 100 (or 50) leaves it out.
+    // GitHub#722: they come in the moment the removal reaches GitHub — the hand-back's comment 「继续」 goes first and
+    // each label after it is sent only on a read made right before it, which such a list would stop (not read in full)
     const fillers = Array.from({ length: 100 }, (_, i) => ({ name: `zz-${i}`, color: 'ededed' }));
-    for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = [...fillers, ...node.content.labels.nodes];
-    for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = [...fillers, ...r.labels];
+    let filled = false;
+    const fill = () => {
+      filled = true;
+      for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = [...fillers, ...node.content.labels.nodes];
+      for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = [...fillers, ...r.labels];
+    };
     const c = await ready();
-    const late = fake.lateWhen(removeOf('pending/human'));
+    const late = fake.lateWhen((e) => {
+      const hit = removeOf('pending/human')(e);
+      if (hit && !filled) fill();
+      return hit;
+    });
     const reads = snapshots();
     const s = c.startOp({ kind: 'handBack', key: K(ISSUE) });
     await idle(c);
     expect(late.caught()).toBe(1);
+    expect(filled).toBe(true);
+    expect(comments().map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(labelAdds('pending/agent')).toHaveLength(1);
     // the check did read, and the read left "pending/human" out
     expect(snapshots()).toBeGreaterThan(reads);
     expect(labelsOnGitHub()).toContain('pending/human');
     let r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'unknown']);
-    expect(r.steps[1].check).toBe('unread');
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'unknown']);
+    expect(r.steps[2].check).toBe('unread');
     expect(opLockOf(c.getState().ops, K(ISSUE))?.id).toBe(s.id);
     expect(opText(r)).toContain('「pending/human」不确定有没有摘掉');
-    expect(opText(r)).not.toContain('已交给 agent：');
+    expect(opText(r)).not.toContain('已评论并交给 agent：');
     expect(opButtons(r)).not.toContain('resend');
     // a sync round does not take it for removed either
     await c.syncNow();
     await idle(c);
-    expect(opOf(c, s.id!).steps[1].state).toBe('unknown');
+    expect(opOf(c, s.id!).steps[2].state).toBe('unknown');
     // the removal lands: its "unlabeled" record by this account proves it
     late.land();
     late.stop();
@@ -1774,8 +1861,8 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
     await c.syncNow();
     await idle(c);
     r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok']);
-    expect(r.steps[1].reason).toBe('在 GitHub 的标签记录里找到了这一步');
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.steps[2].reason).toBe('在 GitHub 的标签记录里找到了这一步');
     expect(labelRemoves('pending/human')).toHaveLength(1);
   });
 
@@ -1800,12 +1887,6 @@ describe('GitHub#359: checked by itself, finished by itself, sent again only by 
 // GitHub#451: "交给 agent" / "托管" with text in the reply box post it as a comment first; the labels go only
 // once the comment went out (the daemon dispatches on the label: the comment must be there when it looks).
 describe('GitHub#451: the reply box text goes out first, the labels only after it', () => {
-  /** #ISSUE without the autopilot label (the fixture has it): the autopilot step really has to go out */
-  const noAutopilot = () => {
-    for (const p of fake.state.projects.get('org/gigleai/11')!)
-      for (const node of p.items.nodes) if (node.content?.number === ISSUE) node.content.labels.nodes = node.content.labels.nodes.filter((l: any) => l.name !== 'autopilot');
-    for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === ISSUE) r.labels = r.labels.filter((l: any) => l.name !== 'autopilot');
-  };
   /** the hand-over's writes on #ISSUE in the order GitHub got them */
   const handOverWrites = () =>
     writes((w) => w.path.startsWith(`/api/repos/${REPO}/issues/${ISSUE}/`)).map((w) =>
@@ -1838,16 +1919,19 @@ describe('GitHub#451: the reply box text goes out first, the labels only after i
     expect(opText(opOf(c, s.id!))).toBe('已评论并托管：已发出评论、已加上「autopilot」、已加上「pending/agent」、已摘掉「pending/human」');
   });
 
-  it('a blank comment is no comment: the very same requests and steps as before', async () => {
+  it('GitHub#722: a blank comment is no comment of its own — 「继续」 goes out first, then the labels', async () => {
     waitingForHuman();
     const c = await ready();
     const s = c.startOp({ kind: 'handBack', key: K(ISSUE), comment: '  \n ' });
     await idle(c);
-    expect(handOverWrites()).toEqual(['add pending/agent', 'remove pending/human']);
+    expect(handOverWrites()).toEqual(['comment 继续', 'add pending/agent', 'remove pending/human']);
+    expect(commentsOnGitHub().map((x) => x.body)).toEqual(['继续']);
     const r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.name)).toEqual(['addLabel', 'removeLabel']);
-    expect(r.draft).toEqual({});
-    expect(opText(r)).toBe('已交给 agent：已加上「pending/agent」、已摘掉「pending/human」');
+    expect(r.steps.map((x) => x.name)).toEqual(['comment', 'addLabel', 'removeLabel']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'ok']);
+    expect(r.draft).toEqual({ comment: '继续' });
+    expect(opText(r)).toBe('已评论并交给 agent：已发出评论、已加上「pending/agent」、已摘掉「pending/human」');
+    expect(opDraftLeft(r)).toBeNull();
   });
 
   it('comment refused: no label request at all; the text is kept (reply box / copy / retry); the retry carries it and does everything', async () => {
@@ -2044,22 +2128,21 @@ describe('GitHub#451: the reply box text goes out first, the labels only after i
     expect(fake.log.slice(from, to).filter((e) => e.operation === 'CavilOpSnapshot').length).toBeGreaterThanOrEqual(3);
   });
 
-  it('code review round 2: without a comment nothing changes — labels go out back to back, no read in between (as before #451)', async () => {
+  it('GitHub#722: without a comment 「继续」 goes out first, and every label after it is sent on a read made right before it', async () => {
     waitingForHuman();
     noAutopilot();
     const c = await ready();
-    const release = fake.holdWhen((e) => e.method === 'POST' && e.path === `/api/repos/${REPO}/issues/${ISSUE}/labels` && ((e.body as any)?.labels ?? []).includes('autopilot'));
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
-    await until(() => labelAdds('autopilot').length === 1, 'the autopilot label reached GitHub');
-    release();
     await idle(c);
-    // the labels followed one another with no permit read of the item between them
-    const from = fake.log.indexOf(labelAdds('autopilot')[0]);
-    const to = fake.log.indexOf(labelRemoves('pending/human')[0]);
-    expect(from).toBeGreaterThanOrEqual(0);
-    expect(to).toBeGreaterThan(from);
-    expect(fake.log.slice(from, to).filter((e) => e.operation === 'CavilOpSnapshot')).toEqual([]);
+    expect(handOverWrites()).toEqual(['comment 继续', 'add autopilot', 'add pending/agent', 'remove pending/human']);
     expect(opOf(c, s.id!).steps.every((x) => x.state === 'ok')).toBe(true);
+    // between each two requests, a permit read of the item (GitHub#451, code review round 2: every label after the comment)
+    const order = [comments()[0], labelAdds('autopilot')[0], labelAdds('pending/agent')[0], labelRemoves('pending/human')[0]].map((e) => fake.log.indexOf(e));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    for (let k = 1; k < order.length; k++) {
+      expect(order[k]).toBeGreaterThan(order[k - 1]);
+      expect(fake.log.slice(order[k - 1], order[k]).filter((e) => e.operation === 'CavilOpSnapshot').length).toBeGreaterThanOrEqual(1);
+    }
   });
 
   it('an item already closed before the click: the hand-over with a comment goes through as it does without one (only a change stops it)', async () => {

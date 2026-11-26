@@ -509,8 +509,11 @@ test('detail newest first in an isolated view; labels, status, drag, reply + han
   await expect(sendNotice(page).first().getByTestId('send-notice-text')).toHaveText('评论已发出');
   await expect(frame.locator('details.entry').first()).toContainText('看过了');
   await shot(page, '22-replied');
+  // GitHub#722: the box is empty, so the hand-over posts 「继续」 first
+  const beforeHand = writes().length;
   await detail.getByTestId('hand-back').click();
-  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已交给 agent');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已评论并交给 agent');
+  expect(writes().slice(beforeHand)[0]).toEqual(['POST', '/api/repos/GigleAI/cavil-loop/issues/138/comments', { body: '继续' }]);
   await expect(card(page, 138).locator('.label', { hasText: 'pending/agent' })).toBeVisible();
   await expect(card(page, 138).locator('.label', { hasText: 'pending/human' })).toHaveCount(0);
   // GitHub#633: the panel put itself away once the client accepted the hand-over
@@ -4473,8 +4476,10 @@ test('GitHub#205: detail — "hand to the agent" and "autopilot" next to send; a
   await expect(page.getByTestId('autopilot-explain')).toContainText('自动合并');
   await shot(page, '205-06-autopilot-confirm');
   await page.getByTestId('confirm-ok').click();
-  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已托管');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已评论并托管');
+  // GitHub#722: the reply box was empty — 「继续」 goes out first, then the labels
   expect(writes().slice(before)).toEqual([
+    ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/comments', { body: '继续' }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
     ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
     ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
@@ -4861,17 +4866,21 @@ test('GitHub#229: gear; short detail head; label list retried; re-opened detail 
   await app.close();
 });
 
-test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded table groups survive the board and a restart; "no value" groups last; both iteration pickers in the same order; a new issue ticks the repository\'s board when only the repository is shown', async () => {
+test('GitHub#231: 托管 asks in three paragraphs (four with the 「继续」 it posts first) with "不再提示"; folded table groups survive the board and a restart; "no value" groups last; both iteration pickers in the same order; a new issue ticks the repository\'s board when only the repository is shown', async () => {
   let { app, page } = await launch(env);
   await signInWithSources(page);
 
-  // ---- 1. 托管: three paragraphs; "不再提示" unticked; cancel keeps asking; ticked + confirmed → no dialog next time ----
+  // ---- 1. 托管: three paragraphs, after the 「继续」 it posts first (GitHub#722: the reply box is empty); "不再提示"
+  // unticked; cancel keeps asking; ticked + confirmed → no dialog next time ----
   await card(page, 138).click();
   const quick = page.getByTestId('detail').locator('.reply .row.end');
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）…Ctrl+Shift+C');
   await quick.getByTestId('autopilot').click();
-  for (const part of ['labels', 'then', 'stop']) await expect(page.getByTestId(`autopilot-explain-${part}`)).toBeVisible();
-  await expect(page.getByTestId('autopilot-explain').locator('p')).toHaveCount(3);
+  for (const part of ['comment', 'labels', 'then', 'stop']) await expect(page.getByTestId(`autopilot-explain-${part}`)).toBeVisible();
+  await expect(page.getByTestId('autopilot-explain').locator('p')).toHaveCount(4);
+  await expect(page.getByTestId('autopilot-explain-comment')).toHaveText('回复框是空的，先发一条评论：');
+  await expect(page.getByTestId('autopilot-comment')).toHaveText('继续');
+  await expect(page.getByTestId('autopilot-explain-labels')).toContainText('评论发成功后，再加上标签');
   const noMore = page.getByTestId('autopilot-no-more-ask');
   await expect(noMore).not.toBeChecked();
   await noMore.check();
@@ -4882,8 +4891,9 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await noMore.check();
   const b1 = writes().length;
   await page.getByTestId('confirm-ok').click();
-  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已托管');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已评论并托管');
   const autopilotWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/comments`, { body: '继续' }],
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
@@ -4896,7 +4906,7 @@ test('GitHub#231: 托管 asks in three paragraphs with "不再提示"; folded ta
   await expect(quick.getByTestId('autopilot')).toHaveText('托管（自动合并）Ctrl+Shift+C');
   const b2 = writes().length;
   await quick.getByTestId('autopilot').click();
-  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已托管');
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已评论并托管');
   await expect(page.getByTestId('confirm-dialog')).toHaveCount(0);
   expect(writes().slice(b2)).toEqual(autopilotWrites(139));
   await expect(page.getByTestId('detail')).toHaveCount(0);
@@ -5553,6 +5563,8 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   await expect(detail.getByTestId('hand-back')).toBeVisible({ timeout: 15_000 });
   const adds = () => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138/labels' && ((w.body as any)?.labels ?? []).includes('pending/agent')).length;
   const labels = () => (env.fake.state.repos.get('gigleai/cavil-loop')!.find((r: any) => r.number === 138)?.labels ?? []).map((l: any) => l.name);
+  // GitHub#722: the reply box is empty, so 「继续」 is posted before the label — once, never again on a resend
+  const comments = () => env.fake.writes().filter((w) => w.method === 'POST' && w.path === '/api/repos/GigleAI/cavil-loop/issues/138/comments').map((w) => w.body);
   // the request leaves the app, GitHub never carries it out (until `land`), the connection drops
   const late = env.fake.lateWhen((e) => e.method === 'POST' && e.path === '/api/repos/GigleAI/cavil-loop/issues/138/labels');
   await detail.getByTestId('hand-back').click();
@@ -5574,6 +5586,7 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   await expect(detail.getByTestId('hand-back')).toBeDisabled({ timeout: 15_000 });
   expect(late.caught()).toBe(1);
   expect(adds()).toBe(1);
+  expect(comments()).toEqual([{ body: '继续' }]);
   await shot(page, '359-01-not-sure');
   // the dialog says what a second send can cause; cancel sends nothing
   late.stop();
@@ -5593,6 +5606,7 @@ test('GitHub#359: a hand-back whose request never got an answer — the notice c
   await page.getByTestId('confirm-dialog').getByTestId('confirm-ok').click();
   await expect.poll(() => adds()).toBe(2);
   await expect.poll(() => labels()).toEqual(['pending/agent']);
+  expect(comments()).toEqual([{ body: '继续' }]);
   await app.close();
 });
 
@@ -8461,12 +8475,15 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
     await summary.click({ position: { x: 40, y: 10 } });
     expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))).toBe('timeline-frame');
   };
-  const autopilotWrites = (n: number) => [
+  const labelWrites = (n: number) => [
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['autopilot'] }],
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
-  const handBackWrites = (n: number) => autopilotWrites(n).slice(1);
+  const handBackLabelWrites = (n: number) => labelWrites(n).slice(1);
+  // GitHub#722: pressed with an empty reply box, a hand-over posts 「继续」 before its labels
+  const goOn = (n: number) => ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/comments`, { body: '继续' }];
+  const autopilotWrites = (n: number) => [goOn(n), ...labelWrites(n)];
   /** the operation of the item on screen has settled: the panel's last notice is no longer busy — with no notice
    *  at all it passes at once (the one before has gone after its 5 s), so wait for the writes themselves first (GitHub#523) */
   const settled = () => expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first()).not.toHaveAttribute('data-kind', 'busy', { timeout: 15_000 });
@@ -8481,8 +8498,8 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   for (const id of ['close-issue', 'reply-preview-toggle', 'hand-back', 'autopilot', 'reply-send']) await expect(page.getByTestId(id).locator('kbd'), id).toHaveCount(1);
   await expect(detail.locator('.reply .keys-hint')).toHaveCount(0); // the far-away "按 ⌘↩ 发送" is gone
   await expect(page.getByTestId('close-issue')).toHaveAttribute('title', '在 GitHub 上关闭这个 issue（先选原因，Ctrl+Shift+X）');
-  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /（标签名在设置里改，Ctrl\+Shift\+Z）$/);
-  await expect(page.getByTestId('autopilot')).toHaveAttribute('title', /（Ctrl\+Shift\+C）$/);
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', '先发一条评论「继续」，发成功后再加上「pending/agent」、去掉「pending/human」（回复框里写了字就改发那段字；标签名在设置里改，Ctrl+Shift+Z）');
+  await expect(page.getByTestId('autopilot')).toHaveAttribute('title', /^先发一条评论「继续」，发成功后再加上「autopilot」.*（Ctrl\+Shift\+C）$/);
   await shot(page, '433-01-keys-on-buttons');
 
   // ---- 2. Ctrl+Shift+X: the close dialog of #137, nothing sent; Esc cancels it, the panel stays ----
@@ -8547,7 +8564,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(dialog).toHaveCount(0);
   release();
   await settled();
-  expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '已看过xAP' }], ...handBackWrites(137)]);
+  expect(writes()).toEqual([['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '已看过xAP' }], ...handBackLabelWrites(137)]);
   await expect(page.getByTestId('hand-back')).toHaveText('交给 agentCtrl+Shift+Z');
 
   // ---- 5. Ctrl+Shift+C from the empty reply box with "ask first" on: the autopilot dialog; Esc cancels; Ctrl+↩ confirms the same write as the button ----
@@ -8564,9 +8581,12 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('autopilot-explain')).toBeVisible();
   await page.keyboard.press('Control+Enter');
   await expect(dialog).toHaveCount(0);
-  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(137));
+  // GitHub#722: 「继续」 first; each label after it is judged on a fresh read, and #137 already carries pending/agent
+  // without pending/human since step 4 — so only the autopilot label is left to send
+  const onHanded137 = [goOn(137), labelWrites(137)[0]];
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(onHanded137);
   await settled();
-  expect(writes().slice(before)).toEqual(autopilotWrites(137));
+  expect(writes().slice(before)).toEqual(onHanded137);
   // GitHub#633: put away once the client accepted it
   await expect(detail).toHaveCount(0);
 
@@ -8593,7 +8613,7 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await page.getByTestId('autopilot').click();
   await page.getByTestId('autopilot-no-more-ask').check();
   await page.getByTestId('confirm-ok').click();
-  await expect.poll(() => writes().slice(before)).toEqual(autopilotWrites(139));
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(autopilotWrites(139));
   await settled();
   const byButton = writes().slice(before);
   expect(byButton).toEqual(autopilotWrites(139));
@@ -8616,8 +8636,11 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(page.getByTestId('new-issue')).toHaveCount(0);
   expect(writes()).toHaveLength(before);
   await page.keyboard.press(AUTO);
-  const byKey = byButton.map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]);
-  await expect.poll(() => writes().slice(before)).toEqual(byKey);
+  // GitHub#722: every label after 「继续」 is judged on a fresh read — the PR carries no pending/human, so the
+  // button's removal of it is the one write the key has no reason to send
+  expect(byButton[byButton.length - 1]).toEqual(['DELETE', '/api/repos/GigleAI/cavil-loop/issues/139/labels/pending%2Fhuman', undefined]);
+  const byKey = byButton.slice(0, -1).map(([m, p, b]) => [m, String(p).replace('/issues/139/', `/issues/${prN}/`), b]);
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(byKey);
   await settled();
   await expect(dialog).toHaveCount(0);
   expect(writes().slice(before)).toEqual(byKey);
@@ -8653,8 +8676,12 @@ test('GitHub#413 / #433: Ctrl+Shift+X opens the close dialog, Ctrl+Shift+Z hands
   await expect(dialog).toHaveCount(0);
   expect(writes()).toHaveLength(before);
   await page.keyboard.press(HAND);
-  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(137));
+  // GitHub#722: 「继续」 goes out; #137 already carries pending/agent without pending/human (steps 4 / 5), so read
+  // after the comment, no label is left to change
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual([goOn(137)]);
   await settled();
+  expect(writes().slice(before)).toEqual([goOn(137)]);
+  await expect(page.locator('[data-testid="notice-area"] [data-testid="op-notice"]').first().getByTestId('op-notice-text')).toContainText('已评论并交给 agent');
   await expect(detail).toHaveCount(0);
 
   // ---- 10. offline: the buttons grey out and the keys do nothing ----
@@ -8690,7 +8717,9 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   const detail = page.getByTestId('detail');
   const frame = page.frameLocator('[data-testid="timeline-frame"]');
   const row = (id: string) => page.locator(`[data-testid="shortcut-setting"][data-id="${id}"]`);
+  // GitHub#722: pressed with an empty reply box, 交给 agent posts 「继续」 before its labels
   const handBackWrites = (n: number) => [
+    ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/comments`, { body: '继续' }],
     ['POST', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels`, { labels: ['pending/agent'] }],
     ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${n}/labels/pending%2Fhuman`, undefined],
   ];
@@ -8754,7 +8783,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   // ---- 3. the button, its tooltip and the shortcut list say Ctrl+Shift+A ----
   await open(137);
   await expect(page.getByTestId('hand-back')).toHaveText('交给 agentCtrl+Shift+A');
-  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /（标签名在设置里改，Ctrl\+Shift\+A）$/);
+  await expect(page.getByTestId('hand-back')).toHaveAttribute('title', /；标签名在设置里改，Ctrl\+Shift\+A）$/);
   // the old key does nothing now
   let before = writes().length;
   await page.keyboard.press('Control+Shift+Z');
@@ -8762,7 +8791,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   expect(writes()).toHaveLength(before);
   // the new key hands back, the button's own writes
   await page.keyboard.press('Control+Shift+A');
-  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(137));
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(handBackWrites(137));
   await settled();
 
   // ---- 4. from inside the discussion frame: the window sent it the new keys ----
@@ -8776,7 +8805,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   await page.waitForTimeout(400);
   expect(writes()).toHaveLength(before);
   await page.keyboard.press('Control+Shift+A');
-  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(138));
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(handBackWrites(138));
   await settled();
 
   // ---- 4b. PR #498 review round 1: changed to a key without Ctrl (G), it does nothing from the discussion, as the
@@ -8802,7 +8831,7 @@ test('GitHub#487: a shortcut changed in Settings acts everywhere the old one did
   await expect(page.getByTestId('reply-input')).toBeFocused();
   await blur(page);
   await page.keyboard.press('g');
-  await expect.poll(() => writes().slice(before)).toEqual(handBackWrites(139));
+  await expect.poll(() => writes().slice(before), { timeout: 15_000 }).toEqual(handBackWrites(139));
   await settled();
 
   // ---- 5. the shortcut list marks it, and leads to the settings section ----

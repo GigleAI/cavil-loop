@@ -162,13 +162,26 @@ describe('editing a body / comment (GitHub#205)', () => {
   });
 });
 
+/**
+ * #n on GitHub (every copy) with these labels added / taken off. GitHub#722: a hand-over sends 「继续」 first and each
+ * label after it only on a read made right before it — a label already there (or already gone) is not sent
+ */
+function relabel(n: number, add: string[], drop: string[]) {
+  const fix = (list: { name: string }[]) => [...list.filter((l) => !drop.includes(l.name)), ...add.filter((a) => !list.some((l) => l.name === a)).map((name) => ({ name, color: 'ededed' }))];
+  for (const p of fake.state.projects.get('org/gigleai/11')!) for (const node of p.items.nodes) if (node.content?.number === n) node.content.labels.nodes = fix(node.content.labels.nodes);
+  for (const r of fake.state.repos.get(REPO.toLowerCase())!) if (r.number === n) r.labels = fix(r.labels);
+}
+
 describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
   const restWrites = () => fake.writes().map((w) => [w.method, w.path, w.body]);
-  it('autopilot: the autopilot label first, then the agent label, then the human one off; names from Settings', async () => {
+  it('autopilot: the comment 「继续」, then the autopilot label, then the agent label, then the human one off; names from Settings', async () => {
+    // the recorded #138 carries "autopilot" and not "pending/human": as an item waiting for a person
+    relabel(138, ['pending/human'], ['autopilot']);
     const c = await ready();
     expect(c.getState().handBack).toEqual({ human: 'pending/human', agent: 'pending/agent', autopilot: 'autopilot', running: 'doing/agent', blocked: 'pending/blocked', later: 'pending/later' });
     expect((await c.act({ kind: 'autopilot', key: K(138) })).ok).toBe(true);
     expect(restWrites()).toEqual([
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/comments', { body: '继续' }],
       ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['autopilot'] }],
       ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
       ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
@@ -179,7 +192,10 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
     c.setHandBack({ autopilot: '  auto/merge ' });
     expect(c.getState().handBack.autopilot).toBe('auto/merge');
     expect((await c.act({ kind: 'autopilot', key: K(137) })).ok).toBe(true);
-    expect(restWrites()[3]).toEqual(['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['auto/merge'] }]);
+    expect(restWrites().slice(4, 6)).toEqual([
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/comments', { body: '继续' }],
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/137/labels', { labels: ['auto/merge'] }],
+    ]);
   });
 
   it('an empty autopilot label: the setting keeps it empty (no button) and the action is refused before sending', async () => {
@@ -196,7 +212,11 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
     expect(fake.digest()).toBe(before);
     // "hand to the agent" next to it still works
     expect((await c.act({ kind: 'handBack', key: K(138) })).ok).toBe(true);
-    expect(fake.writes()).toHaveLength(2);
+    // GitHub#722: 「继续」 first; #138 does not carry "pending/human", so only the agent label follows
+    expect(restWrites()).toEqual([
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/comments', { body: '继续' }],
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['go'] }],
+    ]);
   });
 
   it('autopilot label added but the agent label refused: done with a warning that says it was not handed over', async () => {
@@ -205,7 +225,8 @@ describe('"hand to the agent" and "autopilot" (GitHub#205)', () => {
     const r = await c.act({ kind: 'autopilot', key: K(138) });
     expect(r.ok).toBe(true);
     // GitHub#250: every step is named, the one that failed with GitHub's reason
-    expect(r.warning).toContain('托管没有全部完成：已加上「autopilot」；加「pending/agent」没有成功');
+    // GitHub#722: the comment 「继续」 went out first
+    expect(r.warning).toContain('评论并托管没有全部完成：已发出评论；已加上「autopilot」；加「pending/agent」没有成功');
     expect(r.warning).toContain('还没摘「pending/human」');
   });
 });
@@ -232,9 +253,13 @@ describe('GitHub#404: the running label next to the hand-back labels', () => {
     const human = count('human');
     expect(c.getState().pendingCount).toBe(human);
     expect(human).toBe(items().filter((i) => isPending(i, 'pending/human')).length);
+    // waiting for a person on GitHub, so taking the default "human" label off really goes out (GitHub#722: after
+    // the comment 「继续」 each label is sent on a read made right before it — one already gone is not sent)
+    relabel(open[1].number, ['pending/human'], []);
     const sent = fake.writes().length;
     expect((await c.act({ kind: 'handBack', key: open[1].key })).ok).toBe(true);
     expect(fake.writes().slice(sent).map((w) => [w.method, w.path])).toEqual([
+      ['POST', `/api/repos/GigleAI/cavil-loop/issues/${open[1].number}/comments`],
       ['POST', `/api/repos/GigleAI/cavil-loop/issues/${open[1].number}/labels`],
       ['DELETE', `/api/repos/GigleAI/cavil-loop/issues/${open[1].number}/labels/pending%2Fhuman`],
     ]);
