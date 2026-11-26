@@ -186,6 +186,23 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
 }
 
 /**
+ * GitHub#708: the items the board leaves out while the search box is empty — the ones carrying their own
+ * repository's parked label (`LABEL_PENDING_LATER`), open or closed. The parked label is recognised exactly as the
+ * "稍后处理" number recognises it (`tallyEntries`): the shared name empty = off for every repository (the number is
+ * left out then too), else each item by its repository's own name, compared by `hasLabel`. Keys, so the list and
+ * the data the board and table bring related items in from drop the same items (the graph keeps them as faded ends).
+ */
+export function parkedKeys(items: readonly Item[], shared: string, laterOf: (repo: string) => string): Set<string> {
+  const out = new Set<string>();
+  if (shared.trim() === '') return out;
+  for (const it of items) {
+    const own = laterOf(it.repo).trim();
+    if (own !== '' && hasLabel(it, own)) out.add(it.key);
+  }
+  return out;
+}
+
+/**
  * GitHub#569: the items the board lists for a search — the board's own rule, in one place. The search through
  * the real filter, then, while a number narrowed per repository is lit (`lit`, from `litTally` with the pick),
  * only the items carrying their own repository's name. With no such number lit it is exactly the search.

@@ -396,7 +396,7 @@
   "一个操作改成一个键，原来的键随之不再起作用。Esc、↩、方向键、{first} … {last}、{close} 和缩放键是固定的，不能改。不带 {mod} 的单个键只在光标不在输入框里时生效。": "Changing an action to a key stops its old keys from working. Esc, ↩, the arrow keys, {first} … {last}, {close} and the zoom keys are fixed and cannot be changed. A single key without {mod} works only while the cursor is not in a text box.",
   "固定的键，不能改": "A fixed key; it cannot be changed",
   "固定": "Fixed",
-  "顶栏「稍后处理」，标签下拉里排在等人处理之后；留空 = 两样都不做": "The \"Later\" count, and right after the waiting-for-human label in label pickers; empty = neither",
+  "顶栏「稍后处理」；搜索框空着时列表里不显示带它的条目；标签下拉里排在等人处理之后；留空 = 三样都不做": "The \"Later\" count; items carrying it are left out of the list while the search box is empty; right after the waiting-for-human label in label pickers; empty = none of these",
   "「检查」和「读取变化」看不到被删除、被转走的条目，也看不到看板标题、保存的视图、写权限和只改了别的条目带来的依赖关系变化；这些要等整份重读（仓库约每 10 分钟一次，按变化读取的看板约每 60 分钟一次，读不成就更久）。": "A \"check\" and a \"read of changes\" do not see items deleted or transferred, nor changes to a board's title, its saved views, write access, or dependencies changed through another item; those wait for a full read (about every 10 minutes for a repository, about every 60 minutes for a board read by changes, longer when it fails).",
   "{source}：读取变化（{n} 个条目）{delta} · 整份读取 {read} · 上次检查 {checked}": {
     "one": "{source}: changes read ({n} item) {delta} · full read {read} · last check {checked}",
@@ -424,6 +424,10 @@
   "常用": "Common",
   "登录方式、Client ID": "Sign-in method, Client ID",
   "（Client ID 要处理，保持展开）": "(the Client ID needs attention, kept open)",
+  "另有 {n} 个稍后处理的条目没显示（点「稍后处理」查看）": {
+    "one": "{n} more item marked Later is not shown (click \"Later\" to see it)",
+    "other": "{n} more items marked Later are not shown (click \"Later\" to see them)"
+  },
   "另有 {n} 个 issue 随命中的 PR 显示": {
     "one": "{n} more issue shown with a matching PR",
     "other": "{n} more issues shown with matching PRs"

@@ -136,7 +136,9 @@ for k in issue-comment pr-comment; do
     si=$(grep -nxF -- "$S" "$TMP/$k.md" | head -1 | cut -d: -f1); qi=$(grep -nxF -- "$Q" "$TMP/$k.md" | head -1 | cut -d: -f1)
     [ -n "$si" ] && [ -n "$qi" ] && [ "$si" -lt "$qi" ] && ok "$k：排在纯提问一节之前" || bad "$k：「疑问 + 建议」一节的位置不对" "$si/$qi"
 done
-section "$TMP/issue-comment.md" "$Q" | grep -qF '只排在上一节「疑问 + 建议」之后：本轮有疑问 + 建议，或正在停下中，先照上一节办' \
+# the section goes through a file: piped into `grep -q` under pipefail, awk could die of SIGPIPE when grep quit early
+section "$TMP/issue-comment.md" "$Q" > "$TMP/q-issue"
+grep -qF '只排在上一节「疑问 + 建议」之后：本轮有疑问 + 建议，或正在停下中，先照上一节办' "$TMP/q-issue" \
     && ok "纯提问一节写明先照「疑问 + 建议」一节办" || bad "纯提问一节没指回「疑问 + 建议」一节"
 for k in new-issue review; do
     grep -qF '疑问 + 建议」可不可行（GitHub#654）' "$TMP/$k.md" && bad "$k 说明里不该有「疑问 + 建议」一节" || ok "$k 说明里没有「疑问 + 建议」一节"

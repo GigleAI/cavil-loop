@@ -37,7 +37,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { litTally, parkedKeys, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
 import { parkedScope } from '../shared/tallies';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
@@ -562,26 +562,37 @@ export function BoardView({
   // match brings that issue along, faded (board and table, with PRs under issues on — the builders check that)
   // GitHub#689: 「只看我的」 is a condition too — what it brings along is faded the same way
   const carrying = isFiltering(parsed) || mineOn;
-  const items = useMemo(() => {
+  // GitHub#708: while the search box is empty (no number lit, no condition), items carrying their repository's
+  // parked label are left out — from the list, and from the data the board and table bring related items in from
+  // (sub-issues under a parent, an issue under its PR), so nothing brings them back. The graph keeps every item as
+  // the other end of a relation: a parked blocker still shows, faded, and still counts in "被 N 项挡住".
+  const parked = useMemo(
+    () => (isFiltering(parsed) ? new Set<string>() : parkedKeys(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later)),
+    [parsed, data.items, handBack, repoLabels],
+  );
+  const related = useMemo(() => (parked.size ? data.items.filter((it) => !parked.has(it.key)) : data.items), [parked, data.items]);
+  const { items, parkedHidden } = useMemo(() => {
     // GitHub#569: a lit number whose repositories name its label differently narrows the search to each
     // repository's own name (the search box cannot say "this name in that repository")
     const hit = searchList(pool, parsed, { viewer: state.viewer, today, projects: data.projects }, litEntry);
-    return hideClosed ? openOnly(hit) : hit;
-  }, [pool, data.projects, parsed, state.viewer, today, hideClosed, litEntry]);
+    const listed = hideClosed ? openOnly(hit) : hit;
+    const kept = parked.size ? listed.filter((it) => !parked.has(it.key)) : listed;
+    return { items: kept, parkedHidden: listed.length - kept.length };
+  }, [pool, data.projects, parsed, state.viewer, today, hideClosed, litEntry, parked]);
   // the column / group lines are worded when built: built again when the language changes
   const lang = getLang();
   const board = useMemo(
-    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, carrying ? data.items : null),
+    () => buildBoard(items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, carrying ? related : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang, carrying, data.items],
+    [items, data.projects, view.mode, view.swimlanes, today, view.table.sort, view.prsUnderIssues, state.repoOrder, lang, carrying, related],
   );
   // GitHub#368: built once here, so the view bar's counts and the table come from the same result
   // GitHub#587: the repository sources shown on the board keep their place in the table when nothing of theirs is shown
   const tableRepos = useMemo(() => repoSources(state.sources, view.selected, sync.times), [state.sources, view.selected, sync.times]);
   const table = useMemo(
-    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, carrying) : null),
+    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, carrying) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, data.items, tableRepos, lang, carrying],
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, lang, carrying],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -997,6 +1008,7 @@ export function BoardView({
                   `${tallyCountText(e)} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(mineOn ? [t('只看我的：其中 {n} 个', { n: pool.length })] : []),
+                  ...(parkedHidden > 0 ? [t('另有 {n} 个稍后处理的条目没显示（点「稍后处理」查看）', { n: parkedHidden })] : []),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
                   ...(filtering && carriedCount > 0 ? [t('另有 {n} 个 issue 随命中的 PR 显示', { n: carriedCount })] : []),
