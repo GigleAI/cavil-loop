@@ -190,7 +190,7 @@ describe('merging with GitHub relations, and what a registration may name', () =
     await start([issue(56, [BLOCKED]), pr(60, 'closed', true), pr(61, 'open', false), pr(62, 'open', false)], [{ ...issue(45, []), node_id: 'I_data_45', html_url: `https://github.com/${OTHER}/issues/45` }]);
     fake.state.w.hiddenEnds.add(`${KEY}#99`);
     comment(fake, 56, MARK(`#60 #61 ${OTHER}#45 #99 #56`), '2026-11-12T05:34:59Z');
-    // the repository source lists open items and those touched in the last 14 days: #60 (merged long ago) is outside it, #61 inside
+    // GitHub#718: the repository source reads its whole history: #60 (merged long ago) and #61 are both in it
     const snap = await read();
     const ends = snap.items.find((i) => i.number === 56)!.loopBlocked!.ends;
     expect(ends.map((e) => [e.key, e.state, e.kind ?? 'issue'])).toEqual([
@@ -198,11 +198,12 @@ describe('merging with GitHub relations, and what a registration may name', () =
       [K(61), 'open', 'pr'],
       [K(45, OTHER.toLowerCase()), 'open', 'issue'],
     ]);
-    // #61 came from the read itself, #60 / #45 / #99 were asked for one by one; #56 naming itself is ignored
-    expect(ops().filter((o) => o === 'CavilLoopEnd')).toHaveLength(3);
+    // #60 / #61 came from the read itself, #45 / #99 (outside the source) were asked for one by one; #56 naming itself is ignored
+    expect(ops().filter((o) => o === 'CavilLoopEnd')).toHaveLength(2);
     const g = buildGraph(snap.items, snap.items, BLOCKED);
     expect(g.nodes.get(K(60))!.kind).toBe('pr');
-    expect(g.nodes.get(K(60))!.item).toBeNull(); // not in the sources: dashed
+    expect(g.nodes.get(K(60))!.item).not.toBeNull(); // in the source (GitHub#718: its whole history)
+    expect(g.nodes.get(K(45, OTHER.toLowerCase()))!.item).toBeNull(); // not in the sources: dashed
     expect(g.nodes.get(K(61))!.item).not.toBeNull(); // in the source: a PR node drawn only because a registration names it
     expect(g.edges).toEqual([
       { from: K(45, OTHER.toLowerCase()), to: K(56), open: true },
@@ -210,8 +211,8 @@ describe('merging with GitHub relations, and what a registration may name', () =
       { from: K(61), to: K(56), open: true },
     ]);
     expect(g.nodes.get(K(56))!.blockedByOpen).toBe(2);
-    // a PR goes in only as the end a registration names: #56 and #61 are shown, nothing hidden
-    expect(g.entries).toBe(2);
+    // a PR goes in only as the end a registration names: #56, #60 and #61 are shown, nothing hidden
+    expect(g.entries).toBe(3);
     // #62, a PR nobody names, is still never drawn
     expect(g.nodes.has(K(62))).toBe(false);
     expect(g.noRelation).toBe(1);

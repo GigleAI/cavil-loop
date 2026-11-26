@@ -2,6 +2,8 @@
 // closed when its pull request merges and keeps `pending/human` for a human to look at; a closed
 // item that last changed weeks ago is not in a repository's "open + last 14 days" lists, so the
 // repository source reads a third list — closed and carrying that label — whatever its age.
+// GitHub#718: the first read of a source (and one at least hourly) reads every closed item anyway
+// (the history read); the third list is what the regular full reads in between rely on.
 //
 // The controller against the fake GitHub over real HTTP, the real back end (Rust) as a child
 // process: real sync rounds (every one a full read: the change check is not what is tested here),
@@ -117,6 +119,10 @@ function setIssue(number: number, opts: { label?: string | null; ageDays: number
   i.updated_at = new Date(FIXTURE_NOW - opts.ageDays * DAY).toISOString();
 }
 
+/** GitHub#718: the history read's list — every closed item, no label, no time */
+const isHistoryList = (e: LoggedRequest) =>
+  e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.path.includes('state=closed') && !e.path.includes('labels=') && !e.path.includes('since=');
+
 const isClosedList = (e: LoggedRequest, label = LABEL) =>
   e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.path.includes('state=closed') && e.path.includes(`labels=${encodeURIComponent(label)}`);
 
@@ -149,17 +155,23 @@ it('the recording has closed issues to work with', () => {
 });
 
 describe('a repository source: closed items carrying the pending label, however old', () => {
-  it('an old closed labelled issue is counted, listed by the click, a reminder; an old closed unlabelled one is not read at all', async () => {
+  it('an old closed labelled issue is counted, listed by the click, a reminder; an old closed unlabelled one is on the board, not counted', async () => {
     const [OLD, OLD_FREE] = closedFree();
     setIssue(OLD, { label: LABEL, ageDays: REPO_RECENT_DAYS * 3 });
     setIssue(OLD_FREE, { label: null, ageDays: REPO_RECENT_DAYS * 3 });
     const h = await signedIn();
-    // "did happen": the round asked for the closed list of this label, and the read succeeded
-    expect(fake.log.some((e) => isClosedList(e) && e.status === 200)).toBe(true);
+    // "did happen": the first round read the whole history (GitHub#718), and the read succeeded
+    expect(fake.log.some((e) => isHistoryList(e) && e.status === 200)).toBe(true);
     expect(h.c.getState().sync.sources.every((s) => s.ok)).toBe(true);
+    // the next round is a regular full read: it asks for the closed list of this label, not the history
+    const sent = fake.log.length;
+    await tick(h);
+    expect(fake.log.slice(sent).some((e) => isClosedList(e) && e.status === 200)).toBe(true);
+    expect(fake.log.slice(sent).some(isHistoryList)).toBe(false);
     const board = h.c.getBoardData().items;
     expect(board.find((i) => i.key === key(OLD))?.state).toBe('closed');
-    expect(board.some((i) => i.key === key(OLD_FREE))).toBe(false);
+    expect(board.find((i) => i.key === key(OLD_FREE))?.state).toBe('closed');
+    expect(human(h.c).shown).not.toContain(key(OLD_FREE));
     const n = human(h.c);
     // the click no longer narrows to open items: the number and its list are the same items
     expect(n.query).toBe(`label:"${LABEL}"`);
@@ -194,6 +206,16 @@ describe('a repository source: closed items carrying the pending label, however 
     await tick(h);
     expect(human(h.c).count).toBe(before.count);
     expect(h.c.getState().pendingCount).toBe(before.pending);
+    expect(h.items()).toEqual([key(OLD)]);
+    // GitHub#718: its kept copy still carried the label, so it was left out; the next history read
+    // (an hour after the last) brings it back as it is now — closed, not waiting, nothing notified
+    expect(h.c.getBoardData().items.some((i) => i.key === key(OLD))).toBe(false);
+    const sent = fake.log.length;
+    h.clock.t += 60 * 60_000;
+    await tick(h);
+    expect(fake.log.slice(sent).some((e) => isHistoryList(e) && e.status === 200)).toBe(true);
+    expect(h.c.getBoardData().items.find((i) => i.key === key(OLD))?.state).toBe('closed');
+    expect(human(h.c).count).toBe(before.count);
     expect(h.items()).toEqual([key(OLD)]);
   });
 
@@ -234,14 +256,16 @@ describe('a repository source: closed items carrying the pending label, however 
     expect(fake.log.slice(quiet).some((e) => e.method === 'HEAD' && e.status === 304)).toBe(true);
     expect(fake.log.slice(quiet).some((e) => e.method === 'GET' && e.path.startsWith(`/api/repos/${REPO}/issues?`))).toBe(false);
     expect(human(h.c).shown).toContain(key(OLD));
-    expect(h.c.getBoardData().items.some((i) => i.key === key(OLD_OTHER))).toBe(false);
+    // GitHub#718: on the board since the first read (its whole history), not counted under this name
+    expect(h.c.getBoardData().items.some((i) => i.key === key(OLD_OTHER))).toBe(true);
+    expect(human(h.c).shown).not.toContain(key(OLD_OTHER));
     const sent = fake.log.length;
     h.c.setHandBack({ human: 'waiting' });
-    await waitUntil(() => !(!fake.log.slice(sent).some((e) => isClosedList(e, 'waiting') && e.status === 200)), '不再满足：!fake.log.slice(sent).some((e) => isClosedList(e, "waiting") && e.status === 200)');
+    // the older items were read under the other name: only a history read can vouch for them now
+    await waitUntil(() => fake.log.slice(sent).some((e) => isHistoryList(e) && e.status === 200), 'the history read for the new name');
     await h.c.desktopSettled();
-    await waitUntil(() => !(!h.c.getBoardData().items.some((x) => x.key === key(OLD_OTHER))), '不再满足：!h.c.getBoardData().items.some((x) => x.key === key(OLD_OTHER))');
-    // "did happen": the new name's closed list was read, and the old closed one under it is on the board
-    expect(fake.log.slice(sent).some((e) => isClosedList(e, 'waiting') && e.status === 200)).toBe(true);
+    await waitUntil(() => human(h.c).shown.includes(key(OLD_OTHER)), 'the old closed one counted under the new name');
+    // "did happen": the history was read again, and the old closed one under the new name is counted
     const n = human(h.c);
     expect(n.query).toBe('label:"waiting"');
     expect(n.shown).toContain(key(OLD_OTHER));
@@ -256,16 +280,27 @@ describe('the read itself', () => {
   const src = () => parseSource(REPO) as Extract<SourceConfig, { kind: 'repo' }>;
   const client = () => new GitHubClient({ api: fake.api, web: fake.web }, FAKE_TOKEN);
 
-  it('no pending label: the closed list is not asked for, the old closed item is not there, and the snapshot says no label was read', async () => {
+  /** GitHub#718: a regular full read starts from a history read of a minute before, under the same label */
+  const afterHistory = async (label = '') => {
+    const prev = await fetchRepo(client(), src(), FIXTURE_NOW - 60_000, undefined, '', label);
+    expect(prev.historyAt).toBe(FIXTURE_NOW - 60_000);
+    return prev;
+  };
+
+  it('no pending label: the closed list is not asked for, the old closed item is kept from the history, and the snapshot says no label was read', async () => {
     const [OLD] = closedFree();
     setIssue(OLD, { label: LABEL, ageDays: REPO_RECENT_DAYS * 3 });
+    const prev = await afterHistory();
+    expect(prev.items.find((i) => i.key === key(OLD))?.state).toBe('closed');
+    // changed on GitHub without its update time moving: a regular read does not see it
+    repoList().find((x: any) => x.number === OLD).title = 'renamed later';
     const sent = fake.log.length;
-    const snap = await fetchRepo(client(), src(), FIXTURE_NOW);
-    expect(fake.log.slice(sent).some((e) => e.path.includes('labels='))).toBe(false);
+    const snap = await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', '', null, prev);
+    expect(fake.log.slice(sent).some((e) => e.path.includes('state=closed'))).toBe(false);
     // "did happen": the two usual lists were read
     expect(fake.log.slice(sent).filter((e) => e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.status === 200).length).toBeGreaterThanOrEqual(2);
-    expect(snap.items.length).toBeGreaterThan(0);
-    expect(snap.items.some((i) => i.key === key(OLD))).toBe(false);
+    expect(snap.items.find((i) => i.key === key(OLD))?.title).toBe(prev.items.find((i) => i.key === key(OLD))!.title);
+    expect(snap.historyAt).toBe(prev.historyAt);
     expect(snap.pendingLabel).toBe('');
   });
 
@@ -289,23 +324,28 @@ describe('the read itself', () => {
     // GitHub reads `labels=a,b` as "a and b": an item with both `a` and `b`, but not `a,b`
     const o = repoList().find((x: any) => x.number === OTHER);
     o.labels = [...o.labels, { name: 'a', color: '' }, { name: 'b', color: '' }];
+    const prev = await afterHistory('a,b');
+    // GitHub#718: renamed after the history read, update times unchanged — only an item this regular
+    // read takes from its closed list shows the new title; the others keep the history's copy
+    for (const n of [OLD, OTHER, FREE]) repoList().find((x: any) => x.number === n).title = `renamed ${n}`;
     // more closed items than one page: the whole list is followed to its end
     fake.state.restPageSize = 2;
     const sent = fake.log.length;
-    const snap = await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b');
+    const snap = await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b', null, prev);
     const asked = fake.log.slice(sent).filter((e) => e.path.startsWith(`/api/repos/${REPO}/issues?`) && e.path.includes('state=closed'));
     // "did happen": the closed list was read, without a `labels` parameter, page after page
     expect(asked.length).toBeGreaterThan(1);
     expect(asked.every((e) => !e.path.includes('labels=') && e.status === 200)).toBe(true);
-    expect(snap.items.find((i) => i.key === key(OLD))?.state).toBe('closed');
-    expect(snap.items.some((i) => i.key === key(OTHER))).toBe(false);
-    expect(snap.items.some((i) => i.key === key(FREE))).toBe(false);
+    expect(snap.items.find((i) => i.key === key(OLD))?.title).toBe(`renamed ${OLD}`);
+    expect(snap.items.find((i) => i.key === key(OTHER))?.title).not.toBe(`renamed ${OTHER}`);
+    expect(snap.items.find((i) => i.key === key(FREE))?.title).not.toBe(`renamed ${FREE}`);
     expect(snap.pendingLabel).toBe('a,b');
   });
 
   it('a name without a comma is asked for directly: GitHub returns only the items carrying it', async () => {
+    const prev = await afterHistory(LABEL);
     const sent = fake.log.length;
-    await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', LABEL);
+    await fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', LABEL, null, prev);
     const asked = fake.log.slice(sent).filter((e) => e.path.includes('state=closed'));
     expect(asked.length).toBeGreaterThan(0);
     expect(asked.every((e) => e.path.includes(`labels=${encodeURIComponent(LABEL)}`))).toBe(true);
@@ -314,10 +354,11 @@ describe('the read itself', () => {
   it('the whole closed list failing mid-way (a name with a comma) fails the read: nothing half is returned', async () => {
     const [OLD] = closedFree();
     setIssue(OLD, { label: 'a,b', ageDays: REPO_RECENT_DAYS * 3 });
+    const prev = await afterHistory('a,b');
     fake.state.restPageSize = 2;
     fake.state.answerOverride = (e) => (e.path.includes('state=closed') && /[?&]page=2(&|$)/.test(e.path) ? { status: 502, body: { message: 'Server Error' } } : null);
     const sent = fake.log.length;
-    await expect(fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b')).rejects.toThrow();
+    await expect(fetchRepo(client(), src(), FIXTURE_NOW, undefined, '', 'a,b', null, prev)).rejects.toThrow();
     // "did happen": the second page was asked for and refused
     expect(fake.log.slice(sent).some((e) => e.path.includes('state=closed') && e.status === 502)).toBe(true);
   });

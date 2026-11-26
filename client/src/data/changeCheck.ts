@@ -14,7 +14,7 @@
 //           last page would otherwise go unseen)
 //   repo    "the most recently updated issue / PR" (HEAD, one item)
 // Neither shows saved views, the board title, the account's write permission, or
-// (repo) an issue deleted / transferred / sliding out of the 14-day window: every
+// (repo) an issue deleted / transferred (GitHub#718: an old closed one only by the hourly history read): every
 // source is read in full at least every FULL_READ_EVERY_MS regardless.
 
 import type { SourceConfig } from '../shared/types';

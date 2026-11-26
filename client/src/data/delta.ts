@@ -21,7 +21,7 @@ import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
 import { t } from '../shared/i18n';
 import { PROJECT_ITEMS_BY_IDS_QUERY } from './queries';
-import { completeRepoItems, contentToItem, keepInRepo, readMembership, repoListItem, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
+import { completeRepoItems, contentToItem, readMembership, repoListItem, withRelations, type GqlContent, type GqlFieldValue } from './fetchSources';
 import { readLoopBlocked, type LabelFor } from './loopBlocked';
 import { RELATION_BATCH_SIZE } from './relations';
 
@@ -232,7 +232,7 @@ export async function readBoardChanges(
   };
 }
 
-/** A repository: the issues / PRs updated since the last read, re-read (REST + their relations) and merged; then the 14-day rule. */
+/** A repository: the issues / PRs updated since the last read, re-read (REST + their relations) and merged (GitHub#718: every item stays). */
 export async function readRepoChanges(
   client: GitHubClient,
   src: Repo,
@@ -274,7 +274,7 @@ export async function readRepoChanges(
     snap: {
       ...snap,
       fetchedAt: now,
-      items: [...items.values()].filter((it) => keepInRepo(it, now, pending)),
+      items: [...items.values()],
       syncedThrough: serverAt,
       lastRead: { kind: 'delta', at: now, count: fresh.length },
     },

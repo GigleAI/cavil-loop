@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCavilProjectPages, loadCavilRepoIssues, loadRelationIssues, loadRelationPages, recordingShiftMs, shiftRecorded } from '../fake-github/server';
-import { keepInRepo, repoListItem, REPO_RECENT_DAYS } from '../../src/data/fetchSources';
+import { REPO_RECENT_DAYS } from '../../src/data/fetchSources';
 
 const DAY = 86_400_000;
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures');
@@ -93,15 +93,17 @@ describe('GitHub#572: recordings served as of a moment', () => {
     expect(both).toBeGreaterThan(0);
   });
 
-  it('the real 14-day rule: as of a later moment the closed #122 is kept only when served as of that moment', () => {
+  // GitHub#718: the history read lists every item whatever its age; a regular full read still asks for
+  // what changed in the last REPO_RECENT_DAYS days, and the shift keeps the recordings inside that window
+  it('the real 14-day list: as of a later moment the closed #122 falls in it only when served as of that moment', () => {
     const at = Date.UTC(2026, 11, 31, 12);
     expect(REPO_RECENT_DAYS).toBe(14);
-    const item = (rec: any[]) => {
+    const inWindow = (rec: any[]) => {
       const r = rec.find((i: any) => i.number === 122);
       expect(r.state).toBe('closed');
-      return repoListItem('GigleAI/cavil-loop', r, 'repo:gigleai/cavil-loop').item;
+      return Date.parse(r.updated_at) >= at - REPO_RECENT_DAYS * 86_400_000;
     };
-    expect(keepInRepo(item(loadCavilRepoIssues(at)), at, '')).toBe(true);
-    expect(keepInRepo(item(loadCavilRepoIssues(null)), at, '')).toBe(false);
+    expect(inWindow(loadCavilRepoIssues(at))).toBe(true);
+    expect(inWindow(loadCavilRepoIssues(null))).toBe(false);
   });
 });

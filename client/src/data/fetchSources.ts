@@ -9,13 +9,20 @@ import { GitHubClient, GitHubError } from './github';
 import { t } from '../shared/i18n';
 import { ISSUE_RELATIONS_BATCH_QUERY, PROJECT_ITEMS_QUERY } from './queries';
 import { bodyIssueRefs } from './prNest';
-import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, type GqlRelationFields } from './relations';
+import { completeRelations, fetchNodesBatch, noRelations, readRelations, RELATION_BATCH_SIZE, relationsKnown, type GqlRelationFields } from './relations';
 import { readViewerTies, type GqlViewerFields } from './viewerTies';
-import { readLoopBlocked, type LabelFor } from './loopBlocked';
+import { loopKnown, readLoopBlocked, type LabelFor } from './loopBlocked';
 import { hasLabel } from './pending';
 
 export const STATUS_FIELD_NAME = 'Status';
 export const REPO_RECENT_DAYS = 14;
+/**
+ * GitHub#718: a repository source reads its whole history (every issue / PR, open or closed) at least
+ * this often; in between, its full reads ask only for the open, recent and closed pending ones and keep
+ * the older closed items of the previous snapshot. The history read is what drops an old item deleted
+ * or transferred on GitHub (nothing else lists it), so such an item can linger up to this long.
+ */
+export const REPO_HISTORY_EVERY_MS = 60 * 60_000;
 const MAX_PROJECT_PAGES = 200;
 
 interface GqlIteration {
@@ -358,10 +365,37 @@ export function closedPendingPath(base: string, label: string): string {
 }
 
 /**
- * Every open issue / PR, plus everything (open or closed) updated in the last 14 days, plus
- * (GitHub#462) every closed one carrying the pending label (`pendingLabel`, '' = not read): those
- * still wait for a human however long ago they last changed. The snapshot says which label that
- * third list was read for (`pendingLabel`), so a read under another setting is not vouched for.
+ * GitHub#718: must this repository source's next read be a history read? Yes when the snapshot has none
+ * (a source just added, or one cached before #718) or its history read is REPO_HISTORY_EVERY_MS old.
+ * A history time that cannot be judged (in the future: the clock went back) means yes.
+ */
+export function repoHistoryDue(prev: SourceSnapshot | undefined, now: number): boolean {
+  if (!prev || typeof prev.historyAt !== 'number') return true;
+  const age = now - prev.historyAt;
+  return !(age >= 0 && age < REPO_HISTORY_EVERY_MS);
+}
+
+/**
+ * GitHub#718: may a full read keep `prev`'s older closed items as they are? Only when they were read
+ * under the settings this read uses (the pending label, the loop's waiting label) and with their
+ * relations — otherwise only reading them again can fill that in, and the read is a history read.
+ */
+function historyKept(prev: SourceSnapshot | undefined, now: number, loopLabel: LabelFor, pending: string): prev is SourceSnapshot {
+  return !repoHistoryDue(prev, now) && (prev!.pendingLabel ?? '') === pending && relationsKnown(prev!.items) && loopKnown(prev!.items, loopLabel);
+}
+
+/**
+ * A repository's issues / PRs: all of them (GitHub#718). Two kinds of full read:
+ *   regular  every open one, plus everything updated in the last 14 days, plus (GitHub#462) every
+ *            closed one carrying the pending label (`pendingLabel`, '' = not read); every other item
+ *            of `prev` is a closed one that has not changed in 14 days (any change moves its updated
+ *            time into the second list) and is kept as it was read
+ *   history  the first two lists plus every closed item (`state=closed`, no time filter: it holds the
+ *            closed pending ones too) — the first read of a source, then at least every
+ *            REPO_HISTORY_EVERY_MS (`repoHistoryDue`), and whenever `prev`'s older items were read under
+ *            other settings
+ * The snapshot says which label the pending list was read for (`pendingLabel`) and when the history
+ * was read (`historyAt`).
  */
 export async function fetchRepo(
   client: GitHubClient,
@@ -375,54 +409,56 @@ export async function fetchRepo(
   pendingLabel: string = '',
   /** GitHub#545: GitHub's clock at the start of this round (null = not known) */
   serverAt: number | null = null,
+  /** GitHub#718: the source's previous snapshot (absent = none: the read is a history read) */
+  prev?: SourceSnapshot,
 ): Promise<SourceSnapshot> {
   const repo = `${src.owner}/${src.name}`;
   const base = `/repos/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.name)}/issues`;
-  const since = new Date(now - REPO_RECENT_DAYS * 86_400_000).toISOString();
   const pending = pendingLabel.trim();
-  const [open, recent, closedPending] = await Promise.all([
+  const keep = historyKept(prev, now, loopLabel, pending) ? prev : null;
+  const since = new Date(now - REPO_RECENT_DAYS * 86_400_000).toISOString();
+  const [open, recent, closedPending, history] = await Promise.all([
     client.restList<RestIssue>(`${base}?state=open&per_page=100`),
     client.restList<RestIssue>(`${base}?state=all&since=${encodeURIComponent(since)}&per_page=100`),
     // GitHub's `labels` takes a comma-separated list (items carrying all of them): a name with a comma
     // in it cannot be asked for whole — GitHub would answer for its parts and never return an item
     // carrying the whole name (PR #481 review round 1). Such a name reads every closed item instead;
     // either answer is filtered here to the items really carrying the whole name.
-    pending ? client.restList<RestIssue>(closedPendingPath(base, pending)) : Promise.resolve([] as RestIssue[]),
+    pending && keep ? client.restList<RestIssue>(closedPendingPath(base, pending)) : Promise.resolve([] as RestIssue[]),
+    // GitHub#718: the history read — every closed item, however old (it holds the closed pending ones too)
+    keep ? Promise.resolve([] as RestIssue[]) : client.restList<RestIssue>(`${base}?state=closed&per_page=100`),
   ]);
+  const carries = (r: RestIssue) => r.labels.some((l) => (typeof l === 'string' ? l : l.name).toLowerCase() === pending.toLowerCase());
+  const listed = [...open, ...recent, ...closedPending.filter(carries), ...history];
   const items = new Map<string, Item>();
   const related = new Map<string, boolean>();
-  const carries = (r: RestIssue) => r.labels.some((l) => (typeof l === 'string' ? l : l.name).toLowerCase() === pending.toLowerCase());
-  for (const r of [...open, ...recent, ...closedPending.filter(carries)]) {
+  for (const r of listed) {
     const it = restToItem(repo, r, src.key);
-    const prev = items.get(it.key);
-    if (!prev || prev.updatedAt < it.updatedAt) {
+    const prevIt = items.get(it.key);
+    if (!prevIt || prevIt.updatedAt < it.updatedAt) {
       items.set(it.key, it);
       related.set(it.key, hasRelations(r));
     }
   }
   await completeRepoItems(client, repo, [...items.values()], related, now, batchSize, loopLabel, pending);
+  const fresh = [...items.values()].map((it) => (serverAt !== null ? { ...it, seenAt: serverAt } : it));
+  // GitHub#718: what `prev` holds beyond these lists is kept as it was read, except
+  //   - an open item: it was closed (then it is in the recent list), deleted or transferred
+  //   - a closed one carrying the pending label: the pending list holds every closed item carrying it,
+  //     so the label was taken off — its copy would still count as waiting for a human. Left out until
+  //     the next history read brings it back as it is now (on GitHub a label change moves the update
+  //     time, so the recent list normally has it already)
+  const kept = keep ? keep.items.filter((it) => !items.has(it.key) && it.state !== 'open' && !(pending !== '' && hasLabel(it, pending))) : [];
   return {
     sourceKey: src.key,
     fetchedAt: now,
-    items: [...items.values()].filter((it) => keepInRepo(it, now, pending)).map((it) => (serverAt !== null ? { ...it, seenAt: serverAt } : it)),
+    items: [...fresh, ...kept],
     pendingLabel: pending,
+    historyAt: keep ? keep.historyAt : now,
     ...(serverAt !== null ? { syncedThrough: serverAt } : {}),
     lastRead: { kind: 'full', at: now },
     fullReadAt: now,
   };
-}
-
-/**
- * GitHub#545: which items a repository source shows — every open one, everything updated in the last
- * REPO_RECENT_DAYS days, and every closed one carrying the pending label. The one rule for the full
- * read (whose three lists ask for exactly these) and the read of changes (which applies it to the
- * merged snapshot every round, so an item sliding out of the 14 days goes without a full read).
- */
-export function keepInRepo(it: Item, now: number, pendingLabel: string): boolean {
-  if (it.state === 'open') return true;
-  const at = Date.parse(it.updatedAt);
-  if (Number.isFinite(at) && at >= now - REPO_RECENT_DAYS * 86_400_000) return true;
-  return pendingLabel !== '' && hasLabel(it, pendingLabel);
 }
 
 /**
@@ -482,6 +518,15 @@ export function repoListItem(repo: string, r: unknown, srcKey: string): { item: 
   return { item: restToItem(repo, x, srcKey), related: hasRelations(x) };
 }
 
-export function fetchSource(client: GitHubClient, src: SourceConfig, now: number, loopLabel: LabelFor = '', pendingLabel: string = '', serverAt: number | null = null): Promise<SourceSnapshot> {
-  return src.kind === 'project' ? fetchProject(client, src, now, loopLabel, serverAt) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel, pendingLabel, serverAt);
+export function fetchSource(
+  client: GitHubClient,
+  src: SourceConfig,
+  now: number,
+  loopLabel: LabelFor = '',
+  pendingLabel: string = '',
+  serverAt: number | null = null,
+  /** GitHub#718: the source's previous snapshot (a repository keeps its older closed items from it) */
+  prev?: SourceSnapshot,
+): Promise<SourceSnapshot> {
+  return src.kind === 'project' ? fetchProject(client, src, now, loopLabel, serverAt) : fetchRepo(client, src, now, RELATION_BATCH_SIZE, loopLabel, pendingLabel, serverAt, prev);
 }
