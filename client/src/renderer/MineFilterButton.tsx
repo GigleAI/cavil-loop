@@ -1,5 +1,6 @@
 // GitHub#689: the view bar's 「只看我的」 — one button; a press opens a small panel with the switch and its two
-// boxes (我提出的 / 指派给我). Which items it picks is `mineOnly` (shared/filter.ts), applied by the board to
+// boxes (我提出的 / 指派给我). GitHub#721: it is an ordinary bordered button with a down arrow even while off, so it
+// reads as a control that opens something, not as the label of the "显示已关闭" switch next to it. Which items it picks is `mineOnly` (shared/filter.ts), applied by the board to
 // every layout and the view-bar numbers; this file only draws the control and sends the change.
 //
 // The panel closes like the view bar's fold (TallyBar): a press elsewhere, the window losing focus, Esc pressed
@@ -8,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MineFilter } from '../shared/uiPrefs';
 import { t } from '../shared/i18n';
+import { Icon } from './Icons';
 
 /** the hover text of the button: what the switch does now */
 export function mineTip(f: MineFilter, viewer: string | null): string {
@@ -58,7 +60,7 @@ export function MineFilterButton({ filter, viewer, onChange }: { filter: MineFil
     >
       <button
         type="button"
-        className={lit ? 'on' : 'ghost'}
+        className={lit ? 'on' : undefined}
         data-testid="mine-filter-toggle"
         data-on={lit ? 'yes' : 'no'}
         aria-expanded={open}
@@ -68,6 +70,7 @@ export function MineFilterButton({ filter, viewer, onChange }: { filter: MineFil
         onClick={() => setOpen(!open)}
       >
         {t('只看我的')}
+        <Icon name="chevron" size={12} />
       </button>
       {open && known && (
         <span className="mine-filter-pop" data-testid="mine-filter-pop" role="group" aria-label={t('只看我的')}>

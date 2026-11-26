@@ -967,6 +967,8 @@ export function BoardView({
           </>
         )}
         <MineFilterButton filter={state.mineFilter} viewer={state.viewer} onChange={(patch) => void Promise.resolve(api().setMineFilter(patch)).catch(() => undefined)} />
+        {/* GitHub#721: keeps 「只看我的」 apart from the "显示已关闭" switch that follows it */}
+        <span className="vbar-sep" data-testid="mine-filter-sep" aria-hidden="true" />
         <label
           className={`toggle${statesInSearch ? ' disabled' : ''}`}
           data-testid="show-closed-toggle"

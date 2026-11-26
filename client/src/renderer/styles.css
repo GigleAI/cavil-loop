@@ -1187,7 +1187,9 @@ table.items tr.repo-blank .link:disabled { opacity: 0.5; cursor: default; }
 
 /* GitHub#689: 「只看我的」 — a button in the view bar and its small panel */
 .mine-filter { position: relative; display: inline-flex; }
-.mine-filter > button { padding: 0 8px; }
+.mine-filter > button { padding: 0 6px 0 10px; gap: 4px; }
+/* GitHub#721: a thin line between 「只看我的」 and the "显示已关闭" switch */
+.vbar-sep { flex: none; width: 1px; height: 18px; background: var(--border); }
 .mine-filter-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 6px; min-width: 240px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); white-space: nowrap; font-size: 13px; }
 .mine-filter-pop .toggle { color: var(--fg); }
 .mine-filter-boxes { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; }
