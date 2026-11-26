@@ -530,9 +530,12 @@ export class GitHubClient {
     // GitHub#558: GitHub's own clock (the Date header, whole seconds), null when it did not say
     const date = Date.parse(res.headers.get('date') ?? '');
     const serverAt = Number.isFinite(date) ? date : null;
+    // GitHub#713: the notification inbox says how often it may be asked (X-Poll-Interval, seconds)
+    const pollRaw = Number(res.headers.get('x-poll-interval'));
+    const pollSecs = Number.isFinite(pollRaw) && pollRaw > 0 ? pollRaw : null;
     // an answer without a version tag says nothing checkable — "not modified" included (PR #272 review round 1)
     if ((res.status === 304 || res.status === 200) && !tag) throw new GitHubError('http', t('变化检查：HTTP {status} 的回答没有版本标记', { status: res.status }), res.status);
-    if (res.status === 304) return { status: 304, etag: tag!, next, body: null, serverAt };
+    if (res.status === 304) return { status: 304, etag: tag!, next, body: null, serverAt, pollSecs };
     // only a plain 200 says "this is the current version"; any other success is not checkable
     if (res.status !== 200) throw new GitHubError('http', t('变化检查收到意外的 HTTP {status}', { status: res.status }), res.status);
     let body: unknown = null;
@@ -543,7 +546,7 @@ export class GitHubClient {
         throw outsideError('network', zhKey('GitHub 回应不完整：{why}'), { why: { text: (e as Error).message, from: 'system' } });
       }
     }
-    return { status: 200, etag: tag!, next, body, serverAt };
+    return { status: 200, etag: tag!, next, body, serverAt, pollSecs };
   }
 
   /** GET a REST list endpoint and follow every `Link: rel="next"` page. */
@@ -578,6 +581,8 @@ export interface ConditionalAnswer {
   body: unknown;
   /** GitHub#558: GitHub's clock when it answered (the Date header); null = it did not say */
   serverAt: number | null;
+  /** GitHub#713: X-Poll-Interval in seconds (the notification inbox); null = not said */
+  pollSecs: number | null;
 }
 
 export function nextLink(header: string | null): string | null {

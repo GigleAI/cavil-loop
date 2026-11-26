@@ -13,7 +13,7 @@ import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettin
 import { normalizeMergePrefs, rememberMergeMethod } from '../shared/mergePrefs';
 import { DEFAULT_THEME_SETTING, THEME_SETTING, normalizeThemeSetting, resolveTheme, windowScheme, type SystemScheme, type ThemeSetting } from '../shared/theme';
 import { nestSaid, noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_LANG_SETTING, LANG_SETTING, normalizeLangSetting, preferredLanguages, resolveLang, setLang, type Lang, type Said } from '../shared/i18n';
-import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeLaneFolds, normalizeMineFilter, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold, setMineFilter } from '../shared/uiPrefs';
+import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeGithubActivity, normalizeGithubActivityMarkRead, normalizeLaneFolds, normalizeMineFilter, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold, setMineFilter } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
 import { normalizeHandoff, type Handoff } from '../shared/handoff';
@@ -123,6 +123,7 @@ import { readProjectChoices } from '../data/projectChoices';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
+import { ActivityTracker, COMMENT_READS_PER_ROUND, activityText, parseComment, parseThreads, threadWebUrl, type CommentFacts, type Covering, type Thread } from '../data/notifications';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 import type { WindowFrame } from '../shared/ipc';
 
@@ -142,6 +143,17 @@ export function offlineFields(offline: boolean, reason: string | null): { offlin
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** GitHub#374: a source waiting to be read again is read by a round that starts at most this much before its time */
 export const RETRY_SLACK_MS = 10_000;
+
+/** GitHub#713: one activity reminder of a round (`session`: the sign-in it belongs to). */
+interface ActivityAlert {
+  key: string;
+  session: number;
+  /** the sources it reminds through, each as the addition it was (re-checked right before it goes out) */
+  ctx: NoticeContext;
+  url: string;
+  title: string;
+  body: string;
+}
 
 /** What a queued notification was decided on (see Controller.noticeContext). */
 interface NoticeContext {
@@ -316,6 +328,14 @@ const CLEAR_ALL_ON_ACTIVATE = 'clearAllOnActivate';
 const DELTA_FAILS_MAX = 3;
 /** GitHub#373: which pending items remind ('all' / 'mine'), kept on this machine */
 const NOTIFY_SCOPE = 'notifyScope';
+/** GitHub#713: also remind of GitHub's own "和我有关" activity (the notification inbox); on unless switched off */
+const GITHUB_ACTIVITY = 'githubActivity';
+/** GitHub#713: opening an item in the app marks its GitHub notification read; off unless switched on */
+const GITHUB_ACTIVITY_MARK_READ = 'githubActivityMarkRead';
+/** GitHub#713: the inbox address read each round (participating = mentioned, author, commented, asked, assigned) */
+const ACTIVITY_PATH = '/notifications?participating=true&per_page=50';
+/** GitHub#713: the gap between two inbox reads when GitHub does not say (it says 60 s, measured 2026-11-26) */
+const ACTIVITY_POLL_SECS = 60;
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 /** GitHub#397: the open detail tabs (order, what each last showed) */
@@ -627,6 +647,10 @@ export class Controller {
       ...((r) => ({ shortcutKeys: r.keys as Record<string, ShortcutKeySpec>, shortcutDropped: r.dropped }))(repairKeys(this.cache.getSetting<unknown>(SHORTCUT_KEYS, null))),
       clearAllOnActivate: normalizeClearAllOnActivate(this.cache.getSetting<unknown>(CLEAR_ALL_ON_ACTIVATE, false)),
       notifyScope,
+      githubActivity: normalizeGithubActivity(this.cache.getSetting<unknown>(GITHUB_ACTIVITY, true)),
+      githubActivityMarkRead: normalizeGithubActivityMarkRead(this.cache.getSetting<unknown>(GITHUB_ACTIVITY_MARK_READ, false)),
+      githubActivityProblem: null,
+      githubMarkReadProblem: null,
       uiLanguage,
       lang,
       uiTheme,
@@ -1020,6 +1044,7 @@ export class Controller {
     this.sendsStored = false;
     this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [], labelJobs: [] };
     this.pending.reset();
+    this.forgetActivity();
     this.unread.clear();
     this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
@@ -1045,6 +1070,19 @@ export class Controller {
   private desktopEra = 0;
   /** items not yet seen (GitHub#185): the Dock badge */
   private unread = new Set<string>();
+  /** GitHub#713: GitHub's notification inbox, as last read whole, and which of its threads reminded */
+  private activity = new ActivityTracker();
+  /** GitHub#713: the inbox's version tag (a 304 = unchanged), the earliest next read, the login it belongs to */
+  private activityEtag: string | null = null;
+  private activityNextAt = 0;
+  private activityViewer: string | null = null;
+  /** GitHub#713: threads being marked read now (one request each at a time) */
+  private markingRead = new Map<string, Promise<void>>();
+  /**
+   * GitHub#713: when each source was added in this run (this machine's clock; absent = configured at
+   * start, covered by the inbox's own baseline). Activity before it is history for that source.
+   */
+  private sourceAddedAt = new Map<string, number>();
   /** the window is in front (the shell says so); while it is, new items are seen as they come */
   private active = false;
   /** GitHub#522: the item whose detail is in front of the window now (floating panel or a detail tab), null = none */
@@ -1116,6 +1154,7 @@ export class Controller {
   }
 
   private itemSeen(key: string): void {
+    this.markActivityRead(key);
     if (this.unread.delete(key)) {
       this.set({ unreadCount: this.unreadNow() });
       this.badge();
@@ -1180,20 +1219,190 @@ export class Controller {
    * Feed the snapshots read completely this round; notify what became pending. A source's first
    * read is only its baseline: no notification, no summary, nothing unread (GitHub#251).
    */
-  private observePending(fresh: SourceSnapshot[], viewer: string | null): void {
+  private observePending(fresh: SourceSnapshot[], viewer: string | null, activity: Map<string, ActivityAlert> = new Map()): void {
     // GitHub#373: whose reminders — the login as this round read it (a change is recomputed silently)
     this.pending.setAudience({ scope: this.state.notifyScope, viewer });
     const change = this.pending.observe(fresh, this.state.sources.map((s) => s.key));
     // unread (the badge): what arrived while the user was not looking at the window
     if (!this.active) for (const it of change.appeared) this.unread.add(it.key);
+    const left = new Map(activity);
     for (const it of change.appeared) {
       const ctx = this.noticeContext(this.pending.carriers(it.key));
-      const alert: Alert = { kind: 'item', key: it.key, url: it.url, ...itemAlertText(it) };
+      const text = itemAlertText(it);
+      // GitHub#713: the same item with new activity this round is one notification, the pending one, saying both
+      const also = left.get(it.key);
+      left.delete(it.key);
+      const alert: Alert = { kind: 'item', key: it.key, url: it.url, title: text.title, body: also ? `${text.body}\n${also.title}` : text.body };
       this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
     }
+    // GitHub#713: the activity reminders; not counted in the badge (an item outside the board could never be cleared there)
+    for (const a of left.values()) this.notify(() => (this.activityStillHolds(a) ? { kind: 'item', key: a.key, url: a.url, title: a.title, body: a.body } : null));
     this.badge();
     this.prefetchAppeared(change.appeared);
     this.state = { ...this.state, ...this.pendingNow() };
+  }
+
+  // ---- GitHub#713: GitHub's own activity concerning the account (the notification inbox) ----
+
+  /** The inbox is read, and reminds: the setting is on and the sign-in can read it (a GitHub App's cannot). */
+  private activityOn(): boolean {
+    return this.state.githubActivity && this.state.signedInAppKind !== 'github-app';
+  }
+
+  /**
+   * An activity reminder still holds right before it goes out: the same sign-in, the setting on, and
+   * at least one source it came through still configured as the same addition and still holding the
+   * item (the rule pending reminders go by, itemStillHolds — without its pending-label check, which
+   * says nothing about this activity).
+   */
+  private activityStillHolds(a: ActivityAlert): boolean {
+    if (a.session !== this.session || !this.activityOn()) return false;
+    const now = new Set(this.activitySourcesOf()(a.key).map((c) => c.key));
+    return this.liveSources(a.ctx).some((k) => now.has(k));
+  }
+
+  /**
+   * Which sources hold an item now, each with the time it was added in this run (repository sources:
+   * every item of the repository). `skew` = GitHub's clock minus this machine's: the addition times are
+   * put on GitHub's clock, the one the inbox's times are on.
+   */
+  private activitySourcesOf(skew = 0): (key: string) => Covering[] {
+    const since = (k: string) => (this.sourceAddedAt.get(k) ?? -Infinity) + skew;
+    const repos = new Map<string, string>();
+    const boards: [string, Set<string>][] = [];
+    for (const src of this.state.sources) {
+      if (src.kind === 'repo') repos.set(`${src.owner}/${src.name}`.toLowerCase(), src.key);
+      else boards.push([src.key, new Set((this.snapshots.get(src.key)?.items ?? []).map((i) => i.key))]);
+    }
+    return (key: string) => {
+      const found: Covering[] = [];
+      const repo = repos.get(key.slice(0, key.lastIndexOf('#')));
+      if (repo) found.push({ key: repo, since: since(repo) });
+      for (const [k, items] of boards) if (items.has(key)) found.push({ key: k, since: since(k) });
+      return found;
+    };
+  }
+
+  /** Forget the inbox: sign-out, another account, the setting switched off. */
+  private forgetActivity(): void {
+    this.activity.reset();
+    this.activityEtag = null;
+    this.activityNextAt = 0;
+    this.activityViewer = null;
+    this.markingRead.clear();
+  }
+
+  /**
+   * One round's part: read the inbox (when due), decide what reminds, read up to
+   * COMMENT_READS_PER_ROUND latest comments for the words. A read that failed changes nothing (no
+   * reminder, nothing remembered); GitHub refusing it (403 / 404) is said under the setting.
+   * Without a shell nothing is notified, so nothing is read.
+   */
+  private async activityRound(client: GitHubClient, session: number, signal: AbortSignal, viewer: string | null): Promise<Map<string, ActivityAlert>> {
+    const out = new Map<string, ActivityAlert>();
+    // GitHub's interval in full: no early start (the slack of the source retries does not apply here)
+    if (!this.deps.desktop || !this.activityOn() || this.now() < this.activityNextAt) return out;
+    if (viewer !== this.activityViewer) {
+      this.forgetActivity();
+      this.activityViewer = viewer;
+    }
+    let read: { threads: Thread[] | null; etag: string; readAt: number; skew: number; pollSecs: number | null };
+    try {
+      read = await this.readInbox(client);
+    } catch (e) {
+      if (signal.aborted || session !== this.session) return out;
+      const refused = e instanceof GitHubError && (e.status === 403 || e.status === 404);
+      if (refused) this.set({ githubActivityProblem: e.message });
+      return out;
+    }
+    if (signal.aborted || session !== this.session || !this.activityOn()) return out;
+    this.activityEtag = read.etag;
+    this.activityNextAt = this.now() + (read.pollSecs ?? ACTIVITY_POLL_SECS) * 1000;
+    if (this.state.githubActivityProblem) this.set({ githubActivityProblem: null });
+    const candidates = this.activity.observe(read.threads, this.activitySourcesOf(read.skew), read.readAt);
+    // which source additions each reminder stands on, fixed now — before any wait below: a source
+    // removed and added back while a comment is read is another addition, and must not carry it
+    const ctxs = candidates.map((c) => this.noticeContext(c.sources));
+    let reads = 0;
+    for (const [i, c] of candidates.entries()) {
+      let comment: CommentFacts | null = null;
+      if (c.readComment && reads < COMMENT_READS_PER_ROUND) {
+        reads++;
+        comment = await this.readComment(client, c.thread.commentUrl!);
+        if (signal.aborted || session !== this.session) return new Map();
+      }
+      const text = activityText(c, comment, viewer);
+      const item = this.findItem(c.thread.key);
+      out.set(c.thread.key, { key: c.thread.key, session, ctx: ctxs[i], url: item?.url ?? threadWebUrl(c.thread, this.deps.endpoints, comment), ...text });
+    }
+    return out;
+  }
+
+  /** The whole inbox (every page); null threads = GitHub says it is unchanged since `activityEtag`. Throws when any page fails. */
+  private async readInbox(client: GitHubClient): Promise<{ threads: Thread[] | null; etag: string; readAt: number; skew: number; pollSecs: number | null }> {
+    const first = await client.conditional('GET', ACTIVITY_PATH, this.activityEtag);
+    const local = this.now();
+    // GitHub's clock minus this machine's (the Date header, whole seconds): a source's addition,
+    // taken on this machine's clock, is compared with GitHub's times only after this correction.
+    // No usable Date = the skew is unknown, not zero: the read counts as failed (nothing is judged
+    // or remembered, the version tag and the next read time stay), and the next round reads again
+    if (first.serverAt === null) throw new GitHubError('http', t('GitHub 通知列表的回应没有可用的时间'));
+    const readAt = first.serverAt;
+    const skew = readAt - local;
+    if (first.status === 304) return { threads: null, etag: first.etag, readAt, skew, pollSecs: first.pollSecs };
+    const raw: unknown[] = [];
+    let page = first;
+    for (;;) {
+      if (!Array.isArray(page.body)) throw new GitHubError('http', t('GitHub 通知列表的回应不是数组'));
+      raw.push(...page.body);
+      if (!page.next) break;
+      page = await client.conditional('GET', page.next, null);
+    }
+    return { threads: parseThreads(raw), etag: first.etag, readAt, skew, pollSecs: first.pollSecs };
+  }
+
+  /** One latest comment, for the words of a reminder; null = not read (the reminder says "有新动态"). */
+  private async readComment(client: GitHubClient, url: string): Promise<CommentFacts | null> {
+    const api = this.deps.endpoints.api;
+    if (!url.startsWith(`${api}/`)) return null;
+    try {
+      return parseComment(await client.rest('GET', url.slice(api.length)));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * GitHub#713: the item is looked at in the app — with the setting on, its unread GitHub
+   * notifications are marked read, one request each. Decided right before each goes out (still
+   * the same account, both settings still on, the thread still unread here). GitHub refusing it
+   * (403 / 404) is said under the setting; no answer changes nothing (the next opening tries again).
+   */
+  private markActivityRead(key: string): void {
+    if (!this.activityOn() || !this.state.githubActivityMarkRead) return;
+    const session = this.session;
+    for (const th of this.activity.unreadOf(key)) {
+      if (this.markingRead.has(th.id)) continue;
+      const job = (async () => {
+        if (session !== this.session || !this.activityOn() || !this.state.githubActivityMarkRead || !this.activity.unreadOf(key).some((x) => x.id === th.id)) return;
+        try {
+          await this.client(session).rest('PATCH', `/notifications/threads/${encodeURIComponent(th.id)}`);
+          if (session !== this.session) return;
+          this.activity.markedRead(th.id);
+          if (this.state.githubMarkReadProblem) this.set({ githubMarkReadProblem: null });
+        } catch (e) {
+          if (session === this.session && e instanceof GitHubError && (e.status === 403 || e.status === 404)) this.set({ githubMarkReadProblem: e.message });
+        }
+      })().finally(() => {
+        if (this.markingRead.get(th.id) === job) this.markingRead.delete(th.id);
+      });
+      this.markingRead.set(th.id, job);
+    }
+  }
+
+  /** GitHub#713: every "mark read" request on its way has its answer (for the tests). */
+  async activitySettled(): Promise<void> {
+    while (this.markingRead.size) await Promise.all([...this.markingRead.values()]);
   }
 
   /**
@@ -1527,6 +1736,7 @@ export class Controller {
     if (this.state.sources.some((s) => s.key === src.key)) return { ok: false, error: t('这个来源已经加过了') };
     const sources = [...this.state.sources, src];
     this.bumpEpoch(src.key);
+    this.sourceAddedAt.set(src.key, this.now());
     this.cache.setSetting('sources', sources);
     const view = this.state.view.selected ? { ...this.state.view, selected: [...this.state.view.selected, src.key] } : this.state.view;
     this.cache.setSetting('view', view);
@@ -1916,8 +2126,11 @@ export class Controller {
     this.feedSnapshots(accepted, issuedAt);
     for (const key of new Set([...this.ops.values()].map((r) => r.key))) if (accepted.some((snap) => snap.items.some((i) => i.key === key))) this.feedOps(key, issuedAt);
     this.applyImports(accepted);
+    // GitHub#713: GitHub's own inbox, judged against the sources as they stand now
+    const activity = await this.activityRound(client, session, run.signal, round.viewer ?? this.state.viewer);
+    if (run.signal.aborted || session !== this.session) return over();
     // Only what was read completely this round (and still belongs here) is compared.
-    this.observePending(accepted, round.viewer ?? this.state.viewer);
+    this.observePending(accepted, round.viewer ?? this.state.viewer, activity);
     // GitHub#266: the back end wrote it when it adopted the viewer, under the session check;
     // a write from here could land after a sign-out and put the old name back
     if (round.viewer) this.cache.mirror('viewer', round.viewer);
@@ -2078,6 +2291,25 @@ export class Controller {
     if (typeof on !== 'boolean' || on === this.state.clearAllOnActivate) return;
     this.cache.setSetting(CLEAR_ALL_ON_ACTIVATE, on);
     this.set({ clearAllOnActivate: on });
+  }
+
+  /**
+   * GitHub#713: also remind of GitHub's own activity concerning the account (on by default). Switched
+   * off: nothing more is read, what was remembered goes (switched on again, the first read is a
+   * baseline). Anything but a boolean is ignored.
+   */
+  setGithubActivity(on: unknown): void {
+    if (typeof on !== 'boolean' || on === this.state.githubActivity) return;
+    this.cache.setSetting(GITHUB_ACTIVITY, on);
+    if (!on) this.forgetActivity();
+    this.set({ githubActivity: on, githubActivityProblem: null, githubMarkReadProblem: null });
+  }
+
+  /** GitHub#713: opening an item in the app marks its GitHub notification read (off by default). Anything but a boolean is ignored. */
+  setGithubActivityMarkRead(on: unknown): void {
+    if (typeof on !== 'boolean' || on === this.state.githubActivityMarkRead) return;
+    this.cache.setSetting(GITHUB_ACTIVITY_MARK_READ, on);
+    this.set({ githubActivityMarkRead: on, githubMarkReadProblem: null });
   }
 
   /**

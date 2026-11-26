@@ -746,6 +746,14 @@ export interface AppState {
   clearAllOnActivate: boolean;
   /** GitHub#373: which pending items remind (notification + badge); 'all' (default) = every one, as before */
   notifyScope: NotifyScope;
+  /** GitHub#713: also remind of GitHub's own activity concerning the account (@, replies, review requests, assignments); on by default */
+  githubActivity: boolean;
+  /** GitHub#713: opening an item in the app marks its GitHub notification read; off by default */
+  githubActivityMarkRead: boolean;
+  /** GitHub#713: GitHub refused reading the notification inbox (its words); null = no refusal heard */
+  githubActivityProblem: string | null;
+  /** GitHub#713: GitHub refused marking a notification read (its words); null = no refusal heard */
+  githubMarkReadProblem: string | null;
   /** GitHub#471: the interface language as chosen in Settings (kept on this machine); 'zh' when nothing is set */
   uiLanguage: LangSetting;
   /** the language the window shows now ('auto' resolved against the system's preferred languages) */
