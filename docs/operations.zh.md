@@ -4100,8 +4100,17 @@ daemon 起 worker 之前，会照 tmux 起这个 worker 的方式跑一次 `comm
 
 <details><summary>怎么处理</summary>
 
-1. 在 daemon 所在机器上让这个命令出现在那个 PATH 里：软链进其中已有的目录（`ln -s <新位置>/codex ~/.local/bin/codex`——
-   不带 `-f`；目标已存在时它报错不覆盖，先看清那是什么），或者改 `~/.config/cavil-loop/<项目>.conf` 里的 `PATH`。
+1. 在 daemon 所在机器上让这个命令出现在那个 PATH 里：改 `~/.config/cavil-loop/<项目>.conf` 里的 `PATH`，或者软链进
+   其中已有的目录——下面以 `~/.local/bin` 和 `codex` 为例，第一行换成这个命令现在的完整路径：
+
+   ```bash
+   new=/path/to/new/codex
+   t=~/.local/bin/codex
+   if [ -e "$t" ] || [ -L "$t" ]; then echo "already exists: $t"; elif ln -s "$new" "$t"; then echo linked; fi
+   ```
+
+   输出 `already exists` 说明那个位置已经有东西（文件、目录或软链）：停下先看清是什么，不要做第 2 步。输出 `linked`
+   才算成功。
 2. 摘掉条目上的 `pending/human`，确认留言里写的派工标签挂着，没挂就加上。
 3. daemon 下一轮会在 worker 的环境里再查一次；还找不到会再留一条同样的说明。
 

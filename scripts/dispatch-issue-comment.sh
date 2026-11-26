@@ -148,7 +148,7 @@ if [ -d "$WORKTREE" ]; then
     agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE"
     CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
         || dispatch_refused_exit "$ISSUE"
-    CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"   # 程序退出时记下退出码（GitHub#731）
+    agent_exit_wrap_into "$TMUX_SESSION" "$ISSUE"   # 程序退出时记下退出码（GitHub#731）
     dispatch_claim "$ISSUE"
     dispatch_handing
     log "issue #$ISSUE -> 在 ${TMUX_SESSION} 里起 agent=$WORKER_AGENT 角色=$WORKER_SESSION_ROLE 会话（${AGENT_LAUNCH_KIND}）"
@@ -165,11 +165,11 @@ if [ -d "$WORKTREE" ]; then
             exit "$DISPATCH_RC_UNKNOWN"
         fi
         if [ "$_alive" = 1 ]; then
-            log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION")")），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
+            log "issue #$ISSUE -> resume 启动后 2s 内 session 死了（$(agent_exit_explain "$(agent_exit_read "$TMUX_SESSION" "$ISSUE" "$AGENT_EXIT_TOKEN")")），降级为全新 $WORKER_AGENT 会话（丢 conversation history、prompt 含 issue context 仍可工作）"
             agent_session_plan "$ISSUE" "$WORKTREE" "$PROMPT_FILE" 1
             CMD="$(secret_env_prefix)$(agent_launch_command "$WORKTREE" "$WORKER_SESSION" "$PROMPT_FILE")" \
                 || dispatch_refused_exit "$ISSUE"
-            CMD="$(agent_exit_wrap "$TMUX_SESSION" "$CMD")"
+            agent_exit_wrap_into "$TMUX_SESSION" "$ISSUE"
             worker_session_launch "$TMUX_SESSION" "$WORKTREE" "$CMD" "${tmux_env[@]}"
         fi
     fi

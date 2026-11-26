@@ -4618,9 +4618,18 @@ hand-over does not count towards the self-heal retries.
 
 <details><summary>What to do</summary>
 
-1. On the daemon machine, make the command appear in that PATH: link it into a directory already on it
-   (`ln -s <new location>/codex ~/.local/bin/codex` — without `-f`; if the target already exists it stops instead of
-   overwriting, so look at what is there first), or change `PATH` in `~/.config/cavil-loop/<project>.conf`.
+1. On the daemon machine, make the command appear in that PATH. Either change `PATH` in
+   `~/.config/cavil-loop/<project>.conf`, or link the command into a directory already on it — the example uses
+   `~/.local/bin` and `codex`; put the command's current full path on the first line:
+
+   ```bash
+   new=/path/to/new/codex
+   t=~/.local/bin/codex
+   if [ -e "$t" ] || [ -L "$t" ]; then echo "already exists: $t"; elif ln -s "$new" "$t"; then echo linked; fi
+   ```
+
+   `already exists` means something (a file, a directory, a link) is already at that place: stop, look at it, and do not
+   go on to step 2. Only `linked` means it worked.
 2. Remove `pending/human` from the item and make sure the dispatch label named in the comment is on it (add it back if not).
 3. The next poll checks again in the worker's environment; if the command is still missing, the same comment is posted again.
 

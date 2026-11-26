@@ -661,9 +661,15 @@ dispatch_write_check() {   # <编号>
 
 # 已核对过的条目转人工：留言，再读一次核对没变，然后一步一步加 pending/human、摘触发标签和 doing/agent
 # （每一步都写完读回）。轮询主程序的「失败满次转人工」也用它。0 = 已转；1 / 77 / 78 = 停在某一步，之后没再写。
-dispatch_human_steps() {   # <编号> <核对过的条目> <原因> <怎么继续>
+# 第 5 个参数写 strict：留言没发成（失败或结果不明）就停在这一步、返回 77，不翻标签——留言里有人要照做的
+# 步骤时用（GitHub#731：找不到 agent 命令的修法）。不写时照旧：留言失败不拦后面的标签。
+dispatch_human_steps() {   # <编号> <核对过的条目> <原因> <怎么继续> [strict]
     local num="$1" doc="$2" now rm
-    notify_bounced_to_human "$num" "$3" "$4"
+    if ! notify_bounced_to_human "$num" "$3" "$4"; then
+        if [ "${5:-}" = strict ]; then
+            log "转人工 #${num}：说明留言没发成（失败或结果不明），不翻标签"; return "$DISPATCH_RC_UNKNOWN"
+        fi
+    fi
     if ! now=$(dispatch_item_doc "$num") || [ -z "$now" ]; then
         log "转人工 #${num}：留言后读不到条目，不翻标签"; return "$DISPATCH_RC_UNKNOWN"
     fi
@@ -678,11 +684,11 @@ dispatch_human_steps() {   # <编号> <核对过的条目> <原因> <怎么继�
 
 # 派工脚本里 daemon 自己转人工：先过 dispatch_write_check，再 dispatch_human_steps。
 # 返回 0 = 已转（调用方照原来的退出码退出）；否则返回 1 / 77 / 78（1 也按结果不明报给调用方）。
-dispatch_to_human() {   # <编号> <原因> <怎么继续> <日志描述>
+dispatch_to_human() {   # <编号> <原因> <怎么继续> <日志描述> [strict：见 dispatch_human_steps]
     local rc=0
     dispatch_write_check "$1" || rc=$?
     [ "$rc" = 0 ] || return "$rc"
-    dispatch_human_steps "$1" "$DISPATCH_NOW_DOC" "$2" "$3" || rc=$?
+    dispatch_human_steps "$1" "$DISPATCH_NOW_DOC" "$2" "$3" "${5:-}" || rc=$?
     DISPATCH_PHASE=done
     [ "$rc" != 1 ] || rc="$DISPATCH_RC_UNKNOWN"
     [ "$rc" != 0 ] || log "派工 #${1}：$4 → 已转 $LABEL_PENDING_HUMAN"
@@ -8261,14 +8267,14 @@ session_log_pipe_ensure() {   # <tmux_session> <worker 窗格> <已挂=1> <日�
 #   （保持 "has-session==false == worker 死" 的语义，self-heal 才能正常翻 label），return 1
 # 只在没有 has-session-based fallback 的路径（dispatch-new-issue）用；
 # 注入/resume 路径靠各自 Case 逻辑，不在这里碰。
-verify_fresh_session() {
+verify_fresh_session() {   # <tmux_session> [等几秒] [工作编号：用来读这次的退出码]
     local sess="$1"
-    local wait_s="${2:-2}"
+    local wait_s="${2:-2}" num="${3:-}"
     sleep "$wait_s"
     local dead
     dead="$(tmux list-panes -t "=$sess" -F '#{pane_dead}' 2>/dev/null | head -1)"
     if [ "$dead" = "1" ] || ! session_alive "$sess"; then
-        log "  ❌ $sess 启动后 ${wait_s}s 内秒退（$(agent_exit_explain "$(agent_exit_read "$sess")")），capture pane 死因："
+        log "  ❌ $sess 启动后 ${wait_s}s 内秒退（$(agent_exit_explain "$(agent_exit_read "$sess" "$num" "$AGENT_EXIT_TOKEN")")），capture pane 死因："
         local log_path
         log_path="$(session_log_path "$sess")"
         {
@@ -8408,7 +8414,7 @@ notify_bounced_to_human() {
     local num="$1" reason="$2" next="$3" body
     body="$(bounced_to_human_body "$reason" "$next")"
     run_gh "转人工说明评论 (#$num)" \
-        gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body" || true
+        gh_write api -X POST "repos/$REPO/issues/$num/comments" -f "body=$body"
 }
 
 # ── 主 checkout 长期落后的告警 ──
@@ -12439,6 +12445,13 @@ agent_bin_public_path() {   # <PATH 文本>
     printf '%s' "$out" | tr -d '`'
 }
 
+# 给人照做的软链命令：目标位置已经有东西（文件、目录、软链、悬空软链）就停下，不写进别处。
+# 不用 ln -sfn / ln -sT：前者会覆盖，后者 macOS 没有；目标是目录时 ln -s 会把软链建进目录里。
+# docs/operations{,.zh}.md 里是同一段（tests/agent-bin-check.test.sh 核对三处一字不差，并在临时 HOME 里照字面跑）
+agent_bin_link_snippet() {   # <命令名>
+    printf 'new=/path/to/new/%s\nt=~/.local/bin/%s\nif [ -e "$t" ] || [ -L "$t" ]; then echo "already exists: $t"; elif ln -s "$new" "$t"; then echo linked; fi' "$1" "$1"
+}
+
 # 派工脚本用：检查；明确找不到 / 不能执行且依据没变 → 转人工后退出；其余 return 0 照常起
 agent_bin_gate() {   # <编号> <自愈计数的 key> <tmux_session> <mode> <cwd> [tmux -e 参数…]
     local num="$1" key="$2" sess="$3" mode="$4" cwd="$5" now bin what seen trig r=0 reason next
@@ -12466,10 +12479,16 @@ agent_bin_gate() {   # <编号> <自愈计数的 key> <tmux_session> <mode> <cwd
     reason="daemon 准备起 worker 之前，用 worker 实际会拿到的环境检查了一下：${what}。没有起会话，这一次不计入自动重试次数。
 
 worker 当时看到的 PATH：\`$seen\`"
-    next="1. 在 daemon 所在机器上让 \`$bin\` 出现在上面那个 PATH 里：软链进其中已有的目录（例如 \`ln -s <$bin 的新位置> ~/.local/bin/$bin\`，不要加 \`-f\`；目标已存在时它会报错不覆盖，先看清那是什么），或者在 \`~/.config/cavil-loop/<项目>.conf\` 里改 PATH。
+    next="1. 在 daemon 所在机器上让 \`$bin\` 出现在上面那个 PATH 里。软链进其中已有的目录（下面以 \`~/.local/bin\` 为例；第一行换成 \`$bin\` 现在的完整路径）：
+
+\`\`\`bash
+$(agent_bin_link_snippet "$bin")
+\`\`\`
+
+   输出 \`already exists\` 就停下，先看清那个位置是什么，不要做第 2 步；输出 \`linked\` 才算成功。也可以改 \`~/.config/cavil-loop/<项目>.conf\` 里的 PATH。
 2. 摘掉 \`$LABEL_PENDING_HUMAN\`，确认${trig:+原来的派工标签 \`$trig\`}${trig:-派工标签（多为 \`$LABEL_PENDING_AGENT\`）}挂着，没挂就加上。
 3. daemon 下一轮会在 worker 的实际环境里再查一次；还找不到会再留一条同样的说明。"
-    dispatch_to_human "$num" "$reason" "$next" "worker 环境里找不到 agent 命令" || r=$?
+    dispatch_to_human "$num" "$reason" "$next" "worker 环境里找不到 agent 命令" strict || r=$?
     DISPATCH_PHASE=done
     if [ "$r" = 0 ]; then selfheal_reset "$key"; fi
     exit "$r"
@@ -12492,29 +12511,67 @@ agent_exit_shell_posix() {   # <tmux_session>
     return 1
 }
 
-# stdout：包好的启动命令（不能包时原样）。在 tmux 起程序之前调用
-agent_exit_wrap() {   # <tmux_session> <命令>
-    local sess="$1" cmd="$2" f tok
+# 一条记录算「这次启动的」要同时满足（GitHub#731 代码复审第 1 轮：只比对两份可能同属旧启动的文件不够）：
+#   · 记录里的启动记号等于这次的记号——派工脚本里读（秒退、续接降级）拿 AGENT_EXIT_TOKEN 比，它是本进程这次
+#     包装时生成的，包装没成功就是空、读出来就是「没读到」；轮询里读（self-heal）拿 <记录>.launch 比
+#   · 记录比这个条目最新的派工提示词文件新：每次派工在起程序之前都重写提示词（写不出派工就停了），所以上一次派工
+#     留下的旧记录一定比它旧，哪怕旧记录和旧 .launch 都删不掉、也写不了新的
+#   同一次派工里第二次起程序（续接降级）包装失败时，旧记录是这次派工第一次起程序留下的、比提示词新：包装把这个
+#   条目的提示词文件 touch 一下，让旧记录变旧。touch 也失败就记一行日志（这时 self-heal 可能读到第一次的退出码）
+AGENT_EXIT_TOKEN=""
+# stdout：包好的启动命令（不能包时原样）。在 tmux 起程序之前、在当前 shell 里调（设 AGENT_EXIT_TOKEN）：
+#   CMD=$(…) 会丢掉全局，所以调用方写 agent_exit_wrap … > 文件，或用 agent_exit_wrap_into
+agent_exit_wrap() {   # <tmux_session> <工作编号> <命令>
+    local sess="$1" num="$2" cmd="$3" f tok
+    AGENT_EXIT_TOKEN=""
     f="$(agent_exit_file "$sess")"
     rm -f "$f" "$f.launch" 2>/dev/null || true
     case "$f" in *"'"*) printf '%s' "$cmd"; return 0 ;; esac
-    if [ -e "$f" ] || ! agent_exit_shell_posix "$sess" || ! mkdir -p "$AGENT_EXIT_DIR" 2>/dev/null; then
+    if [ -e "$f" ] || [ -e "$f.launch" ] || ! agent_exit_shell_posix "$sess" || ! mkdir -p "$AGENT_EXIT_DIR" 2>/dev/null; then
+        agent_exit_stale_prompts "$num" "$f"
         printf '%s' "$cmd"; return 0
     fi
     tok="$(agent_session_new_uuid 2>/dev/null)" || tok=""
-    if ! [[ "$tok" =~ ^[0-9a-f-]+$ ]] || ! printf '%s\n' "$tok" > "$f.launch" 2>/dev/null; then
+    if ! [[ "$tok" =~ ^[0-9a-f-]+$ ]] || ! printf '%s\n' "$tok" > "$f.launch" 2>/dev/null \
+        || [ "$(cat "$f.launch" 2>/dev/null)" != "$tok" ]; then
+        agent_exit_stale_prompts "$num" "$f"
         printf '%s' "$cmd"; return 0
     fi
+    AGENT_EXIT_TOKEN="$tok"
     printf "%s; __cavil_rc=\$?; printf '%%s %%s\\\\n' \"\$__cavil_rc\" '%s' > '%s' 2>/dev/null; exit \$__cavil_rc" "$cmd" "$tok" "$f"
+}
+# 在当前 shell 里包装 CMD（AGENT_EXIT_TOKEN 留在当前 shell）
+agent_exit_wrap_into() {   # <tmux_session> <工作编号>：读写全局 CMD
+    local out
+    out=$(mktemp) || { AGENT_EXIT_TOKEN=""; agent_exit_stale_prompts "$2" "$(agent_exit_file "$1")"; return 0; }
+    agent_exit_wrap "$1" "$2" "$CMD" > "$out"
+    CMD="$(cat "$out")"; rm -f "$out"
+    [ -n "$CMD" ] || { log "  ❌ 包装启动命令失败（读不回包装结果）"; return 1; }
+}
+# 包装没成功、旧记录可能还在：让这个条目的提示词文件比旧记录新
+agent_exit_stale_prompts() {   # <工作编号> <记录文件>
+    local d; d="$(prompt_dir)"
+    [ -e "$2" ] || [ -e "$2.launch" ] || return 0
+    if ! touch -- "$d/$1"-*.md 2>/dev/null; then
+        log "  ⚠️ 删不掉上次的退出码记录（$2），也没能把提示词文件标成更新：之后的 self-heal 可能读到上一次的退出码"
+    fi
 }
 
 # 这次启动的退出码（数字），读不到 / 不是这次的 → 空
-agent_exit_read() {   # <tmux_session>
-    local f code tok want
+#   <期望记号>：派工脚本里传 "$AGENT_EXIT_TOKEN"（空 = 这次没包装成功 → 读不到）；轮询里不传，用 .launch
+agent_exit_read() {   # <tmux_session> <工作编号> [期望记号]
+    local f code tok want newest p
     f="$(agent_exit_file "$1")"
-    want=$(cat "$f.launch" 2>/dev/null) || return 0
+    if [ "$#" -ge 3 ]; then want="$3"; else want=$(cat "$f.launch" 2>/dev/null) || return 0; fi
+    [ -n "$want" ] || return 0
     read -r code tok < "$f" 2>/dev/null || return 0
-    [[ "$code" =~ ^[0-9]{1,3}$ ]] && [ -n "$want" ] && [ "$tok" = "$want" ] || return 0
+    [[ "$code" =~ ^[0-9]{1,3}$ ]] && [ "$tok" = "$want" ] || return 0
+    newest=""
+    for p in "$(prompt_dir)/$2"-*.md; do
+        [ -e "$p" ] || continue
+        if [ -z "$newest" ] || [ "$p" -nt "$newest" ]; then newest="$p"; fi
+    done
+    [ -n "$newest" ] && [ "$f" -nt "$newest" ] || return 0
     printf '%s' "$code"
 }
 
