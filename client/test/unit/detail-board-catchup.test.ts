@@ -5,6 +5,7 @@
 //   - not changed → no re-read (and the detail really was read);
 //   - the board already holds something newer than the detail → no re-read, nothing goes back;
 //   - the re-read fails → the board keeps what it has, no extra round, the detail is still shown;
+//   - a newer detail read while the re-read is on its way → read again once it is back (the same version: not; failures: no loop);
 //   - signed out while the detail was read → nothing is read again, nothing lands;
 //   - an item only a tab holds → the tab's own copy follows;
 //   - the panel's "is the detail current" check (shouldAutoRefresh) does not read the detail again after the catch-up.
@@ -23,6 +24,7 @@ import { shouldAutoRefresh } from '../../src/renderer/autoRefresh';
 import { newerThan } from '../../src/data/itemRefresh';
 import type { Item } from '../../src/shared/types';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
+import { waitUntil } from '../support/wait';
 
 const REPO = 'GigleAI/cavil-loop';
 const REPO_KEY = 'repo:gigleai/cavil-loop';
@@ -173,6 +175,62 @@ describe('a detail newer than the board brings the board up to it', () => {
     await c.syncNow();
     expect(rounds()).toBeGreaterThan(r0); // (the count does see a round)
     expect(boardItem(c)).toMatchObject({ title: 'new title' });
+  });
+
+  // PR #727 code review round 1: the re-read's answer was taken before the second change; the newer detail
+  // read while it was on its way must not be dropped
+  it('a newer detail read while the re-read is on its way: once that one is back the item is read again, the board ends on the newer version', async () => {
+    const c = await ready();
+    setIssue({ title: 'first change' });
+    const release = fake.holdWhen(of('CavilItemRefresh'));
+    try {
+      const first = await c.loadDetail(K(ISSUE));
+      expect(first).toMatchObject({ ok: true, detail: { title: 'first change' } });
+      await waitUntil(() => itemReads() === 1, 'the first re-read reached GitHub');
+      const when = setIssue({ title: 'second change' });
+      const second = await c.loadDetail(K(ISSUE));
+      expect(second).toMatchObject({ ok: true, detail: { title: 'second change', updatedAt: when } });
+    } finally {
+      release();
+    }
+    await c.detailCaughtUp();
+    expect(itemReads()).toBe(2);
+    expect(boardItem(c)).toMatchObject({ title: 'second change' });
+  });
+
+  it('the same version read again while the re-read is on its way: no second re-read', async () => {
+    const c = await ready();
+    setIssue({ title: 'first change' });
+    const release = fake.holdWhen(of('CavilItemRefresh'));
+    try {
+      expect((await c.loadDetail(K(ISSUE))).ok).toBe(true);
+      await waitUntil(() => itemReads() === 1, 'the re-read reached GitHub');
+      expect((await c.loadDetail(K(ISSUE))).ok).toBe(true);
+      expect(detailReads()).toBe(2);
+    } finally {
+      release();
+    }
+    await c.detailCaughtUp();
+    expect(itemReads()).toBe(1);
+    expect(boardItem(c)).toMatchObject({ title: 'first change' });
+  });
+
+  it('re-reads that fail, a newer version seen meanwhile: read once more for it, then it stops (no loop)', async () => {
+    const c = await ready();
+    setIssue({ title: 'first change' });
+    fake.state.w.failRefresh.add(K(ISSUE));
+    const release = fake.holdWhen(of('CavilItemRefresh'));
+    try {
+      expect((await c.loadDetail(K(ISSUE))).ok).toBe(true);
+      await waitUntil(() => itemReads() === 1, 'the re-read reached GitHub');
+      setIssue({ title: 'second change' });
+      expect((await c.loadDetail(K(ISSUE))).ok).toBe(true);
+    } finally {
+      release();
+    }
+    await c.detailCaughtUp();
+    expect(itemReads()).toBe(2);
+    expect(boardItem(c)).toMatchObject({ title: 'old title' });
   });
 
   it('signed out while the detail was read: nothing is read again', async () => {
