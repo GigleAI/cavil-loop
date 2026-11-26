@@ -138,7 +138,7 @@ export const NOT_IN_SAFARI_14 = [
   'Crypto.prototype.randomUUID', 'Set.prototype.union', 'Set.prototype.intersection', 'Set.prototype.difference',
 ];
 
-export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number; /** GitHub#577: the system the fake shell names (default: none) */ system?: 'macos' | 'windows' | 'other' } = {}): Promise<RunningApp> {
+export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backendEnv?: Record<string, string>; /** GitHub#471: the system language the window sees (navigator.languages); default the engine's */ locale?: string; /** GitHub#572: the window's clock starts here (epoch ms) and runs on, installed before the page loads; default the real one */ clockAt?: number; /** GitHub#577: the system the fake shell names (default: none) */ system?: 'macos' | 'windows' | 'other'; /** GitHub#728: the window has a touchscreen, so `page.touchscreen` sends real touch input */ touch?: boolean } = {}): Promise<RunningApp> {
   const opened: string[] = [];
   const desktop = fakeDesktop();
   if (opts.system) desktop.system = opts.system;
@@ -234,7 +234,7 @@ export async function launchApp(env: AppEnv, opts: { oldEngine?: boolean; backen
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-  const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 }, ...(opts.locale ? { locale: opts.locale } : {}) });
+  const context: BrowserContext = await (await engine()).newContext({ viewport: { width: 1280, height: 800 }, ...(opts.locale ? { locale: opts.locale } : {}), ...(opts.touch ? { hasTouch: true } : {}) });
   // Nothing leaves the machine. Every request the window makes outside the bridge is recorded;
   // the hosts the app may load images from (github.com / api.github.com, and GitHub's avatar
   // host since #155, its image hosts since #205, a repo's raw files since #267) get a 1×1 PNG,

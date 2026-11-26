@@ -308,7 +308,7 @@ test('GitHub#721: 「只看我的」 looks like a button while off, with a down 
 
 // GitHub#728: with a mouse the panel opens by itself while the pointer rests on 「只看我的」 and closes once the
 // pointer has left the button and the panel — whether the button was clicked in between or not. Touch and the
-// keyboard keep opening it by a tap / Enter. (Signed out the window shows the sign-in page, not this bar; the
+// keyboard keep opening it by a tap / Enter (touch: the next test). (Signed out the window shows the sign-in page, not this bar; the
 // greyed button and its tip are covered by test/unit/mine-filter.test.ts.) Real mouse moves in the real window; the waits below are the
 // component's own (about 0.15 s to open, 0.3 s to close), so each "still closed / still open" check waits past them
 // and sits next to a check that the same move really did open or close it.
@@ -412,14 +412,59 @@ test('GitHub#728: 「只看我的」 opens on mouse hover and closes when the mo
   await expect(pop()).toHaveCount(0);
   await expect(button(page)).toBeFocused();
 
-  // ---- touch: a tap opens it and nothing closes it until a tap elsewhere (no hover rules) ----
-  await button(page).dispatchEvent('pointerdown', { pointerType: 'touch', isPrimary: true });
-  await button(page).dispatchEvent('click');
+  await app.close();
+});
+
+// GitHub#728 (PR #729 review round 1): touch does not hover. A window with a real touchscreen: a tap on 「只看我的」
+// opens the panel, and the finger lifting off — the touch pointer entering and then leaving the button and the
+// panel, which the browser itself sends — does not close it; a tap elsewhere does. In the same window and the same
+// area, the mouse leaving does close it, so the "stays open" check is set against a leave that is acted on.
+test('GitHub#728: a tap on 「只看我的」 opens the panel and lifting the finger does not close it; a tap elsewhere does', async () => {
+  const app = await launchApp(env, { touch: true });
+  const page = app.page;
+  await ready(page);
+  const pop = () => page.getByTestId('mine-filter-pop');
+  const center = async (testid: string) => {
+    const b = (await page.getByTestId(testid).boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  const b = await center('mine-filter-toggle');
+  const off = await center('layout');
+  // what the browser delivers to the control for a tap: the touch pointer goes in and out of it
+  await page.getByTestId('mine-filter').evaluate((el) => {
+    const seen: string[] = ((window as any).__mineSeen = []);
+    for (const t of ['pointerover', 'pointerout', 'pointerdown']) el.addEventListener(t, (e) => seen.push(`${t}:${(e as PointerEvent).pointerType}`));
+  });
+
+  await page.touchscreen.tap(b.x, b.y);
   await expect(pop()).toBeVisible();
-  await page.getByTestId('layout').dispatchEvent('pointerleave', { pointerType: 'touch' });
+  const seen: string[] = await page.evaluate(() => (window as any).__mineSeen);
+  expect(seen).toContain('pointerdown:touch');
+  expect(seen).toContain('pointerover:touch');
+  expect(seen).toContain('pointerout:touch'); // the finger left the control: the leave really reached it
+  await page.waitForTimeout(600); // past the mouse's close wait
+  await expect(pop()).toBeVisible();
+
+  // a tap inside the panel keeps it open and works as before
+  await page.touchscreen.tap(...Object.values(await center('mine-on')) as [number, number]);
+  await expect(page.getByTestId('mine-on')).toBeChecked();
   await page.waitForTimeout(600);
   await expect(pop()).toBeVisible();
-  await page.getByTestId('search').dispatchEvent('pointerdown', { pointerType: 'touch', bubbles: true });
+
+  // a tap elsewhere closes it
+  await page.touchscreen.tap(off.x, off.y);
+  await expect(pop()).toHaveCount(0);
+
+  // a tap on the button again opens it, a second tap on the button closes it (the old tap behaviour)
+  await page.touchscreen.tap(b.x, b.y);
+  await expect(pop()).toBeVisible();
+  await page.touchscreen.tap(b.x, b.y);
+  await expect(pop()).toHaveCount(0);
+
+  // the other side, same window, same area: the mouse rests on it — it opens — and leaves — it closes
+  await page.mouse.move(b.x, b.y, { steps: 4 });
+  await expect(pop()).toBeVisible();
+  await page.mouse.move(off.x, off.y, { steps: 4 });
   await expect(pop()).toHaveCount(0);
   await app.close();
 });
