@@ -1261,9 +1261,13 @@ export class Controller {
     return this.liveSources(a.ctx).some((k) => now.has(k));
   }
 
-  /** Which sources hold an item now, each with the time it was added in this run (repository sources: every item of the repository). */
-  private activitySourcesOf(): (key: string) => Covering[] {
-    const since = (k: string) => this.sourceAddedAt.get(k) ?? -Infinity;
+  /**
+   * Which sources hold an item now, each with the time it was added in this run (repository sources:
+   * every item of the repository). `skew` = GitHub's clock minus this machine's: the addition times are
+   * put on GitHub's clock, the one the inbox's times are on.
+   */
+  private activitySourcesOf(skew = 0): (key: string) => Covering[] {
+    const since = (k: string) => (this.sourceAddedAt.get(k) ?? -Infinity) + skew;
     const repos = new Map<string, string>();
     const boards: [string, Set<string>][] = [];
     for (const src of this.state.sources) {
@@ -1302,7 +1306,7 @@ export class Controller {
       this.forgetActivity();
       this.activityViewer = viewer;
     }
-    let read: { threads: Thread[] | null; etag: string; readAt: number; pollSecs: number | null };
+    let read: { threads: Thread[] | null; etag: string; readAt: number; skew: number; pollSecs: number | null };
     try {
       read = await this.readInbox(client);
     } catch (e) {
@@ -1315,9 +1319,12 @@ export class Controller {
     this.activityEtag = read.etag;
     this.activityNextAt = this.now() + (read.pollSecs ?? ACTIVITY_POLL_SECS) * 1000;
     if (this.state.githubActivityProblem) this.set({ githubActivityProblem: null });
-    const candidates = this.activity.observe(read.threads, this.activitySourcesOf(), read.readAt);
+    const candidates = this.activity.observe(read.threads, this.activitySourcesOf(read.skew), read.readAt);
+    // which source additions each reminder stands on, fixed now — before any wait below: a source
+    // removed and added back while a comment is read is another addition, and must not carry it
+    const ctxs = candidates.map((c) => this.noticeContext(c.sources));
     let reads = 0;
-    for (const c of candidates) {
+    for (const [i, c] of candidates.entries()) {
       let comment: CommentFacts | null = null;
       if (c.readComment && reads < COMMENT_READS_PER_ROUND) {
         reads++;
@@ -1326,16 +1333,20 @@ export class Controller {
       }
       const text = activityText(c, comment, viewer);
       const item = this.findItem(c.thread.key);
-      out.set(c.thread.key, { key: c.thread.key, session, ctx: this.noticeContext(c.sources), url: item?.url ?? threadWebUrl(c.thread, this.deps.endpoints, comment), ...text });
+      out.set(c.thread.key, { key: c.thread.key, session, ctx: ctxs[i], url: item?.url ?? threadWebUrl(c.thread, this.deps.endpoints, comment), ...text });
     }
     return out;
   }
 
   /** The whole inbox (every page); null threads = GitHub says it is unchanged since `activityEtag`. Throws when any page fails. */
-  private async readInbox(client: GitHubClient): Promise<{ threads: Thread[] | null; etag: string; readAt: number; pollSecs: number | null }> {
+  private async readInbox(client: GitHubClient): Promise<{ threads: Thread[] | null; etag: string; readAt: number; skew: number; pollSecs: number | null }> {
     const first = await client.conditional('GET', ACTIVITY_PATH, this.activityEtag);
-    const readAt = first.serverAt ?? this.now();
-    if (first.status === 304) return { threads: null, etag: first.etag, readAt, pollSecs: first.pollSecs };
+    const local = this.now();
+    const readAt = first.serverAt ?? local;
+    // GitHub's clock minus this machine's (the Date header, whole seconds): a source's addition,
+    // taken on this machine's clock, is compared with GitHub's times only after this correction
+    const skew = readAt - local;
+    if (first.status === 304) return { threads: null, etag: first.etag, readAt, skew, pollSecs: first.pollSecs };
     const raw: unknown[] = [];
     let page = first;
     for (;;) {
@@ -1344,7 +1355,7 @@ export class Controller {
       if (!page.next) break;
       page = await client.conditional('GET', page.next, null);
     }
-    return { threads: parseThreads(raw), etag: first.etag, readAt, pollSecs: first.pollSecs };
+    return { threads: parseThreads(raw), etag: first.etag, readAt, skew, pollSecs: first.pollSecs };
   }
 
   /** One latest comment, for the words of a reminder; null = not read (the reminder says "有新动态"). */

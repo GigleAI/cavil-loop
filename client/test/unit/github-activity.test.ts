@@ -229,12 +229,15 @@ it('the recording still has what these tests need', () => {
 
 interface Harness {
   c: Controller;
+  /** set: the shell's next badge call waits for it (what is queued behind it waits too) */
+  badgeGate: { wait: Promise<void> | null };
   alerts: Alert[];
   clock: { t: number };
   items(): Extract<Alert, { kind: 'item' }>[];
 }
 
-async function started(opts: { sources: string[]; seed?: Record<string, unknown> }): Promise<Harness> {
+/** `skew`: this machine's clock ahead of GitHub's by that much (ms); GitHub's clock is `clock.t` */
+async function started(opts: { sources: string[]; seed?: Record<string, unknown>; skew?: number }): Promise<Harness> {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -243,6 +246,7 @@ async function started(opts: { sources: string[]; seed?: Record<string, unknown>
   await credentials.set(FAKE_TOKEN);
   const clock = { t: FIXTURE_NOW };
   const alerts: Alert[] = [];
+  const badgeGate: Harness['badgeGate'] = { wait: null };
   const endpoints = { api: fake.api, web: fake.web };
   const backend = new HarnessBackend({ db: join(dir, 'cache.sqlite'), endpoints, credentials, now: () => clock.t, sleep: async () => {}, opened: [] });
   backends.push(backend);
@@ -251,7 +255,11 @@ async function started(opts: { sources: string[]; seed?: Record<string, unknown>
       alerts.push(a);
       return { ok: true };
     },
-    setBadge: async () => {},
+    setBadge: async () => {
+      const w = badgeGate.wait;
+      badgeGate.wait = null;
+      if (w) await w;
+    },
     clearNotifications: async () => {},
     clearItemNotifications: async () => {},
     loginItem: async () => false,
@@ -269,13 +277,14 @@ async function started(opts: { sources: string[]; seed?: Record<string, unknown>
     startDrag: async () => {},
     toggleZoom: async () => {},
   };
-  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', desktop });
+  const skew = opts.skew ?? 0;
+  const c = await createController({ backend, endpoints, now: () => clock.t + skew, defaultClientId: '', desktop });
   controllers.push(c);
   for (const s of opts.sources) c.addSource(s);
   await c.start();
   await c.desktopSettled();
   expect(c.getState().sync.sources.every((s) => s.ok)).toBe(true);
-  return { c, alerts, clock, items: () => alerts.filter((a): a is Extract<Alert, { kind: 'item' }> => a.kind === 'item') };
+  return { c, alerts, clock, badgeGate, items: () => alerts.filter((a): a is Extract<Alert, { kind: 'item' }> => a.kind === 'item') };
 }
 
 async function tick(h: Harness) {
@@ -589,7 +598,7 @@ describe('the inbox\'s timing and the sources changing around it (PR #719 code r
     expect(h.items()).toHaveLength(1);
   });
 
-  const midRead = async (remove: boolean) => {
+  const midRead = async (remove: boolean, addBack = false) => {
     const h = await started({ sources: [REPO] });
     const th = thread(A, { at: h.clock.t + 30_000, comment: 41 });
     comment(th, 41, OTHER, 'a reply', h.clock.t + 30_000);
@@ -598,6 +607,7 @@ describe('the inbox\'s timing and the sources changing around it (PR #719 code r
     const round = h.c.syncNow();
     await expect.poll(() => reqs('comment').length).toBeGreaterThan(0);
     if (remove) h.c.removeSource('repo:gigleai/cavil-loop');
+    if (addBack) h.c.addSource(REPO);
     release();
     await round;
     await h.c.desktopSettled();
@@ -614,5 +624,64 @@ describe('the inbox\'s timing and the sources changing around it (PR #719 code r
   it('the same round with the source kept: the reminder goes out', async () => {
     const h = await midRead(false);
     expect(h.items().map((a) => a.title)).toEqual([`${OTHER} 回复了 ${REPO}#${A}`]);
+  });
+
+  it('removed and added back while the comment is being read: the old reminder does not go out (another addition)', async () => {
+    const h = await midRead(true, true);
+    // did happen: the repository is a source again, and the comment was read
+    expect(h.c.getState().sources.map((x) => x.key)).toEqual(['repo:gigleai/cavil-loop']);
+    expect(reqs('comment').length).toBeGreaterThan(0);
+    expect(h.items()).toEqual([]);
+  });
+
+  for (const skew of [300_000, -300_000]) {
+    it(`this machine's clock ${skew > 0 ? 'ahead of' : 'behind'} GitHub's by 5 min: activity before a repository was added stays history, activity after it reminds`, async () => {
+      const h = await started({ sources: ['https://github.com/orgs/GigleAI/projects/11'], skew });
+      const t0 = h.clock.t;
+      const th = thread(OFF_BOARD, { at: t0 + 10_000, comment: 51 });
+      comment(th, 51, OTHER, `@${ME} before`, t0 + 10_000);
+      h.clock.t = t0 + 20_000;
+      h.c.addSource(REPO);
+      await h.c.settled();
+      h.clock.t = t0 + 60_000;
+      await h.c.syncNow();
+      await h.c.desktopSettled();
+      expect(reqs('notifications').length).toBeGreaterThanOrEqual(2);
+      expect(h.items()).toEqual([]);
+      comment(th, 52, OTHER, `@${ME} after`, t0 + 70_000);
+      h.clock.t = t0 + 120_000;
+      await h.c.syncNow();
+      await h.c.desktopSettled();
+      expect(h.items().map((a) => a.title)).toEqual([`${OTHER} 在 ${REPO}#${OFF_BOARD} 里 @了我`]);
+    });
+  }
+
+  it('removed and added back while the reminder waits its turn for the shell: it does not go out; left alone, it does', async () => {
+    for (const readd of [true, false]) {
+      fake.state.inbox.threads = [];
+      const h = await started({ sources: [REPO] });
+      thread(A, { at: h.clock.t + 30_000 });
+      let open!: () => void;
+      h.badgeGate.wait = new Promise<void>((r) => (open = r));
+      // a badge call now holds the shell's queue; the round's reminder queues behind it
+      h.c.onDesktopEvent({ kind: 'active' });
+      h.clock.t += 60_000;
+      await h.c.syncNow();
+      expect(h.items()).toEqual([]);
+      if (readd) {
+        h.c.removeSource('repo:gigleai/cavil-loop');
+        h.c.addSource(REPO);
+      }
+      open();
+      await h.c.desktopSettled();
+      await h.c.desktopSettled();
+      expect(h.items().map((a) => a.key)).toEqual(readd ? [] : [key(A)]);
+      h.c.stopTimer();
+      await h.c.settled();
+      await Promise.all(backends.splice(0).map((b) => b.close()));
+      for (const c of caches.splice(0)) c.close();
+      controllers.splice(0);
+      dir = tempDir();
+    }
   });
 });
