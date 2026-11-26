@@ -305,3 +305,166 @@ test('GitHub#721: 「只看我的」 looks like a button while off, with a down 
   await page.screenshot({ path: join(screens, 'mine-721-board-off-en.png'), clip: { x: 0, y: 0, width: 1280, height: 130 } });
   await app.close();
 });
+
+// GitHub#728: with a mouse the panel opens by itself while the pointer rests on 「只看我的」 and closes once the
+// pointer has left the button and the panel — whether the button was clicked in between or not. Touch and the
+// keyboard keep opening it by a tap / Enter (touch: the next test). (Signed out the window shows the sign-in page, not this bar; the
+// greyed button and its tip are covered by test/unit/mine-filter.test.ts.) Real mouse moves in the real window; the waits below are the
+// component's own (about 0.15 s to open, 0.3 s to close), so each "still closed / still open" check waits past them
+// and sits next to a check that the same move really did open or close it.
+test('GitHub#728: 「只看我的」 opens on mouse hover and closes when the mouse leaves the button and the panel', async () => {
+  const app = await launchApp(env);
+  const page = app.page;
+  const pop = () => page.getByTestId('mine-filter-pop');
+  const center = async (testid: string) => {
+    const b = (await page.getByTestId(testid).boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  /** a point of the view bar away from the button and the panel: the layout switch */
+  const away = () => center('layout');
+  const moveTo = async (p: { x: number; y: number }) => page.mouse.move(p.x, p.y, { steps: 4 });
+
+  await ready(page);
+  const open_ = (await items(page)).filter((i) => i.state === 'open');
+  const mineAny = open_.filter((i) => byMe(i) || toMe(i));
+  const mineAuthor = open_.filter(byMe);
+  expect(mineAny.length).toBeGreaterThan(mineAuthor.length); // not vacuous: unticking 指派给我 changes the list
+
+  // ---- hovering opens it, and the button drops its own tip (it would cover the panel) ----
+  await expect(button(page)).toHaveAttribute('title', '只看我的：关');
+  await moveTo(await center('mine-filter-toggle'));
+  await expect(pop()).toBeVisible();
+  await expect(button(page)).not.toHaveAttribute('title', /.+/);
+
+  // ---- from the button down into the panel: it stays; a box ticked there works as before ----
+  await moveTo(await center('mine-on'));
+  await page.waitForTimeout(600);
+  await expect(pop()).toBeVisible();
+  await page.getByTestId('mine-on').click();
+  await expect.poll(() => rowKeys(page)).toEqual(keys(mineAny));
+  await page.getByTestId('mine-assignee').click();
+  await expect.poll(() => rowKeys(page)).toEqual(keys(mineAuthor));
+  await expect(pop()).toBeVisible();
+  await page.getByTestId('mine-assignee').click();
+  await expect.poll(() => rowKeys(page)).toEqual(keys(mineAny));
+
+  // ---- leaving both: it closes; the switch stays on ----
+  await moveTo(await away());
+  await expect(pop()).toHaveCount(0);
+  await expect(button(page)).toHaveAttribute('data-on', 'yes');
+  await expect(button(page)).toHaveAttribute('title', /只看我的：/);
+
+  // ---- leaving and coming back before the close wait is over: it stays open ----
+  await moveTo(await center('mine-filter-toggle'));
+  await expect(pop()).toBeVisible();
+  const b = await center('mine-filter-toggle');
+  await page.mouse.move(b.x, b.y - 40); // just above the button, out of it
+  await page.mouse.move(b.x, b.y); // back within the wait
+  await page.waitForTimeout(600);
+  await expect(pop()).toBeVisible();
+
+  // ---- a mouse click while it is open leaves it open, and leaving still closes it ----
+  await page.mouse.click(b.x, b.y);
+  await page.waitForTimeout(300);
+  await expect(pop()).toBeVisible();
+  await moveTo(await away());
+  await expect(pop()).toHaveCount(0);
+
+  // ---- Esc closes it under a resting pointer, and it does not come back until the pointer leaves and returns ----
+  await moveTo(b);
+  await expect(pop()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(pop()).toHaveCount(0);
+  await page.waitForTimeout(600);
+  await expect(pop()).toHaveCount(0);
+  // a mouse click on the closed panel opens it; leaving closes it
+  await page.mouse.click(b.x, b.y);
+  await expect(pop()).toBeVisible();
+  await moveTo(await away());
+  await expect(pop()).toHaveCount(0);
+
+  // ---- Esc while the open wait is still running: it does not open ----
+  await page.mouse.move(b.x, b.y);
+  await button(page).press('Escape');
+  await page.waitForTimeout(600);
+  await expect(pop()).toHaveCount(0);
+  await moveTo(await away());
+  // the same move without Esc does open it (so the check above is not vacuous)
+  await page.mouse.move(b.x, b.y);
+  await expect(pop()).toBeVisible();
+  await moveTo(await away());
+  await expect(pop()).toHaveCount(0);
+
+  // ---- the window losing focus while the open wait runs: it does not open ----
+  await page.mouse.move(b.x, b.y);
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.waitForTimeout(600);
+  await expect(pop()).toHaveCount(0);
+  await moveTo(await away());
+
+  // ---- the keyboard: Enter opens it, it stays with the pointer elsewhere, Esc closes it and gives the focus back ----
+  await button(page).focus();
+  await page.keyboard.press('Enter');
+  await expect(pop()).toBeVisible();
+  await page.waitForTimeout(600);
+  await expect(pop()).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(pop()).toHaveCount(0);
+  await expect(button(page)).toBeFocused();
+
+  await app.close();
+});
+
+// GitHub#728 (PR #729 review round 1): touch does not hover. A window with a real touchscreen: a tap on 「只看我的」
+// opens the panel, and the finger lifting off — the touch pointer entering and then leaving the button and the
+// panel, which the browser itself sends — does not close it; a tap elsewhere does. In the same window and the same
+// area, the mouse leaving does close it, so the "stays open" check is set against a leave that is acted on.
+test('GitHub#728: a tap on 「只看我的」 opens the panel and lifting the finger does not close it; a tap elsewhere does', async () => {
+  const app = await launchApp(env, { touch: true });
+  const page = app.page;
+  await ready(page);
+  const pop = () => page.getByTestId('mine-filter-pop');
+  const center = async (testid: string) => {
+    const b = (await page.getByTestId(testid).boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  const b = await center('mine-filter-toggle');
+  const off = await center('layout');
+  // what the browser delivers to the control for a tap: the touch pointer goes in and out of it
+  await page.getByTestId('mine-filter').evaluate((el) => {
+    const seen: string[] = ((window as any).__mineSeen = []);
+    for (const t of ['pointerover', 'pointerout', 'pointerdown']) el.addEventListener(t, (e) => seen.push(`${t}:${(e as PointerEvent).pointerType}`));
+  });
+
+  await page.touchscreen.tap(b.x, b.y);
+  await expect(pop()).toBeVisible();
+  const seen: string[] = await page.evaluate(() => (window as any).__mineSeen);
+  expect(seen).toContain('pointerdown:touch');
+  expect(seen).toContain('pointerover:touch');
+  expect(seen).toContain('pointerout:touch'); // the finger left the control: the leave really reached it
+  await page.waitForTimeout(600); // past the mouse's close wait
+  await expect(pop()).toBeVisible();
+
+  // a tap inside the panel keeps it open and works as before
+  await page.touchscreen.tap(...Object.values(await center('mine-on')) as [number, number]);
+  await expect(page.getByTestId('mine-on')).toBeChecked();
+  await page.waitForTimeout(600);
+  await expect(pop()).toBeVisible();
+
+  // a tap elsewhere closes it
+  await page.touchscreen.tap(off.x, off.y);
+  await expect(pop()).toHaveCount(0);
+
+  // a tap on the button again opens it, a second tap on the button closes it (the old tap behaviour)
+  await page.touchscreen.tap(b.x, b.y);
+  await expect(pop()).toBeVisible();
+  await page.touchscreen.tap(b.x, b.y);
+  await expect(pop()).toHaveCount(0);
+
+  // the other side, same window, same area: the mouse rests on it — it opens — and leaves — it closes
+  await page.mouse.move(b.x, b.y, { steps: 4 });
+  await expect(pop()).toBeVisible();
+  await page.mouse.move(off.x, off.y, { steps: 4 });
+  await expect(pop()).toHaveCount(0);
+  await app.close();
+});
