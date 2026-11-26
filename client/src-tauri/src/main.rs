@@ -74,15 +74,19 @@ impl Opener for SystemOpener {
         if let Some(f) = &self.record {
             return record_line(f, url);
         }
-        // Windows: Explorer hands a web address to the default browser (no console window, no shell)
-        let program = if cfg!(target_os = "macos") {
-            "/usr/bin/open"
-        } else if cfg!(windows) {
-            "explorer.exe"
-        } else {
-            "xdg-open"
-        };
-        std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))
+        // GitHub#730, Windows: the shell's own "open" (the default browser), which also says when it fails
+        #[cfg(windows)]
+        {
+            let url = url.to_string();
+            return tokio::task::spawn_blocking(move || win::open_url(&url))
+                .await
+                .map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))?;
+        }
+        #[cfg(not(windows))]
+        {
+            let program = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
+            std::process::Command::new(program).arg(url).spawn().map(|_| ()).map_err(|e| tr("打不开浏览器：{e}", &[("e", &e.to_string())]))
+        }
     }
 
     /// GitHub#590: in test mode a clicked frame link also says which frame (`frame-link <url>` /
