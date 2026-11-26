@@ -418,7 +418,7 @@ If any fails it refuses without sending a single write:
 
 Steps: add the waiting label → remove every trigger label, `doing/agent`, `pending/review` → read back and verify (waiting label present, none of the removed ones left). On failure it retries the whole thing once; if that fails too it hands back to the maintainer: add `pending/human` → remove the trigger labels etc. → read back → remove the waiting label **last**. Removing it last means that if the handback stops halfway, the greedy pass and self-heal are still held off by it.
 
-**The webhook is called only after a successful wake-up** (first try or retry), exactly once per wake-up; on exits 2 / 3 / 4 the handoff was not confirmed and it is never called. Without a webhook the bot relies on its own periodic scan (grokbot's runs about every 15 minutes by day, 30 at night).
+**The webhook is called only after a successful wake-up** (first try or retry), exactly once per wake-up; on exits 2 / 3 / 4 / 75 the handoff was not confirmed and it is never called. Without a webhook the bot relies on its own periodic scan (grokbot's runs about every 15 minutes by day, 30 at night).
 
 The bot removes the waiting label itself when it brings the answer back (rule 4; not when passing the message on, rule 3) — that is the bot's side, not cavil-loop's.
 
@@ -432,6 +432,7 @@ The bot removes the waiting label itself when it brings the answer back (rule 4;
 | 2 | refused by a pre-check, labels untouched | hand to the maintainer as usual |
 | 3 | wake-up failed, handed back to the maintainer (only `pending/human` left) | post a short note |
 | 4 | the handback failed too; output shows the labels actually read back | say so plainly, never claim it was handed over |
+| 75 | the project's poll lock was still busy after 300 s (a poll round or a label rename is running), or the label-rename gate did not let it through; no write request was sent, labels untouched, one line of output says why | run the same command again in a minute or two; still 75 → hand to the maintainer |
 
 </details>
 

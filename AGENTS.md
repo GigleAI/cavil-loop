@@ -541,6 +541,9 @@ require for merging. Per-file logs are kept as a workflow artifact; failures pri
 - `REQUESTER_BOT_WEBHOOK_TIMEOUT` (1–600; anything else = 10) shortens the webhook timeout in
   `scripts/_lib.sh`; only `tests/requester-bot.test.sh` sets it, and one case there still waits the
   real default 10 s
+- `REQUESTER_BOT_LOCK_WAIT` (1–3600; anything else = 300) shortens how long
+  `scripts/notify-requester-bot.sh` waits for the project's poll lock (GitHub#715: the wake-up entry
+  waits 300 s, every other entry keeps the shared 120 s); only `tests/requester-bot.test.sh` sets it
 - **`tests/ci-exclude.txt`** lists files `--ci` does not run, one per line with the reason (today only
   `preview-socket-activation`: it needs a running per-user systemd with the preview units installed).
   Excluded files still run locally. Naming a file that no longer exists is an error

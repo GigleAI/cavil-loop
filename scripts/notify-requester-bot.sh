@@ -16,7 +16,10 @@
 #   2 前置检查拒绝，或功能没配全 —— 没发任何写请求，标签不动
 #   3 叫醒失败，已交还维护者（条目上只剩 pending/human，没有等待标签）
 #   4 交还也失败 —— 输出里是实际读回的标签；**不要**对外写「已交人」
-# 只有退出码 0 的那一个出口会调 webhook：2 / 3 / 4 时交接都还没确认成功。
+#  75 本项目的轮询锁等了 300 秒仍被占着（一轮轮询或一次标签改名还在进行），或流程标签改名闸门没放行
+#     —— 没发任何写请求，标签不动；stdout 上有一行原因。隔一两分钟重跑一次，仍是 75 再交维护者
+#     （GitHub#715）。最长要等 5 分钟才返回，调用方给命令留够 6 分钟超时
+# 只有退出码 0 的那一个出口会调 webhook：2 / 3 / 4 / 75 时交接都还没确认成功。
 #
 # 不读评论内容，也不按评论去重：去重会把「刚发的这条汇报」当成已汇报，挡住首次叫醒。
 #
@@ -62,7 +65,17 @@ case "$NUM" in ''|*[!0-9]*) usage ;; esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
-# 在本项目的轮询锁里重新起自己，过流程标签改名的闸门（GitHub#569）：改名进行中、或配置在加载后被换过时不动手
+# 在本项目的轮询锁里重新起自己，过流程标签改名的闸门（GitHub#569）：改名进行中、或配置在加载后被换过时不动手。
+# 只有这个入口等锁 300 秒（GitHub#715）：它在复审通过的交接里跑，一轮带派工的轮询常常超过公共的 120 秒，
+# 而 300 秒内一轮正常轮询总能结束。REQUESTER_BOT_LOCK_WAIT 只给测试缩短（1–3600，其他值一律 300），不进配置模板。
+case "${REQUESTER_BOT_LOCK_WAIT:-}" in
+    ''|*[!0-9]*|0*) POLL_LOCK_REEXEC_WAIT_SECS=300 ;;
+    *) if [ "${#REQUESTER_BOT_LOCK_WAIT}" -le 4 ] && [ "$REQUESTER_BOT_LOCK_WAIT" -le 3600 ]; then
+           POLL_LOCK_REEXEC_WAIT_SECS="$REQUESTER_BOT_LOCK_WAIT"
+       else
+           POLL_LOCK_REEXEC_WAIT_SECS=300
+       fi ;;
+esac
 poll_lock_enter "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 say() { printf '%s\n' "$*"; log "notify-requester-bot #$NUM: $*" 2>/dev/null || true; }

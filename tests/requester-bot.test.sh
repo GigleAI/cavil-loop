@@ -19,13 +19,15 @@
 #       （假 webhook：tests/fixtures/requester-bot-fake-webhook.py，只听 127.0.0.1）
 #   3e. PR 合并 / 关闭未合并后，daemon 在机器人提的 issue 上留结果评论、加等待标签、通知 webhook
 #       （真跑 agent-poll.sh）
+#   3g. 轮询锁被占 / 改名闸门没放行（GitHub#715）：退出码 75、stdout 一行原因、零写请求、零 webhook；
+#       叫醒入口等锁 300 秒，手动派工仍是 120 秒
 #   3f. 配置项新旧名字：只填旧名字照样开启、新旧都填用新的、早期入口名可用、setup.sh 同一规则
 #   4. 提示词：开启时四类提示词末尾恰好一段交接规则，项目整份替换模板也收得到
 #   6. 说法：除复盘记录外不再出现「传话」，文档锚点对得上
 # 每组里「确实走到了」的断言（派工数 > 0、写请求确实发了、webhook 恰好 1 次…）防止测试空转。
 #
 # 拆成 2 段（GitHub#211）：tests/run.sh 用 TEST_PART=K/2 把每段当一个调度单位并行跑；不带 TEST_PART
-# 时两段全跑。段 1 = 1–4；段 2 = 3d、3e、3f、5、6。
+# 时两段全跑。段 1 = 1–4；段 2 = 3d、3g、3e、3f、5、6。
 # parts: 2
 set -uo pipefail
 # shellcheck source=lib/report.sh
@@ -46,7 +48,7 @@ FAKE="$TEST_DIR/fixtures/requester-bot-fake-gh.py"
 # 从 worker / daemon 里跑时环境里带着这几个变量，会把 SKILL_DIR 钉到别处的安装上：
 # 新旧两份副本就都读同一套 prompts/，「和改动前逐字节一致」就成了自己比自己。
 unset CODING_AGENT_RELEASE_ROOT CLAUDE_PLUGIN_ROOT CAVIL_DEPLOY_ROOT CAVIL_DEPLOY_CONF \
-      CODING_AGENT_CONFIG CODING_AGENT_RELEASE_LEASE_FD TICK_DIR REQUESTER_BOT_WEBHOOK_TIMEOUT
+      CODING_AGENT_CONFIG CODING_AGENT_RELEASE_LEASE_FD TICK_DIR REQUESTER_BOT_WEBHOOK_TIMEOUT REQUESTER_BOT_LOCK_WAIT
 
 SANDBOX=$(mktemp -d)
 cleanup() { [ -n "${KEEP_SANDBOX:-}" ] && { echo "SANDBOX=$SANDBOX"; return 0; }; rm -rf "$SANDBOX"; }
@@ -951,6 +953,74 @@ with open(out, "a") as o:
 hook_success_suite "$NEW"; hook_exit_suite "$NEW"; hook_config_suite "$NEW"; hook_error_suite "$NEW"; hook_leak_suite "$NEW"
 chk "不泄露 · 以上全部用例的输出里没有地址和密钥" "$(grep -cE "$HOOK_SECRET_PATH|$HOOK_KEY_SENTINEL" "$ALL_OUT")" 0
 
+
+# ─────────────────────────────────────────────────────────────────────────
+echo "── 3g. 轮询锁被占、改名闸门没放行：stdout 说明原因，叫醒入口等锁 300 秒（GitHub#715） ──"
+# ─────────────────────────────────────────────────────────────────────────
+# 真跑叫醒脚本：另起一个进程真拿住本项目的轮询锁，REQUESTER_BOT_LOCK_WAIT 把等锁缩到 1 秒。
+# 每条「什么都没发生」旁边配一条同一装置下「确实发生了」的对照（锁放开后照常叫醒）。
+REAL_FLOCK="$(command -v flock)"
+lock_wait_free() {   # 等到锁真被占住（最多约 5 秒）
+    local i; for i in $(seq 50); do "$REAL_FLOCK" -n "$RW/state/poll.lock" true || return 0; sleep 0.1; done; return 1
+}
+lock_case() {   # [环境变量…]：跑 #50 的叫醒，RC / OUT
+    RC=0; OUT=$(env "$@" FAKE_GH_DIR="$RW/gh" bash "$NEW/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" 50 2>&1) || RC=$?
+}
+fresh_bot; hook_cfg; hook_reset; mkdir -p "$RW/state"; : > "$RW/gh/calls.log"
+"$REAL_FLOCK" -o "$RW/state/poll.lock" sleep 30 & HOLDER=$!   # -o：锁只在 flock 进程手里，杀掉它就放开
+lock_wait_free; chk "锁被占 · 对照：锁确实被别的进程拿住了" "$("$REAL_FLOCK" -n "$RW/state/poll.lock" true && echo free || echo held)" held
+lock_case REQUESTER_BOT_LOCK_WAIT=1
+pkill -P "$HOLDER" 2>/dev/null; kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+chk "锁被占 · 退出码 75" "$RC" 75
+chk "锁被占 · stdout 恰好一行原因（锁忙、没发写请求、标签没动）" \
+    "$(printf '%s\n' "$OUT" | grep -cxF '⏸ 本项目的轮询锁被占用超过 1 秒（一轮轮询或一次标签改名还在进行）。没有发出任何写请求，标签没动（退出码 75）')" 1
+chk "锁被占 · 没有别的输出" "$(printf '%s\n' "$OUT" | grep -c .)" 1
+chk "锁被占 · 假 GitHub 收到 0 条写请求" "$(writes)" 0
+chk "锁被占 · webhook 0 次" "$(hook_count)" 0
+chk "锁被占 · 标签没动" "$(labels_of "$RW" 50)" "doing/agent,pending/agent"
+chk "锁被占 · poll.log 也记了一行" "$(grep -c '轮询锁被占用超过 1 秒.*本次什么都不做' "$RW/state/poll.log")" 1
+lock_case REQUESTER_BOT_LOCK_WAIT=1
+chk "锁放开后 · 对照：同一装置照常叫醒（退出码 0）" "$RC" 0
+chk "锁放开后 · 对照：确实挂上了等待标签" "$(labels_of "$RW" 50)" "waiting/bot"
+chk "锁放开后 · 对照：确实发了写请求" "$([ "$(writes)" -gt 0 ] && echo yes || echo no)" yes
+chk "锁放开后 · 对照：webhook 恰好 1 次" "$(hook_count)" 1
+chk "锁放开后 · 输出里没有锁忙那一行" "$(printf '%s\n' "$OUT" | grep -c '⏸')" 0
+
+# 改名闸门没放行：锁拿得到，锁里那份过闸门时拒绝；具体原因只说一次，不再加一行「锁被占用」
+fresh_bot; hook_cfg; hook_reset; mkdir -p "$RW/state"; : > "$RW/gh/calls.log"
+printf '{"mode":"rename"}\n' > "$RW/state/label-rename.json"
+lock_case
+rm -f "$RW/state/label-rename.json"
+chk "改名进行中 · 退出码 75" "$RC" 75
+chk "改名进行中 · stdout 一行具体原因" "$(printf '%s\n' "$OUT" | grep -c '^⏸ 标签改名闸门没放行：有一次流程标签改名还没做完.*没有发出任何写请求，标签没动（退出码 75）$')" 1
+chk "改名进行中 · 只说一次（没有再加一行「轮询锁被占用」，输出只有一行）" "$(printf '%s\n' "$OUT" | grep -c '轮询锁被占用')|$(printf '%s\n' "$OUT" | grep -c .)" "0|1"
+chk "改名进行中 · 假 GitHub 收到 0 条写请求、webhook 0 次、标签没动" "$(writes)|$(hook_count)|$(labels_of "$RW" 50)" "0|0|doing/agent,pending/agent"
+lock_case
+chk "改名记录拿掉后 · 对照：照常叫醒、webhook 1 次" "$RC|$(hook_count)|$(labels_of "$RW" 50)" "0|1|waiting/bot"
+
+# 等锁时间各归各的：假 flock 记下参数后以 75 退出（不真等），看各入口传给它的 -w
+FL="$SANDBOX/flock-rec"; mkdir -p "$FL"
+cat > "$FL/flock" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FLOCK_REC"
+exit 75
+SH
+chmod +x "$FL/flock"
+wait_arg() {   # <脚本> [环境变量…] → 第一次 flock 的 -w 值 + stdout 那一行里的秒数
+    local sc="$1"; shift; : > "$FL/rec"
+    RC=0; OUT=$(env "$@" PATH="$FL:$PATH" FLOCK_REC="$FL/rec" FAKE_GH_DIR="$RW/gh" CODING_AGENT_CONFIG="$RW/cavil-loop.config" \
+        bash "$sc" --config "$RW/cavil-loop.config" 50 2>&1) || RC=$?
+    printf '%s|%s|%s' "$RC" "$(head -1 "$FL/rec" | sed -n 's/.* -w \([^ ]*\) .*/\1/p')" \
+        "$(printf '%s\n' "$OUT" | sed -n 's/^⏸ 本项目的轮询锁被占用超过 \([0-9]*\) 秒.*/\1/p')"
+}
+fresh_bot; : > "$RW/gh/calls.log"
+chk "等锁时间 · 叫醒脚本（不设测试变量）：300 秒" "$(wait_arg "$NEW/scripts/notify-requester-bot.sh")" "75|300|300"
+chk "等锁时间 · 测试变量不是 1–3600 的整数（abc / 0 / 3601 / 007）一律 300" \
+    "$(for v in abc 0 3601 007; do wait_arg "$NEW/scripts/notify-requester-bot.sh" REQUESTER_BOT_LOCK_WAIT=$v; echo; done | sort -u)" "75|300|300"
+chk "等锁时间 · 测试变量 3600 照用" "$(wait_arg "$NEW/scripts/notify-requester-bot.sh" REQUESTER_BOT_LOCK_WAIT=3600)" "75|3600|3600"
+chk "等锁时间 · 手动派工（真的 dispatch-new-issue.sh）仍是 120 秒，测试变量不影响它" \
+    "$(wait_arg "$REPO_DIR/scripts/dispatch-new-issue.sh" REQUESTER_BOT_LOCK_WAIT=5)" "75|120|120"
+chk "等锁时间 · 以上都没发写请求" "$(writes)" 0
 
 # ─────────────────────────────────────────────────────────────────────────
 echo "── 3e. PR 合并 / 关闭未合并后告诉机器人（GitHub#97 Q2=A） ──"

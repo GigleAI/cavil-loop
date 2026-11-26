@@ -9038,6 +9038,8 @@ item_lock_reexec() {   # <条目号> <脚本路径> [原参数…]
     CAVIL_ITEM_LOCK_HELD="$n" flock -o -x -w "$ITEM_LOCK_WAIT_SECS" -E 75 "$lock" bash "$self" "$@" || rc=$?
     if [ "$rc" = 75 ]; then
         log "条目 #$n 的锁被占用超过 ${ITEM_LOCK_WAIT_SECS} 秒（正在派工或清理），本次什么都不做"
+        # 外层轮询锁那份不要再把它说成「轮询锁被占用」（GitHub#715）
+        [ -z "$POLL_LOCK_SAID_FILE" ] || printf 1 > "$POLL_LOCK_SAID_FILE" 2>/dev/null || true
     fi
     exit "$rc"
 }
@@ -9121,19 +9123,36 @@ label_rename_gate() {   # 不放行时 LABEL_GATE_KIND = rename（暂停 / 配�
     return 0
 }
 
+# 这两个 75 出口（等不到锁、锁里那份过闸门不放行）的原因同时打到 stdout（GitHub#715）：_lib.sh 顶部把
+# stderr 永久指向了 /dev/null，log() 只进 poll.log，跑脚本的 agent / 人原来只看到一个退出码。原因文字只在
+# poll_lock_say 一处。锁里那份已经说过具体原因时，往外层传来的标记文件（CAVIL_POLL_LOCK_SAID）里写一笔，
+# 外层就不再打总括的那一行，免得同一件事说两遍。
+POLL_LOCK_SAID_FILE="${CAVIL_POLL_LOCK_SAID:-}"
+unset CAVIL_POLL_LOCK_SAID
+poll_lock_say() {   # <原因>
+    log "$1，本次什么都不做"
+    printf '%s\n' "⏸ $1。没有发出任何写请求，标签没动（退出码 75）"
+    [ -z "$POLL_LOCK_SAID_FILE" ] || printf 1 > "$POLL_LOCK_SAID_FILE" 2>/dev/null || true
+}
 poll_lock_reexec() {   # <脚本路径> [原参数…]
-    local self="$1" rc=0
+    local self="$1" rc=0 said=""
     shift
     if poll_lock_held; then
         return 0
     fi
-    mkdir -p "$STATE_DIR" 2>/dev/null || { log "建不了状态目录 ${STATE_DIR}，本次什么都不做"; exit 75; }
+    mkdir -p "$STATE_DIR" 2>/dev/null || { poll_lock_say "建不了状态目录 ${STATE_DIR}"; exit 75; }
     stuck_release_reexport
-    CAVIL_POLL_LOCK_HELD="$STATE_DIR|$$" CAVIL_POLL_LOCK_GATE=1 \
+    said="$(mktemp "${TMPDIR:-/tmp}/cavil-poll-lock-said.XXXXXX" 2>/dev/null)" || said=""
+    CAVIL_POLL_LOCK_HELD="$STATE_DIR|$$" CAVIL_POLL_LOCK_GATE=1 CAVIL_POLL_LOCK_SAID="$said" \
         flock -o -x -w "$POLL_LOCK_REEXEC_WAIT_SECS" -E 75 "$STATE_DIR/poll.lock" bash "$self" "$@" || rc=$?
     if [ "$rc" = 75 ]; then
-        log "本项目的轮询锁被占用超过 ${POLL_LOCK_REEXEC_WAIT_SECS} 秒（一轮轮询或一次标签改名还在进行），或标签改名闸门没放行，本次什么都不做"
+        if [ -n "$said" ] && [ -s "$said" ]; then
+            :   # 锁里那份已经说了原因
+        else
+            poll_lock_say "本项目的轮询锁被占用超过 ${POLL_LOCK_REEXEC_WAIT_SECS} 秒（一轮轮询或一次标签改名还在进行）"
+        fi
     fi
+    [ -z "$said" ] || rm -f "$said"
     exit "$rc"
 }
 # 锁里那一份（poll_lock_reexec 起的）：加载完配置后过一次闸门。由轮询拉起的子进程不过——轮询拿锁后已经过了。
@@ -9143,7 +9162,7 @@ poll_lock_reexec_gate() {
     [ "$POLL_LOCK_GATE_PENDING" = 1 ] || return 0
     POLL_LOCK_GATE_PENDING=""
     if ! label_rename_gate; then
-        log "$LABEL_GATE_WHY"
+        poll_lock_say "标签改名闸门没放行：${LABEL_GATE_WHY}"
         exit 75
     fi
 }
