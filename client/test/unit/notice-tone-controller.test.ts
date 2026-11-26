@@ -239,7 +239,10 @@ describe('"补做剩下的步骤": preparing is blue, one that did nothing is re
     const s = c.startOp({ kind: 'autopilot', key: K(ISSUE) });
     await idle(c);
     let r = opOf(c, s.id!);
-    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'refused', 'unsent']);
+    // GitHub#722: the comment 「继续」 first (the recorded item carries "autopilot" already: done on the read before it)
+    expect(fake.writes().filter((w) => w.method === 'POST' && w.path.endsWith(`/issues/${ISSUE}/comments`)).map((w) => (w.body as any)?.body)).toEqual(['继续']);
+    expect(r.steps.map((x) => x.state)).toEqual(['ok', 'ok', 'refused', 'unsent']);
+    expect(r.steps[1].reason).toBe('这个标签已经在');
     // nobody tried to finish it yet
     expect(opTone(r)).toBe('warn');
     fake.state.w.failLabel = null;

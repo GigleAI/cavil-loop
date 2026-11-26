@@ -16,7 +16,7 @@ import { nestSaid, noteBackendLang, readSaid, saidText, t, tKey, zhKey, DEFAULT_
 import { normalizeAutopilotConfirm, normalizeClearAllOnActivate, normalizeGithubActivity, normalizeGithubActivityMarkRead, normalizeLaneFolds, normalizeMineFilter, normalizeNotifyScope, normalizeTableFolds, setFold, setLaneFold, setMineFilter } from '../shared/uiPrefs';
 import { normalizeRepoOrder, reorderRepos } from '../shared/repoOrder';
 import { changeKey, repairKeys, type CustomKeys } from '../renderer/shortcuts';
-import { normalizeHandoff, type Handoff } from '../shared/handoff';
+import { handOffCommentFor, normalizeHandoff, type Handoff } from '../shared/handoff';
 import { LABEL_EXISTS_CODE, labelJobOutcome, labelSpecs, permissionOf, pressBlocked, type LabelAttempt, type LabelJob, type LabelPermission, type LabelRole } from '../shared/labelSetup';
 import { importView, pickView } from '../shared/viewImport';
 import { itemKey, parseSource, sourceLabel } from '../shared/sources';
@@ -4507,6 +4507,12 @@ export class Controller {
     // GitHub#569: no flow label of a repository whose labels are being renamed
     const renaming = action.kind === 'autopilot' || action.kind === 'handBack' ? renameLockOf(this.state.renameJobs, item.repo) : null;
     if (renaming) return refuse(renameLockText(renaming));
+    // GitHub#722: a hand-over with no comment of its own sends 「继续」 (a new one only) — decided here, before the check
+    // below, so a 「继续」 just sent from the reply box and still without a result is not sent a second time
+    if (action.kind === 'autopilot' || action.kind === 'handBack') {
+      const comment = handOffCommentFor(typeof action.comment === 'string' ? action.comment : '', opts.from !== undefined);
+      action = comment ? { ...action, comment } : { kind: action.kind, key: action.key };
+    }
     // PR #510 review round 1: the same text sent from the reply box is still without a result (the two could not be told apart)
     const opComment = (action as { comment?: unknown }).comment;
     if (typeof opComment === 'string' && opComment.trim() && this.sendCommentPending(item.key, opComment)) return refuse(t('同样的一段评论刚从回复框发过，还没有结果（或还不确定有没有发出），等它有了结果再操作'));

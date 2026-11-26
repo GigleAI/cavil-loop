@@ -1322,7 +1322,9 @@ test('GitHub#633: 交给 agent / 托管 put the floating panel or the tab away o
   await expect(tab(page, B)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByTestId('tabs')).toHaveCount(0);
   await expect(page.getByTestId('tab-page-home')).toHaveAttribute('data-front', 'yes');
-  await expect(inStrip(page, B).getByTestId('op-notice-text')).toContainText('已托管', { timeout: 15_000 });
+  await expect(inStrip(page, B).getByTestId('op-notice-text')).toContainText('已评论并托管', { timeout: 15_000 });
+  // GitHub#722: the reply box was empty, so 「继续」 went out before the labels
+  expect(posted(B, 'comments').map((l) => l.body)).toEqual([{ body: '继续' }]);
   expect(posted(B, 'labels').length).toBeGreaterThan(0);
 
   // ---- 3. GitHub refuses after the client accepted: the panel is already gone; the refusal and 重新交给 agent are in the notice area ----
@@ -1333,7 +1335,9 @@ test('GitHub#633: 交给 agent / 托管 put the floating panel or the tab away o
   await expect(detail(page)).toHaveCount(0);
   await expect(inStrip(page, C)).toHaveAttribute('data-kind', 'error', { timeout: 15_000 });
   await expect(inStrip(page, C).getByTestId('op-retry')).toHaveText('重新交给 agent');
-  expect(posted(C, 'labels').map((l) => l.status)).toEqual([403]);
+  // GitHub#722: the reply box was empty — 「继续」 is what GitHub refused, so no label request followed it
+  expect(posted(C, 'comments').map((l) => [l.status, l.body])).toEqual([[403, { body: '继续' }]]);
+  expect(posted(C, 'labels')).toHaveLength(0);
   await shot(page, '633-02-refused-later-in-notice-area');
   store().w.readOnlyRepos.delete('gigleai/cavil-loop');
   await app.close();

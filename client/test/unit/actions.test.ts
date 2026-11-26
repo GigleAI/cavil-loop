@@ -274,10 +274,13 @@ describe('comments and handing back to the agent', () => {
     expect(d.ok && d.detail.timeline[0]).toMatchObject({ kind: 'comment', bodyHtml: '<p>看过了，按 A 做</p>' });
   });
 
-  it('hand back: adds the agent label, removes the human one (names from Settings)', async () => {
+  it('hand back: the comment 「继续」, then adds the agent label, removes the human one (names from Settings)', async () => {
+    labelOnGitHub(138, 'pending/human');
     const { c } = await ready();
     expect((await c.act({ kind: 'handBack', key: K(138) })).ok).toBe(true);
+    // GitHub#722: a hand-back with no comment of its own sends 「继续」 first
     expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([
+      ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/comments', { body: '继续' }],
       ['POST', '/api/repos/GigleAI/cavil-loop/issues/138/labels', { labels: ['pending/agent'] }],
       ['DELETE', '/api/repos/GigleAI/cavil-loop/issues/138/labels/pending%2Fhuman', undefined],
     ]);

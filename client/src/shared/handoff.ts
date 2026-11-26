@@ -115,3 +115,16 @@ export function missingHandoffLabels(checks: HandoffCheck[], hb: HandBackLabels)
   }
   return out;
 }
+
+/**
+ * GitHub#722: the comment "交给 agent" / "托管" on an existing item sends first — the one rule, used by the
+ * controller (what goes out) and by the detail panel (what its button and dialog say). Text given = that
+ * text. None given: a new operation sends 「继续」 (the workers read it as "go on"), so the hand-over is never
+ * a bare label change; an operation started from an earlier one (重试 / 重新托管…) never adds one — it only
+ * carries what is left of that one's own comment (`opReusableDraft`: a comment that went out, or that a reply
+ * made from it may have posted, is not there any more), even when that record is gone.
+ */
+export function handOffCommentFor(given: string, fromEarlier: boolean): string {
+  if (given.trim()) return given;
+  return fromEarlier ? '' : t('继续');
+}
