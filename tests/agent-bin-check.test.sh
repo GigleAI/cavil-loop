@@ -21,6 +21,8 @@
 #   8. 真 agent-poll.sh：真起、真退出的程序留下的退出码，self-heal 的日志和用完次数的交人留言都带上，
 #      不再说「疑似会话损坏」；下一轮派工检查到命令不在 → 转人工、计数清零（跨轮）
 #   8b. 退出码矩阵：0、被信号结束、记录写坏、记号对不上；旧记录删不掉 / 新记号写不了时读出「没读到」，不冒充本次
+#   8c. 同一次派工里续接失败、降级重起：旧记录删不掉时，能让它变旧就照常重起、之后读不到；连变旧也做不到就不重起，
+#       之后读到的是唯一真跑过的那次的退出码
 #   9. cleanup-issue.sh 删掉退出码记录
 #   10. 交人留言和中英文档里给人的软链命令三处一字不差，在临时 HOME 里照字面跑：目标位置已有文件 / 目录 / 软链 /
 #       悬空软链都停下不写，空位置才建；建好后下一次派工检查找得到
@@ -68,6 +70,11 @@ case "\$(cat "$CTL/mode" 2>/dev/null)" in
     exit0) sleep 3; exit 0 ;;
     term) sleep 3; kill -TERM \$\$; sleep 5 ;;
     now127) exit 127 ;;
+    # 续接那次：先布好下一步的故障（删不掉退出码记录；arm-both 另让提示词标不成更新），再以 127 退出；
+    # 降级重起的那次（如果真起了）就一直睡
+    arm-rm|arm-both)
+        touch "$CTL/fail-rm"; [ "\$(cat "$CTL/mode")" = arm-both ] && touch "$CTL/fail-touch"
+        echo sleep > "$CTL/mode"; exit 127 ;;
 esac
 exec sleep 60
 SH
@@ -101,6 +108,17 @@ if [ -e "$CTL/flip-shell" ] && [ "\${1:-}" = kill-session ] && [[ "\$*" == *cavi
     "$NEXT_TMUX" set-option -g default-shell /bin/bash >/dev/null 2>&1
 fi
 exec "$NEXT_TMUX" "\${args[@]}"
+SH
+# rm / touch 垫片：$CTL/fail-rm 在时删不掉退出码目录里的文件；$CTL/fail-touch 在时提示词文件标不成更新
+cat > "$FAKEBIN/rm" <<SH
+#!/usr/bin/env bash
+if [ -e "$CTL/fail-rm" ]; then for a in "\$@"; do case "\$a" in */worker-exit/*) exit 1 ;; esac; done; fi
+exec /bin/rm "\$@"
+SH
+cat > "$FAKEBIN/touch" <<SH
+#!/usr/bin/env bash
+if [ -e "$CTL/fail-touch" ]; then for a in "\$@"; do case "\$a" in */prompts/*) exit 1 ;; esac; done; fi
+exec /usr/bin/touch "\$@"
 SH
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKEBIN/systemctl"
 chmod +x "$FAKEBIN"/*
@@ -385,6 +403,42 @@ has "秒退的交人留言写「没读到」，不冒充上次的 127" "$(commen
 lacks "交人留言里没有上次的「找不到命令」" "$(comments)" "退出码 127"
 chk "跨进程（self-heal 那样）读也是读不到" "$(read_exit)" ""
 chmod 755 "$S/state/worker-exit"
+
+echo "【8c】续接失败、降级重起时旧记录删不掉"
+# 先正常起一次（登记会话），再给这条会话补一份对话记录，让下一次派工走「续接」
+prep_resume() {
+    run_dispatch issue
+    tmux kill-session -t "=abc-issue$N" 2>/dev/null
+    local id hist
+    id="$(cat "$S/state/agent-sessions/$N.claude.worker" 2>/dev/null)"
+    hist="$(tmux_sandbox_env_i HOME="$S/home" CODING_AGENT_CONFIG="$S/config" REPO_DIR="$REPO_DIR" WT="$S/wt/issue-$N" OUT="$CTL/hist" \
+        bash -c 'source "$REPO_DIR/scripts/_lib.sh"; claude_session_dir "$WT" > "$OUT"' >/dev/null 2>&1; cat "$CTL/hist")"
+    mkdir -p "$hist"; echo '{"type":"user"}' > "$hist/$id.jsonl"
+    rm -f "$CTL/ran" "$CTL/items/$N"
+    [ -n "$id" ]
+}
+for variant in arm-rm arm-both; do
+    scenario "fallback-$variant" yes
+    chk "[$variant] 到达性 · 续接的前提布好了（登记了会话、有对话记录）" "$(prep_resume && echo yes)" yes
+    echo "$variant" > "$CTL/mode"
+    run_dispatch issue
+    has "[$variant] 续接 2 秒内死了，日志带这次的退出码 127" "$(polllog)" "session 死了（退出码 127：找不到命令"
+    case "$variant" in
+        arm-rm)
+            chk "[$variant] 旧记录确实没删掉" "$(cut -d' ' -f1 "$S/state/worker-exit/abc-issue$N" 2>/dev/null)" 127
+            chk "[$variant] 旧记录能变旧：照常降级重起" "$(wc -l < "$CTL/ran" | tr -d ' ')" 2
+            chk "[$variant] 重起的会话活着" "$(yesno sess_alive)" yes
+            chk "[$variant] 之后（self-heal 那样）读不到，不冒充上次的 127" "$(read_exit)" "" ;;
+        arm-both)
+            chk "[$variant] 旧记录确实没删掉" "$(cut -d' ' -f1 "$S/state/worker-exit/abc-issue$N" 2>/dev/null)" 127
+            has "[$variant] 不重起，日志写明原因" "$(polllog)" "也没法让它变旧：不起程序"
+            chk "[$variant] 只真跑过续接那一次" "$(wc -l < "$CTL/ran" | tr -d ' ')" 1
+            chk "[$variant] 没有会话" "$(yesno sess_alive)" no
+            chk "[$variant] 派工以「结果不明」退出（条目留在 doing/agent，交给 self-heal）" "$(cat "$S/rc")" 77
+            chk "[$variant] 之后读到的是唯一真跑过那次的退出码" "$(read_exit)" 127 ;;
+    esac
+    rm -f "$CTL/fail-rm" "$CTL/fail-touch"
+done
 
 echo "【8】真 agent-poll.sh：self-heal 带退出码；下一轮检查到命令不在 → 转人工、计数清零"
 POLLS="$TMP/poll"; rm -rf "$POLLS"; mkdir -p "$POLLS/gh" "$POLLS/bin" "$POLLS/state" "$POLLS/wt" "$POLLS/home"
