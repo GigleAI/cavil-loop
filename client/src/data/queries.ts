@@ -290,13 +290,13 @@ query CavilItemDetail($owner: String!, $name: String!, $number: Int!, $commentsA
     issueOrPullRequest(number: $number) {
       __typename
       ... on Issue {
-        id number title url state createdAt bodyHTML body viewerCanUpdate
+        id number title url state createdAt updatedAt bodyHTML body viewerCanUpdate
         author { login }
         labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         ${DETAIL_COMMENTS}
       }
       ... on PullRequest {
-        id number title url state merged isDraft createdAt bodyHTML body viewerCanUpdate
+        id number title url state merged isDraft createdAt updatedAt bodyHTML body viewerCanUpdate
         author { login }
         labels(first: ${ITEM_LABELS_FIRST}) { nodes { name color } }
         mergeable mergeStateStatus reviewDecision headRefOid baseRefName headRefName

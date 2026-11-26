@@ -57,6 +57,8 @@ interface GqlDetail {
   merged?: boolean;
   isDraft?: boolean;
   createdAt: string;
+  /** GitHub#726: when GitHub last changed the item (the same field the board's reads carry) */
+  updatedAt?: string;
   bodyHTML: string;
   body?: string;
   viewerCanUpdate?: boolean;
@@ -282,5 +284,6 @@ export function toDetail(repo: string, raw: RawDetail, fetchedAt: number): ItemD
     fetchedAt,
     labels: it.labels.nodes.map((l) => ({ name: l.name, color: l.color })),
     canEdit: it.viewerCanUpdate === true,
+    ...(it.updatedAt ? { updatedAt: it.updatedAt } : {}),
   };
 }

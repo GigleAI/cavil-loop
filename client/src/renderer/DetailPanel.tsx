@@ -557,7 +557,8 @@ export function DetailPanel({
   const offlineWhy = canWrite ? undefined : t('离线时不能修改');
   const repo = item?.repo ?? '';
 
-  // GitHub#226: the board's `updatedAt` of this item when the detail on screen was read. Set only
+  // GitHub#226: the board's `updatedAt` of this item when the detail on screen was read (GitHub#726:
+  // the detail's own `updatedAt` when the read carried one). Set only
   // when a read lands: a read that was dropped, superseded or failed leaves it, so the next round tries again.
   // GitHub#397: the newest `updatedAt` known of the item. While a complete read carries it that is
   // the board's copy; otherwise the tab's own check may know more than a cached source does.
@@ -590,7 +591,9 @@ export function DetailPanel({
       if (!mine()) return;
       setLoading(false);
       if (r.ok) {
-        readAt.current = seen;
+        // GitHub#726: the version of the item the detail itself shows, when GitHub said it; this read
+        // may bring the board's copy up to it, and the next round must not read the detail again for that
+        readAt.current = r.detail.updatedAt ?? seen;
         confirmedAt.current = r.detail.fetchedAt;
         setFromCache(null);
         // same content: keep the object on screen, so the frame is not rendered again

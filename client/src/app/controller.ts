@@ -95,7 +95,7 @@ import { applyClientRename, blockedLabelsFor, dropOverride, handBackFor, normali
 import { FIELD_SLOT } from '../shared/repoLabels';
 import { NAME_RE, pendingOf, renameActions, renameLockOf, renameLockText, renameSettled, undoableOf, type PendingRecord, type RenameAnswer, type RenameArgs, type RenameCmd, type RenameJob, type RenameState, type RenameWatch } from '../shared/labelRename';
 import type { ConfigRead, DaemonStatus } from '../shared/daemon';
-import { applyFreshItem, fetchItem, freshKey, freshViews, type FreshItem } from '../data/itemRefresh';
+import { applyFreshItem, fetchItem, freshKey, freshViews, newerThan, type FreshItem } from '../data/itemRefresh';
 import { contentToItem } from '../data/fetchSources';
 import {
   MAX_EDITS,
@@ -522,6 +522,11 @@ export class Controller {
   private detailCache = new Map<string, { detail: ItemDetail; read: number }>();
   /** every detail read takes the next number when it starts: a read that lands after a later-started one of its item is not kept */
   private detailReads = 0;
+  /**
+   * GitHub#726: the board catch-up a detail read started, per session and item (one at a time per
+   * item), with the newest version a detail read of it has seen meanwhile (`want`)
+   */
+  private detailCatchUps = new Map<string, { run: Promise<void>; want: string }>();
   /** GitHub#395: release attachment images fetched with the sign-in, `session \n address` → data: address */
   private images = new Map<string, string>();
   private imageChars = 0;
@@ -2770,12 +2775,59 @@ export class Controller {
         this.detailCache.set(key, { detail, read });
         while (this.detailCache.size > DETAIL_CACHE_SIZE) this.detailCache.delete(this.detailCache.keys().next().value!);
       }
+      this.catchUpBoard(key, detail, c);
       return { ok: true, detail };
     } catch (e) {
       this.noteAuthFailure(e);
       const msg = e instanceof GitHubError && e.kind === 'network' ? t('连不上 GitHub，读不到详情（{why}）', { why: e.message }) : t('读取详情失败：{why}', { why: (e as Error).message });
       return { ok: false, error: msg };
     }
+  }
+
+  /**
+   * GitHub#726: the detail just read says GitHub changed the item after the board's copy was read
+   * (title, state, labels…): read the item again the way a change made here is read again, so the
+   * list / board — and the parts of the panel taken from the board's copy — follow at once instead
+   * of at the next round. Only when the detail is provably newer (either time unknown: nothing); a
+   * quiet re-read (a failure keeps what the board holds, no extra round — the next one reads it
+   * anyway); one per item at a time, a newer version seen meanwhile read once that one is done.
+   * The board's copy is never built from the detail.
+   */
+  private catchUpBoard(key: string, detail: ItemDetail, c: { client: GitHubClient; session: number }): void {
+    if (c.session !== this.session || !detail.updatedAt) return;
+    const slot = `${c.session}\n${key}`;
+    const going = this.detailCatchUps.get(slot);
+    // a re-read is on its way (its answer may be older than this detail): remember the newer version,
+    // it is looked at again when that re-read is done (PR #727 code review round 1)
+    if (going) {
+      if (newerThan(detail.updatedAt, going.want)) going.want = detail.updatedAt;
+      return;
+    }
+    const item = this.findItem(key);
+    if (!item || !newerThan(detail.updatedAt, item.updatedAt)) return;
+    const entry = { want: detail.updatedAt, run: Promise.resolve() };
+    entry.run = (async () => {
+      try {
+        for (;;) {
+          const aimed = entry.want;
+          // a re-read that could not finish changes nothing: the next round reads the item anyway
+          await this.refreshOne(c.client, c.session, item.repo, item.number, { quiet: true }).catch(() => {});
+          if (c.session !== this.session) return;
+          // again only for a newer version seen while it ran, and only while the board is still behind it
+          // (the same version again would be the same failed or overtaken read: never a loop)
+          const now = this.findItem(key);
+          if (entry.want === aimed || !now || !newerThan(entry.want, now.updatedAt)) return;
+        }
+      } finally {
+        this.detailCatchUps.delete(slot);
+      }
+    })();
+    this.detailCatchUps.set(slot, entry);
+  }
+
+  /** GitHub#726: the board catch-ups detail reads started, finished (tests wait on it). */
+  async detailCaughtUp(): Promise<void> {
+    while (this.detailCatchUps.size) await Promise.all([...this.detailCatchUps.values()].map((e) => e.run));
   }
 
   // ---- release attachment images of the discussion (GitHub#395) ----

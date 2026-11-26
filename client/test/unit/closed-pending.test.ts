@@ -20,6 +20,7 @@ import { Cache } from '../support/cache';
 import { FileStore } from '../support/credentials';
 import { HarnessBackend } from '../support/harness';
 import { startFakeGitHub, FakeGitHub, type LoggedRequest } from '../fake-github/server';
+import { findCopies } from '../fake-github/writes';
 import { FAKE_TOKEN, FIXTURE_NOW, tempDir, trustedList } from './helpers';
 import { fetchRepo, REPO_RECENT_DAYS } from '../../src/data/fetchSources';
 import { flowTally } from '../../src/data/flowTally';
@@ -117,6 +118,13 @@ function setIssue(number: number, opts: { label?: string | null; ageDays: number
   i.labels = opts.label ? [...rest, { name: opts.label, color: 'ededed' }] : rest;
   i.state = opts.state ?? 'closed';
   i.updated_at = new Date(FIXTURE_NOW - opts.ageDays * DAY).toISOString();
+  // GitHub#726: the item's GraphQL copies (a Project's, which a one-item re-read answers from) say the
+  // same as GitHub's REST answer — a detail read ahead of a notification compares the two update times
+  for (const g of findCopies(fake.state, REPO, number)?.gql ?? []) {
+    g.labels = { nodes: i.labels.map((l: any) => (typeof l === 'string' ? { name: l, color: 'ededed' } : { name: l.name, color: l.color })) };
+    g.state = i.state === 'open' ? 'OPEN' : 'CLOSED';
+    g.updatedAt = i.updated_at;
+  }
 }
 
 /** GitHub#718: the history read's list — every closed item, no label, no time */
