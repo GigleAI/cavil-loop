@@ -13,10 +13,11 @@
 //     list as last read), the maintainer's choice on GitHub#713;
 //   - "new" = unread, and updated after the time remembered for that thread (a thread never seen:
 //     after the first complete read). The first complete read of an account is the baseline:
-//     history, nothing reminds. Every thread of the inbox is remembered, in a source or not, so a
-//     source added later brings no history with it: its old unread threads were remembered already
-//     and remind only when they change again (a "first read of a new source is a baseline" rule on
-//     top would drop an @ that came right after the source was added — seen in the e2e test);
+//     history, nothing reminds. Every thread of the inbox is remembered, in a source or not;
+//   - a thread counts through a source only for activity after that source was added (`since` of
+//     each covering source): what happened before it was added is history, what happens after is not
+//     lost (a "first read with a new source is a baseline" rule instead would drop an @ that came
+//     between the source's addition and the next read — seen in the e2e test);
 //   - a read that failed (any page) changes nothing: no reminder, nothing remembered;
 //   - the words: a specific "X @了我" / "X 回复了" only when the latest comment is proven to be
 //     new this time — its address differs from the one remembered AND it was written after the
@@ -79,10 +80,18 @@ export interface Candidate {
   readComment: boolean;
   /** the time the comment must be newer than (the remembered update, or the baseline) */
   since: number;
+  /** the sources it reminds through (checked again right before the notification goes out) */
+  sources: string[];
 }
 
-/** In which sources an item is: the source keys (empty = in none). */
-export type SourcesOf = (key: string) => string[];
+/** One data source holding an item: its key, and since when it is a source (ms; -Infinity = from the start). */
+export interface Covering {
+  key: string;
+  since: number;
+}
+
+/** The data sources that hold an item (empty = in none). */
+export type SourcesOf = (key: string) => Covering[];
 
 /** Parse GitHub's inbox. A thread of another kind, an unknown reason or an unreadable shape is left out. */
 export function parseThreads(raw: unknown): Thread[] {
@@ -158,8 +167,9 @@ export class ActivityTracker {
     for (const th of list) {
       const was = this.seen.get(th.id);
       const since = was ? was.updatedAt : (this.baselineAt ?? readAt);
-      if (!first && th.unread && th.updatedAt > since && sourcesOf(th.key).length > 0) {
-        out.push({ thread: th, readComment: th.commentUrl !== null && th.commentUrl !== (was?.commentUrl ?? null), since });
+      const through = sourcesOf(th.key).filter((c) => th.updatedAt > c.since);
+      if (!first && th.unread && th.updatedAt > since && through.length > 0) {
+        out.push({ thread: th, readComment: th.commentUrl !== null && th.commentUrl !== (was?.commentUrl ?? null), since: Math.max(since, ...through.map((c) => c.since)), sources: through.map((c) => c.key) });
       }
       if (!was || th.updatedAt > was.updatedAt || was.commentUrl !== th.commentUrl) this.seen.set(th.id, { updatedAt: Math.max(th.updatedAt, was?.updatedAt ?? 0), commentUrl: th.commentUrl });
     }

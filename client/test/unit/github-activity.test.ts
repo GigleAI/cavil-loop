@@ -77,7 +77,7 @@ describe('the inbox as GitHub sends it', () => {
 });
 
 describe('which threads remind', () => {
-  const inAll = () => ['repo:o/r'];
+  const inAll = () => [{ key: 'repo:o/r', since: -Infinity }];
   const t0 = 1_000_000;
   const th = (id: number, n: number, at: number, extra: Parameters<typeof raw>[2] extends infer O ? Partial<O> : never = {}) => parseThreads([raw(id, n, { at, ...extra })])[0];
   const ids = (c: Candidate[]) => c.map((x) => x.thread.id);
@@ -99,23 +99,25 @@ describe('which threads remind', () => {
     expect(ids(t.observe([th(2, 2, t0 + 5), th(3, 3, t0 - 5)], inAll, t0 + 60_000))).toEqual(['2']);
   });
 
-  it('a read thread does not remind, nor one outside every source; a source added later brings its old unread threads as history, and what changes after it reminds — in the very first read with it too', () => {
+  it('a read thread does not remind, nor one outside every source; a source counts only for activity after it was added — before it is history, after it is not lost (in the first read with it too)', () => {
     const t = new ActivityTracker();
-    let where: Record<string, string[]> = {};
+    let where: Record<string, { key: string; since: number }[]> = {};
     const by = (k: string) => where[k] ?? [];
-    // an unread thread outside every source is remembered at the baseline
     t.observe([th(9, 9, t0 - 50)], by, t0);
     // read on GitHub already / in no source
-    where = { 'o/r#1': ['repo:o/r'] };
+    where = { 'o/r#1': [{ key: 'repo:o/r', since: -Infinity }] };
     expect(t.observe([th(1, 1, t0 + 5, { unread: false }), th(2, 2, t0 + 5), th(9, 9, t0 - 50)], by, t0 + 60_000)).toEqual([]);
-    // the source holding #9 is added now: its old unread thread is history (unchanged) …
-    where = { 'o/r#9': ['project:x'] };
-    expect(t.observe([th(9, 9, t0 - 50)], by, t0 + 120_000)).toEqual([]);
-    // … an @ that came after the source was added, before the next read, reminds in that read
-    where = { 'o/r#9': ['project:x'], 'o/r#3': ['project:x'] };
-    expect(ids(t.observe([th(9, 9, t0 - 50), th(3, 3, t0 + 125_000)], by, t0 + 180_000))).toEqual(['3']);
-    // and the old one reminds when it changes
-    expect(ids(t.observe([th(9, 9, t0 + 190_000), th(3, 3, t0 + 125_000)], by, t0 + 240_000))).toEqual(['9']);
+    // #4 had activity at +70 s; the source holding it was added at +80 s; read at +120 s: history
+    where = { 'o/r#4': [{ key: 'project:x', since: t0 + 80_000 }], 'o/r#3': [{ key: 'project:x', since: t0 + 80_000 }] };
+    expect(t.observe([th(4, 4, t0 + 70_000), th(3, 3, t0 + 90_000)], by, t0 + 120_000).map((c) => [c.thread.id, c.sources])).toEqual([['3', ['project:x']]]);
+    // #4 changes after the source was added: it reminds
+    expect(ids(t.observe([th(4, 4, t0 + 130_000), th(3, 3, t0 + 90_000)], by, t0 + 180_000))).toEqual(['4']);
+    // in a source added late and an old one: the old one makes earlier activity count, and only that one is named
+    where = { 'o/r#5': [{ key: 'project:x', since: t0 + 200_000 }, { key: 'repo:o/r', since: -Infinity }] };
+    expect(t.observe([th(5, 5, t0 + 190_000)], by, t0 + 240_000).map((c) => c.sources)).toEqual([['repo:o/r']]);
+    // the comment must be newer than the source's addition too, to be called new
+    where = { 'o/r#6': [{ key: 'project:y', since: t0 + 250_000 }] };
+    expect(t.observe([th(6, 6, t0 + 260_000)], by, t0 + 300_000)[0].since).toBe(t0 + 250_000);
   });
 
   it('a 304 (null) judges the inbox last read whole: nothing reminds again', () => {
@@ -156,7 +158,7 @@ describe('which threads remind', () => {
 
 describe('the words: specific only when the latest comment is proven new', () => {
   const thread = (reason: Thread['reason'], kind: Thread['kind'] = 'issue'): Thread => ({ id: '1', key: 'acme/web#42', repo: 'acme/web', number: 42, kind, title: 'Safari 白屏', reason, unread: true, updatedAt: 2000, commentUrl: 'c', apiUrl: 'a' });
-  const cand = (reason: Thread['reason'], readComment = true, since = 1000): Candidate => ({ thread: thread(reason), readComment, since });
+  const cand = (reason: Thread['reason'], readComment = true, since = 1000): Candidate => ({ thread: thread(reason), readComment, since, sources: ['repo:acme/web'] });
   const comment = (author: string, body: string, createdAt = 1500) => ({ author, body, createdAt, htmlUrl: null });
 
   const rows: [string, Candidate, ReturnType<typeof comment> | null, string, string][] = [
@@ -530,5 +532,87 @@ describe('marking read on GitHub when an item is opened in the app', () => {
     await look(h, A);
     expect(reqs('markThreadRead').map((e) => e.status)).toEqual([403, 205]);
     expect(h.c.getState().githubMarkReadProblem).toBeNull();
+  });
+});
+
+describe('the inbox\'s timing and the sources changing around it (PR #719 code review round 1)', () => {
+  beforeEach(async () => {
+    fake = await startFakeGitHub();
+    dir = tempDir();
+    fake.state.inbox.threads = [];
+    fake.state.inbox.comments.clear();
+  });
+
+  it('GitHub\'s interval in full: 50 s after a read nothing is asked, at 60 s it is', async () => {
+    const h = await started({ sources: [REPO] });
+    expect(reqs('notifications')).toHaveLength(1);
+    h.clock.t += 50_000;
+    await h.c.syncNow();
+    expect(reqs('notifications')).toHaveLength(1);
+    // did happen: that round itself ran (it read the repository)
+    expect(fake.log.filter((e) => e.path.startsWith('/api/repos/gigleai/cavil-loop/issues?') || e.path.startsWith('/api/repos/GigleAI/cavil-loop/issues?')).length).toBeGreaterThan(1);
+    h.clock.t += 10_000;
+    await h.c.syncNow();
+    expect(reqs('notifications')).toHaveLength(2);
+  });
+
+  it('a repository added after an item of it had activity: that activity is history; what comes after the addition reminds — removed and added again, likewise', async () => {
+    const h = await started({ sources: ['https://github.com/orgs/GigleAI/projects/11'] });
+    const t0 = h.clock.t;
+    const th = thread(OFF_BOARD, { at: t0 + 10_000, comment: 31 });
+    comment(th, 31, OTHER, `@${ME} before the repository was added`, t0 + 10_000);
+    h.clock.t = t0 + 20_000;
+    h.c.addSource(REPO);
+    await h.c.settled();
+    h.clock.t = t0 + 60_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    // did happen: the inbox was read with the repository in, and the thread was there
+    expect(reqs('notifications').length).toBeGreaterThanOrEqual(2);
+    expect(h.c.getState().sources.map((s) => s.key)).toContain('repo:gigleai/cavil-loop');
+    expect(h.items()).toEqual([]);
+    // after the addition: reminds
+    comment(th, 32, OTHER, `@${ME} after`, t0 + 70_000);
+    h.clock.t = t0 + 120_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    expect(h.items().map((a) => a.title)).toEqual([`${OTHER} 在 ${REPO}#${OFF_BOARD} 里 @了我`]);
+    // removed, activity, added again, read: the activity of the gap is history
+    h.c.removeSource('repo:gigleai/cavil-loop');
+    comment(th, 33, OTHER, `@${ME} while removed`, t0 + 130_000);
+    h.clock.t = t0 + 140_000;
+    h.c.addSource(REPO);
+    await h.c.settled();
+    h.clock.t = t0 + 180_000;
+    await h.c.syncNow();
+    await h.c.desktopSettled();
+    expect(h.items()).toHaveLength(1);
+  });
+
+  const midRead = async (remove: boolean) => {
+    const h = await started({ sources: [REPO] });
+    const th = thread(A, { at: h.clock.t + 30_000, comment: 41 });
+    comment(th, 41, OTHER, 'a reply', h.clock.t + 30_000);
+    const release = fake.hold('/issues/comments/41');
+    h.clock.t += 60_000;
+    const round = h.c.syncNow();
+    await expect.poll(() => reqs('comment').length).toBeGreaterThan(0);
+    if (remove) h.c.removeSource('repo:gigleai/cavil-loop');
+    release();
+    await round;
+    await h.c.desktopSettled();
+    await h.c.desktopSettled();
+    return h;
+  };
+
+  it('the item\'s only source removed while its comment is being read: nothing goes out', async () => {
+    const h = await midRead(true);
+    expect(h.c.getState().sources).toEqual([]);
+    expect(h.items()).toEqual([]);
+  });
+
+  it('the same round with the source kept: the reminder goes out', async () => {
+    const h = await midRead(false);
+    expect(h.items().map((a) => a.title)).toEqual([`${OTHER} 回复了 ${REPO}#${A}`]);
   });
 });

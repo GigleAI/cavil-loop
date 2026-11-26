@@ -123,7 +123,7 @@ import { readProjectChoices } from '../data/projectChoices';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
-import { ActivityTracker, COMMENT_READS_PER_ROUND, activityText, parseComment, parseThreads, threadWebUrl, type CommentFacts, type Thread } from '../data/notifications';
+import { ActivityTracker, COMMENT_READS_PER_ROUND, activityText, parseComment, parseThreads, threadWebUrl, type CommentFacts, type Covering, type Thread } from '../data/notifications';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 import type { WindowFrame } from '../shared/ipc';
 
@@ -148,6 +148,8 @@ export const RETRY_SLACK_MS = 10_000;
 interface ActivityAlert {
   key: string;
   session: number;
+  /** the sources it reminds through, each as the addition it was (re-checked right before it goes out) */
+  ctx: NoticeContext;
   url: string;
   title: string;
   body: string;
@@ -1076,6 +1078,11 @@ export class Controller {
   private activityViewer: string | null = null;
   /** GitHub#713: threads being marked read now (one request each at a time) */
   private markingRead = new Map<string, Promise<void>>();
+  /**
+   * GitHub#713: when each source was added in this run (this machine's clock; absent = configured at
+   * start, covered by the inbox's own baseline). Activity before it is history for that source.
+   */
+  private sourceAddedAt = new Map<string, number>();
   /** the window is in front (the shell says so); while it is, new items are seen as they come */
   private active = false;
   /** GitHub#522: the item whose detail is in front of the window now (floating panel or a detail tab), null = none */
@@ -1229,10 +1236,7 @@ export class Controller {
       this.notify(() => (this.itemStillHolds(ctx, it.key) ? alert : null));
     }
     // GitHub#713: the activity reminders; not counted in the badge (an item outside the board could never be cleared there)
-    for (const a of left.values()) {
-      const era = a.session;
-      this.notify(() => (era === this.session && this.activityOn() ? { kind: 'item', key: a.key, url: a.url, title: a.title, body: a.body } : null));
-    }
+    for (const a of left.values()) this.notify(() => (this.activityStillHolds(a) ? { kind: 'item', key: a.key, url: a.url, title: a.title, body: a.body } : null));
     this.badge();
     this.prefetchAppeared(change.appeared);
     this.state = { ...this.state, ...this.pendingNow() };
@@ -1243,6 +1247,36 @@ export class Controller {
   /** The inbox is read, and reminds: the setting is on and the sign-in can read it (a GitHub App's cannot). */
   private activityOn(): boolean {
     return this.state.githubActivity && this.state.signedInAppKind !== 'github-app';
+  }
+
+  /**
+   * An activity reminder still holds right before it goes out: the same sign-in, the setting on, and
+   * at least one source it came through still configured as the same addition and still holding the
+   * item (the rule pending reminders go by, itemStillHolds — without its pending-label check, which
+   * says nothing about this activity).
+   */
+  private activityStillHolds(a: ActivityAlert): boolean {
+    if (a.session !== this.session || !this.activityOn()) return false;
+    const now = new Set(this.activitySourcesOf()(a.key).map((c) => c.key));
+    return this.liveSources(a.ctx).some((k) => now.has(k));
+  }
+
+  /** Which sources hold an item now, each with the time it was added in this run (repository sources: every item of the repository). */
+  private activitySourcesOf(): (key: string) => Covering[] {
+    const since = (k: string) => this.sourceAddedAt.get(k) ?? -Infinity;
+    const repos = new Map<string, string>();
+    const boards: [string, Set<string>][] = [];
+    for (const src of this.state.sources) {
+      if (src.kind === 'repo') repos.set(`${src.owner}/${src.name}`.toLowerCase(), src.key);
+      else boards.push([src.key, new Set((this.snapshots.get(src.key)?.items ?? []).map((i) => i.key))]);
+    }
+    return (key: string) => {
+      const found: Covering[] = [];
+      const repo = repos.get(key.slice(0, key.lastIndexOf('#')));
+      if (repo) found.push({ key: repo, since: since(repo) });
+      for (const [k, items] of boards) if (items.has(key)) found.push({ key: k, since: since(k) });
+      return found;
+    };
   }
 
   /** Forget the inbox: sign-out, another account, the setting switched off. */
@@ -1262,7 +1296,8 @@ export class Controller {
    */
   private async activityRound(client: GitHubClient, session: number, signal: AbortSignal, viewer: string | null): Promise<Map<string, ActivityAlert>> {
     const out = new Map<string, ActivityAlert>();
-    if (!this.deps.desktop || !this.activityOn() || this.now() < this.activityNextAt - RETRY_SLACK_MS) return out;
+    // GitHub's interval in full: no early start (the slack of the source retries does not apply here)
+    if (!this.deps.desktop || !this.activityOn() || this.now() < this.activityNextAt) return out;
     if (viewer !== this.activityViewer) {
       this.forgetActivity();
       this.activityViewer = viewer;
@@ -1280,20 +1315,7 @@ export class Controller {
     this.activityEtag = read.etag;
     this.activityNextAt = this.now() + (read.pollSecs ?? ACTIVITY_POLL_SECS) * 1000;
     if (this.state.githubActivityProblem) this.set({ githubActivityProblem: null });
-    const repoSources = new Map<string, string>();
-    const boards: [string, Set<string>][] = [];
-    for (const src of this.state.sources) {
-      if (src.kind === 'repo') repoSources.set(`${src.owner}/${src.name}`.toLowerCase(), src.key);
-      else boards.push([src.key, new Set((this.snapshots.get(src.key)?.items ?? []).map((i) => i.key))]);
-    }
-    const sourcesOf = (key: string): string[] => {
-      const found: string[] = [];
-      const repo = repoSources.get(key.slice(0, key.lastIndexOf('#')));
-      if (repo) found.push(repo);
-      for (const [k, items] of boards) if (items.has(key)) found.push(k);
-      return found;
-    };
-    const candidates = this.activity.observe(read.threads, sourcesOf, read.readAt);
+    const candidates = this.activity.observe(read.threads, this.activitySourcesOf(), read.readAt);
     let reads = 0;
     for (const c of candidates) {
       let comment: CommentFacts | null = null;
@@ -1304,7 +1326,7 @@ export class Controller {
       }
       const text = activityText(c, comment, viewer);
       const item = this.findItem(c.thread.key);
-      out.set(c.thread.key, { key: c.thread.key, session, url: item?.url ?? threadWebUrl(c.thread, this.deps.endpoints, comment), ...text });
+      out.set(c.thread.key, { key: c.thread.key, session, ctx: this.noticeContext(c.sources), url: item?.url ?? threadWebUrl(c.thread, this.deps.endpoints, comment), ...text });
     }
     return out;
   }
@@ -1700,6 +1722,7 @@ export class Controller {
     if (this.state.sources.some((s) => s.key === src.key)) return { ok: false, error: t('这个来源已经加过了') };
     const sources = [...this.state.sources, src];
     this.bumpEpoch(src.key);
+    this.sourceAddedAt.set(src.key, this.now());
     this.cache.setSetting('sources', sources);
     const view = this.state.view.selected ? { ...this.state.view, selected: [...this.state.view.selected, src.key] } : this.state.view;
     this.cache.setSetting('view', view);
