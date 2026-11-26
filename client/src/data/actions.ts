@@ -23,7 +23,7 @@
 
 import type { CreateBoard } from '../shared/types';
 import type { SendAction, SendProof } from '../shared/sends';
-import { ISSUE_CLOSE_REASONS, type CreatePlan, type IssueCloseReason, type MergeMethod, type RepoOptions, type WriteAction } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type CreatePlan, type IssueCloseReason, type MergeMethod, type RepoAssignees, type RepoOptions, type WriteAction } from '../shared/actions';
 import type { HandBackLabels, Item, ProjectMeta } from '../shared/types';
 import { itemKey } from '../shared/sources';
 import { GitHubClient, GitHubError } from './github';
@@ -44,6 +44,7 @@ import { flipTask } from './taskList';
 import { pickMilestone } from './groupPreset';
 import { checkHandoff, droppedLabels, handoffProblem, HANDOFFS, mergeLabels } from '../shared/handoff';
 import { t, tKey, zhKey } from '../shared/i18n';
+import { MAX_ASSIGNEES, sameLogin } from '../shared/assignees';
 
 /** The app refused before sending anything to GitHub. */
 export class ActionRefused extends Error {
@@ -199,6 +200,53 @@ export async function listRepoOptions(client: GitHubClient, repo: string): Promi
     milestones: milestones.map((m) => ({ number: m.number, title: m.title, state: m.state === 'closed' ? 'closed' : 'open', dueOn: m.due_on })),
     error: null,
   };
+}
+
+/** GitHub#711: who may be assigned in `repo` (every page). Throws when it could not be read — "cannot read" is never "nobody". */
+export async function listAssignees(client: GitHubClient, repo: string): Promise<Omit<RepoAssignees, 'errorSaid'>> {
+  const users = await client.restList<{ login?: unknown }>(`${repoPath(repo)}/assignees?per_page=100`);
+  const logins: string[] = [];
+  for (const u of users) {
+    if (typeof u?.login !== 'string' || !u.login) throw new GitHubError('http', t('GitHub 的可指派账号列表里有一项没有账号名'));
+    if (!logins.some((l) => sameLogin(l, u.login as string))) logins.push(u.login);
+  }
+  return { logins, error: null };
+}
+
+/**
+ * GitHub#711: what an assignee write left on the item, from GitHub's answer. GitHub answers an
+ * account it will not assign (no access to the repository) with success and simply leaves it out,
+ * so the answer's list is the only proof: the login must be in it after an add, gone after a
+ * remove. An answer without a readable list proves nothing either way — not a success.
+ */
+export function assigneeAnswer(answer: unknown, login: string, want: boolean): 'done' | 'refused' | 'unknown' {
+  const list = (answer as { assignees?: unknown } | null)?.assignees;
+  if (!Array.isArray(list)) return 'unknown';
+  const logins: string[] = [];
+  for (const a of list) {
+    const l = (a as { login?: unknown } | null)?.login;
+    if (typeof l !== 'string') return 'unknown';
+    logins.push(l);
+  }
+  return logins.some((l) => sameLogin(l, login)) === want ? 'done' : 'refused';
+}
+
+async function writeAssignee(client: GitHubClient, item: Item, login: string, want: boolean): Promise<void> {
+  if (!login) throw new ActionRefused(t('不知道要改哪个负责人，没有修改'));
+  // the cap, counted on the item as the board shows it — which already carries this change (and any other
+  // on its way), so everyone but this account; GitHub's answer below still decides
+  if (want && item.assignees.filter((a) => !sameLogin(a, login)).length >= MAX_ASSIGNEES) {
+    throw new ActionRefused(t('GitHub 规定一条最多 {n} 个负责人，已经满了，没有修改', { n: MAX_ASSIGNEES }));
+  }
+  const answer = await client.rest<unknown>(want ? 'POST' : 'DELETE', `${repoPath(item.repo)}/issues/${item.number}/assignees`, { assignees: [login] });
+  const verdict = assigneeAnswer(answer, login, want);
+  if (verdict === 'refused') {
+    throw new ActionRefused(
+      want ? t('GitHub 没有把「{login}」设为负责人（这个账号可能不能被指派到这个仓库），没有修改', { login }) : t('GitHub 没有去掉负责人「{login}」，没有修改', { login }),
+    );
+  }
+  // not an ActionRefused: the write may have landed; the record waits for a read
+  if (verdict === 'unknown') throw new Error(t('GitHub 的回应里读不到负责人列表'));
 }
 
 /** GitHub#559: the repository as the signed-in account sees it (its `permissions` say whether it may create labels). */
@@ -586,6 +634,12 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'removeLabel': {
       const it = needItem(ctx);
       await removeLabel(client, it.repo, it.number, action.label);
+      return { touched: [[it.repo, it.number]], warning: null };
+    }
+    case 'addAssignee':
+    case 'removeAssignee': {
+      const it = needItem(ctx);
+      await writeAssignee(client, it, action.login, action.kind === 'addAssignee');
       return { touched: [[it.repo, it.number]], warning: null };
     }
     case 'setMilestone': {

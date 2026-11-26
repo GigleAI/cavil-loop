@@ -101,7 +101,7 @@ The board puts items into columns by iteration (the default), status or mileston
 
 ## Table
 
-The table lists items in groups (iteration, status, milestone, repository or none), with PRs under their issue and sub-issues indented under their parent. Labels, iteration, status and milestone can be changed right in a cell.
+The table lists items in groups (iteration, status, milestone, repository or none), with PRs under their issue and sub-issues indented under their parent. Labels, assignees, iteration, status and milestone can be changed right in a cell.
 
 ![The table: grouped by repository, then by iteration; PRs under their issue, sub-issues indented with their progress](client-screens/table.png)
 
@@ -110,7 +110,7 @@ The table lists items in groups (iteration, status, milestone, repository or non
 - **Groups**: with "左侧按仓库切片" (repository list on the left) on, the left side lists repositories; with "全部" (all) picked, the table is split by repository first, then by the chosen grouping.
 - **Columns**: title, labels, linked PR, sub-issue progress, updated, iteration, status, milestone, author, assignees … pick them in view settings; drag a header's right edge to resize.
 - **Sub-issues**: the parent's row shows "N / M" done.
-- **Editing in a cell**: click a labels, iteration, status or milestone cell to change it; when grouped by iteration / status / milestone, a whole row can be dragged to another group.
+- **Editing in a cell**: click a labels, assignees, iteration, status or milestone cell to change it; when grouped by iteration / status / milestone, a whole row can be dragged to another group.
 - **Folding**: every group folds; neighbouring folded groups merge into one row "已收起 N 组 · 共 M 条" (N groups folded · M items). What is folded is remembered on this machine.
 - **New issue**: every group ends with "＋ 新建 issue" (new issue), which creates the issue with that group's iteration / status / milestone already set.
 - **Repositories with nothing to show stay**: a repository in "数据来源" (sources) with "在看板显示" (show on board) on keeps its place in the table even when none of its issues / PRs is shown (a new empty repository, or everything filtered out by the search or by "显示已关闭"): 0 in the repository list, a section of its own under "全部", a group of its own when grouped by repository, and the same when it alone is picked (whatever the grouping) — each saying "no issues or PRs to show" with "＋ 新建 issue" (the dialog opens with that repository picked). A repository never read shows "—", says so and offers no "+". A repository known only from a GitHub Project is unknown to the client while it has no items, and is not shown.
@@ -194,11 +194,12 @@ A click on a card or a table row opens its details in a panel floating on the ri
 
 ## Making changes from the client
 
-Changes go straight to GitHub, and the item is read back afterwards: labels, milestone, iteration and status, replies and edits, new issues, closing and merging. Anything that did not go through is said in the notice at the top of the window; offline, every change is greyed out and nothing is queued.
+Changes go straight to GitHub, and the item is read back afterwards: labels, assignees, milestone, iteration and status, replies and edits, new issues, closing and merging. Anything that did not go through is said in the notice at the top of the window; offline, every change is greyed out and nothing is queued.
 
-<details><summary>Details: labels and milestone, replies, new issues, closing and merging</summary>
+<details><summary>Details: labels, assignees and milestone, replies, new issues, closing and merging</summary>
 
-- Labels (`L`), milestone (`M`), a Project's iteration and status: the new value shows at once and is marked until GitHub confirms it; you can resend or drop it.
+- Labels (`L`), assignees (`A`), milestone (`M`), a Project's iteration and status: the new value shows at once and is marked until GitHub confirms it; you can resend or drop it.
+- Assignees: "改负责人" (assignees) after the assignees in the detail's header ("+ 指派" (assign) while there are none), or the table's assignees cell, opens a picker of the accounts that can be assigned in that repository, the ones already assigned ticked at the top, then you. Each click adds or removes one person, so someone added at the same time by somebody else stays. An account GitHub does not take (for example one without access to the repository) is reported as not saved in the notice; an item has at most 10 assignees, and once it is full the unticked accounts are greyed out. When the assignable accounts cannot be read the picker says why, and the ones already assigned can still be removed.
 - When the label picker opens, the labels the item already carries are ticked at the top, followed by `autopilot`, `pending/human`, `pending/later`, `pending/agent` (the label names set under "流程标签" (flow labels) in Settings, the parked label included; ones the repository lacks are not listed), then the rest in the repository's order. While it is open a click only moves the tick, never the rows; closing and reopening sorts again. The milestone picker lists the current milestone first.
 - Reply (⌘↩ sends, ⌘⇧P previews), edit your comments and the body, tick the task lists in a body.
 - Quote reply: "引用回复" (quote reply) under every comment, the body and each review puts the whole source into the reply box as a `> ` quote, ready to write under it; select some words in the discussion and press that entry's "引用回复" or `R` to quote just them. A whole quote keeps the source's formatting; the hidden markers you never see on the web are emptied to `<!-- -->` (invisible once sent, too; the expandable usage line at the end of an agent's comment comes along; delete it if you don't want it); a quoted selection carries the words only, without links or code formatting. With a selection across two comments, `R` only jumps to the reply box. While the reply box cannot take text (offline, an action on its way) the button is greyed out.
@@ -232,7 +233,7 @@ Keys follow GitHub's web pages where they can. Press `?` for the full list (also
 | ⌘1 … ⌘9 | go to that tab (⌘1 is home) |
 | ⌘W | close the current tab |
 | ⌘F | find text on the page (the detail's discussion included; the search box is not touched); ↩ / ⇧↩ or ⌘G / ⌘⇧G next / previous, Esc closes |
-| `L` / `M` / `R` in details | labels / milestone / jump to the reply box (with words selected in the discussion: quote them into it) |
+| `L` / `A` / `M` / `R` in details | labels / assignees / milestone / jump to the reply box (with words selected in the discussion: quote them into it) |
 | ⌘↩ | send a reply, confirm a dialog |
 | ⌘= / ⌘- / ⌘0 | zoom in / out / actual size |
 

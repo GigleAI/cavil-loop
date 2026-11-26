@@ -288,5 +288,9 @@
   "这张流程图没画出来（写法有误），下面是原文": "This diagram could not be drawn (its source has an error); the source is below",
   "这张流程图太长，没有画，下面是原文": "This diagram is too long to draw; the source is below",
   "这张流程图没画出来，下面是原文": "This diagram could not be drawn; the source is below",
-  "这类图只在 GitHub 网页上显示": "This kind of block is only drawn on GitHub's web page"
+  "这类图只在 GitHub 网页上显示": "This kind of block is only drawn on GitHub's web page",
+  "正在设为负责人 · {status}": "Being assigned · {status}",
+  "候选是 {repo} 可指派的账号；一次加上或去掉一个（{key}）": "Choose from the accounts assignable in {repo}; one is added or removed at a time ({key})",
+  "改负责人": "Assignees",
+  "+ 指派": "+ Assign"
 }

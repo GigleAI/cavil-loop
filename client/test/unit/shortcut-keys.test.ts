@@ -438,13 +438,14 @@ describe('PR #498 review round 1: one key press, one shortcut — checked by pre
 });
 
 describe('PR #498 review round 1: a key without ⌘ never comes from the discussion frame (except 跳到回复框)', () => {
-  it('交给 agent → A: the frame is not given A; the window would refuse it anyway', () => {
-    const keys = ok(changeKey({}, 'handBack', { key: 'a' }, true));
+  // (G, not A: since GitHub#711 a bare A is 设置负责人)
+  it('交给 agent → G: the frame is not given G; the window would refuse it anyway', () => {
+    const keys = ok(changeKey({}, 'handBack', { key: 'g' }, true));
     setCustomKeys(keys);
-    expect(frameForward().some((f) => f.key === 'a')).toBe(false);
-    expect(frameAllowed('handBack', { key: 'a' })).toBe(false);
+    expect(frameForward().some((f) => f.key === 'g' && !f.mod)).toBe(false);
+    expect(frameAllowed('handBack', { key: 'g' })).toBe(false);
     // still acts from the panel itself
-    expect(resolve(key('a'), idle)).toBe('handBack');
+    expect(resolve(key('g'), idle)).toBe('handBack');
   });
   it('交给 agent → ⌘⇧A: forwarded; 跳到回复框 keeps its bare key, changed or not', () => {
     setCustomKeys(ok(changeKey({}, 'handBack', { key: 'a', ...MS }, true)));

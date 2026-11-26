@@ -1115,6 +1115,7 @@ export function BoardView({
           table={table ?? undefined}
           pinnedLabels={pinned}
           openKey={floatKey}
+          viewer={state.phase === 'ready' ? state.viewer : null}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

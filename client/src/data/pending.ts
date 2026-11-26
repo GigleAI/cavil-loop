@@ -35,6 +35,7 @@ import type { Item, NotifyScope, SourceSnapshot } from '../shared/types';
 import { mergeSnapshots } from './merge';
 import { labelAt, type LabelFor } from './loopBlocked';
 import { t } from '../shared/i18n';
+import { sameLogin } from '../shared/assignees';
 
 
 export const DEFAULT_PENDING_LABEL = 'pending/human';
@@ -65,7 +66,6 @@ export interface Audience {
   viewer: string | null;
 }
 
-const sameLogin = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
  * Who answers for an item, as GitHub records it: the account ('mine'), somebody else ('others'),

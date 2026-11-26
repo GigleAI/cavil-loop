@@ -3,7 +3,7 @@
 
 import type { AppKind, AppState, BoardData, GroupBy, HandBackLabels, NotifyScope, ProjectChoices, ShortcutKeyResult, ShortcutKeySpec, TallyDef } from './types';
 import type { ViewPatch } from './viewSettings';
-import type { DetailResult, ItemDetail, MergeMethod, RepoOptions, WriteAction, WriteResult } from './actions';
+import type { DetailResult, ItemDetail, MergeMethod, RepoAssignees, RepoOptions, WriteAction, WriteResult } from './actions';
 import type { ImageResult } from './images';
 import type { Handoff } from './handoff';
 import type { LabelPermission, LabelRole } from './labelSetup';
@@ -113,6 +113,8 @@ export interface CavilApi {
   loadImage(src: string): Promise<ImageResult>;
   /** `fresh`: read again even when a read of this run worked (the detail's refresh button) */
   repoOptions(repo: string, fresh?: boolean): Promise<RepoOptions>;
+  /** GitHub#711: who may be assigned in `repo` (the assignee picker's candidates) */
+  repoAssignees(repo: string, fresh?: boolean): Promise<RepoAssignees>;
   /** GitHub#559: may the account create labels in the repository (read now) */
   labelPermission(repo: string): Promise<LabelPermission>;
   /** GitHub#559: create these labels in the repository (the controller sends, the notice area says how it went) */

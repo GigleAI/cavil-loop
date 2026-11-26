@@ -15,6 +15,9 @@ export type WriteAction =
   /** `color`: the label's colour, so it can be shown before GitHub confirms (GitHub#229); optional */
   | { kind: 'addLabel'; key: string; label: string; color?: string }
   | { kind: 'removeLabel'; key: string; label: string }
+  /** GitHub#711: one assignee in / out (a login); never the whole list, which would drop someone just added elsewhere */
+  | { kind: 'addAssignee'; key: string; login: string }
+  | { kind: 'removeAssignee'; key: string; login: string }
   /** title = a milestone of the item's own repository with this title; null = remove the milestone */
   | { kind: 'setMilestone'; key: string; title: string | null }
   /** one Project's iteration of the item: iteration id of that Project, null = clear */
@@ -141,6 +144,16 @@ export interface RepoOptions {
    * for a sentence that quotes it (the "wait for…" refusal). Unset: no failure, or one the client
    * worded entirely by itself (then `error` is all its own words).
    */
+  errorSaid?: Said;
+}
+
+/**
+ * GitHub#711: the accounts that may be assigned in one repository (GitHub's own list).
+ * Read apart from RepoOptions: a failure here must not take the labels / milestones with it.
+ */
+export interface RepoAssignees {
+  logins: string[];
+  error: string | null;
   errorSaid?: Said;
 }
 

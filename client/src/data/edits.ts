@@ -1,6 +1,6 @@
 // Changes shown before GitHub confirms them (GitHub#229). One record per field
-// of one item: a label (present or not), the milestone, or one Project's status /
-// iteration. Pure functions only — the controller stores the records, sends the
+// of one item: a label (present or not), an assignee (GitHub#711: present or not), the
+// milestone, or one Project's status / iteration. Pure functions only — the controller stores the records, sends the
 // requests and feeds every answer and every read in here; nothing else decides
 // what a record shows or when it ends.
 //
@@ -22,6 +22,7 @@
 //
 import { t, tKey, zhKey } from '../shared/i18n';
 import type { EditMark, Item, ProjectMeta } from '../shared/types';
+import { sameLogin } from '../shared/assignees';
 
 // Times are the controller's stamps (milliseconds, strictly increasing), so
 // "sent after" never ties.
@@ -31,6 +32,8 @@ export type EditValue = string | boolean | null;
 /** What a record changes. `label` carries the colour the overlay shows it with. */
 export type EditField =
   | { kind: 'label'; label: string; color: string }
+  /** GitHub#711: one account; logins are not case-sensitive, so the id uses it lower-cased */
+  | { kind: 'assignee'; login: string }
   | { kind: 'milestone' }
   | { kind: 'status'; projectKey: string }
   | { kind: 'iteration'; projectKey: string };
@@ -84,6 +87,8 @@ export function fieldId(key: string, field: EditField): string {
   switch (field.kind) {
     case 'label':
       return `${key}|label|${field.label}`;
+    case 'assignee':
+      return `${key}|assignee|${field.login.toLowerCase()}`;
     case 'milestone':
       return `${key}|milestone`;
     default:
@@ -223,7 +228,8 @@ export function isEditRecord(v: unknown): v is EditRecord {
   const r = v as EditRecord;
   if (!r || typeof r !== 'object') return false;
   if (typeof r.id !== 'string' || typeof r.key !== 'string' || typeof r.repo !== 'string' || typeof r.number !== 'number') return false;
-  if (!r.field || !['label', 'milestone', 'status', 'iteration'].includes(r.field.kind)) return false;
+  if (!r.field || !['label', 'assignee', 'milestone', 'status', 'iteration'].includes(r.field.kind)) return false;
+  if (r.field.kind === 'assignee' && (typeof r.field.login !== 'string' || !r.field.login)) return false;
   if (!Array.isArray(r.reqs) || !r.reqs.every((q) => q && typeof q.id === 'number' && ['queued', 'waiting', 'accepted', 'unknown'].includes(q.answer))) return false;
   if (typeof r.targetReq !== 'number') return false;
   return fieldId(r.key, r.field) === r.id;
@@ -239,6 +245,8 @@ export function fieldValue(item: Item, field: EditField): EditValue | undefined 
   switch (field.kind) {
     case 'label':
       return item.labels.some((l) => l.name === field.label);
+    case 'assignee':
+      return item.assignees.some((a) => sameLogin(a, field.login));
     case 'milestone':
       return item.milestone?.title ?? null;
     default: {
@@ -253,6 +261,8 @@ function valueText(field: EditField, v: EditValue, projects: ProjectMeta[]): str
   switch (field.kind) {
     case 'label':
       return v ? t('有「{label}」', { label: field.label }) : t('没有「{label}」', { label: field.label });
+    case 'assignee':
+      return v ? t('负责人里有「{login}」', { login: field.login }) : t('负责人里没有「{login}」', { login: field.login });
     case 'milestone':
       return typeof v === 'string' ? v : t('（无里程碑）');
     case 'status':
@@ -267,6 +277,7 @@ function valueText(field: EditField, v: EditValue, projects: ProjectMeta[]): str
 
 export function targetText(r: EditRecord, projects: ProjectMeta[]): string {
   if (r.field.kind === 'label') return r.target ? t('加上「{label}」', { label: r.field.label }) : t('去掉「{label}」', { label: r.field.label });
+  if (r.field.kind === 'assignee') return r.target ? t('把「{login}」设为负责人', { login: r.field.login }) : t('去掉负责人「{login}」', { login: r.field.login });
   return valueText(r.field, r.target, projects);
 }
 
@@ -277,6 +288,7 @@ export function markOf(r: EditRecord, projects: ProjectMeta[]): EditMark {
     id: r.id,
     field: r.field.kind,
     ...(r.field.kind === 'label' ? { label: r.field.label, color: r.field.color } : {}),
+    ...(r.field.kind === 'assignee' ? { login: r.field.login } : {}),
     ...(r.field.kind === 'status' || r.field.kind === 'iteration' ? { projectKey: r.field.projectKey } : {}),
     status,
     targetText: targetText(r, projects),
@@ -311,6 +323,10 @@ export function overlayItem(item: Item, records: EditRecord[], projects: Project
       const has = out.labels.some((l) => l.name === f.label);
       if (r.target && !has) out = { ...out, labels: [...out.labels, { name: f.label, color: f.color }] };
       if (!r.target && has) out = { ...out, labels: out.labels.filter((l) => l.name !== f.label) };
+    } else if (f.kind === 'assignee') {
+      const has = out.assignees.some((a) => sameLogin(a, f.login));
+      if (r.target && !has) out = { ...out, assignees: [...out.assignees, f.login] };
+      if (!r.target && has) out = { ...out, assignees: out.assignees.filter((a) => !sameLogin(a, f.login)) };
     } else if (f.kind === 'milestone') {
       out = { ...out, milestone: typeof r.target === 'string' ? { title: r.target, dueOn: out.milestone?.title === r.target ? out.milestone.dueOn : null } : null };
     } else {

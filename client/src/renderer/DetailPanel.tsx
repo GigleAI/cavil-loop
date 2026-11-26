@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { AppState, BoardData, EditMark } from '../shared/types';
-import { ISSUE_CLOSE_REASONS, type IssueCloseReason, type ItemDetail, type MergeMethod, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
+import { ISSUE_CLOSE_REASONS, type IssueCloseReason, type ItemDetail, type MergeMethod, type RepoAssignees, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { writesEnabled } from '../data/board';
 import { api } from './api';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -21,6 +21,8 @@ import { hidesPanel, pressAt, releaseAt, releaseOfClick, type Press, type Releas
 import { frameFindEscape, frameKey, setFrameQuote, takeFrameQuote, useLayer, useShortcuts } from './keyboard';
 import { addFindFrame, findFrameFound, findFrameReady, type FrameHost } from './findInPage';
 import { LabelPicker } from './LabelPicker';
+import { AssigneePicker } from './AssigneePicker';
+import { sameLogin } from '../shared/assignees';
 import { pinnedLabels } from '../shared/pickOrder';
 import { blockedLabelsFor, handBackFor } from '../shared/repoLabels';
 import { renameLockOf, renameLockText } from '../shared/labelRename';
@@ -196,7 +198,7 @@ export function EditIssues({ marks, canWrite, resending, about }: { marks: EditM
         {open.map((m) => (
           <div key={m.id} className="edit-issue" data-testid="edit-issue" data-id={m.id} data-edit={m.status} data-field={m.field}>
             <div>
-              {m.field === 'label'
+              {m.field === 'label' || m.field === 'assignee'
                 ? tNode('你要{target}', { target: <b data-testid="edit-target">{m.targetText}</b> })
                 : tNode('你要设成：{target}', { target: <b data-testid="edit-target">{m.targetText}</b> })}{' '}
               <span className="muted small">{m.status === 'failed' ? t('没保存上') : t('没确认')}</span>
@@ -527,7 +529,7 @@ export function DetailPanel({
   /** GitHub#250: the reply box holds an operation's kept comment: sent = that draft is done */
   const [replyFromOp, setReplyFromOp] = useState<string | null>(draft?.replyFromOp ?? null);
   /** the label / milestone picker that is open (GitHub#192) */
-  const [picker, setPicker] = useState<'labels' | 'milestone' | null>(null);
+  const [picker, setPicker] = useState<'labels' | 'milestone' | 'assignees' | null>(null);
   // GitHub#397: the unsent text is the tab's, not this mounting's — reported on every change
   const onDraftRef = useRef(onDraft);
   onDraftRef.current = onDraft;
@@ -657,6 +659,20 @@ export function DetailPanel({
       .then((o) => mine() && setOpts((prev) => (o.error && prev && !prev.error ? prev : o)));
   }, [repo, session, optsRound]);
   const rereadOptions = () => setOptsRound((n) => n + 1);
+  // GitHub#711: who may be assigned — read once the assignee picker is first opened (most openings
+  // never need it), again with the refresh button; kept apart from the label / milestone lists
+  // (kept with the repository it is of: another item's repository never shows this one's list)
+  const [candsOf, setCandsOf] = useState<{ repo: string; list: RepoAssignees } | null>(null);
+  const cands = candsOf?.repo === repo ? candsOf.list : null;
+  const wantCands = picker === 'assignees' || cands !== null;
+  useEffect(() => {
+    if (!repo || !wantCands) return;
+    const mine = session.begin('assignees');
+    api()
+      .repoAssignees(repo, optsRound > 0)
+      .then((o) => mine() && setCandsOf((prev) => (o.error && prev?.repo === repo && !prev.list.error ? prev : { repo, list: o })));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo, session, optsRound, wantCands]);
   /** The refresh button: read this item again, with its label / milestone lists (GitHub#229). */
   const refreshHere = () => {
     void load();
@@ -839,6 +855,11 @@ export function DetailPanel({
   const marks = item?.edits ?? [];
   const markFor = (field: EditMark['field'], extra: { label?: string; projectKey?: string } = {}) =>
     marks.find((m) => m.field === field && (extra.label === undefined || m.label === extra.label) && (extra.projectKey === undefined || m.projectKey === extra.projectKey)) ?? null;
+  // GitHub#711: assignee changes on their way — added ones are already in the list (shown faded), removed ones are not
+  const onTheWay = (m: EditMark) => m.status === 'saving' || m.status === 'verifying' || m.status === 'observing';
+  const assigneeMark = (login: string) => marks.find((m) => m.field === 'assignee' && onTheWay(m) && m.login !== undefined && sameLogin(m.login, login)) ?? null;
+  const removingAssignees = marks.filter((m) => m.field === 'assignee' && onTheWay(m) && m.login !== undefined && !(item?.assignees ?? []).some((a) => sameLogin(a, m.login!)));
+  const assigneeSaving = marks.find((m) => m.field === 'assignee' && onTheWay(m)) ?? null;
 
   // which entries are unfolded: the newest only, until the user asks for all / none (GitHub#155)
   const [unfold, setUnfoldRule] = useState<Unfold>('latest');
@@ -1122,6 +1143,8 @@ export function DetailPanel({
   const previewBlocked = !item || !canWrite || !reply.trim();
   /** the label / milestone controls: the same condition as their buttons */
   const pickBlocked = !item || !canWrite || !opts;
+  /** GitHub#711: the assignee button (its candidates load inside the picker, so it does not wait for them) */
+  const assignBlocked = !item || !canWrite;
   const send = async () => {
     if (!item) return;
     const cleared = () => {
@@ -1232,6 +1255,10 @@ export function DetailPanel({
       if (pickBlocked) return;
       if (!fieldsShown) showFields(true);
       setPicker('milestone');
+    },
+    assignees: () => {
+      if (assignBlocked) return;
+      setPicker('assignees');
     },
     // GitHub#653: R with words selected in the discussion quotes them (the frame sends them with the key)
     reply: () => {
@@ -1556,19 +1583,59 @@ export function DetailPanel({
         <span className="head-people" data-testid="detail-people">
           <span className="sep">·</span>
           <Person login={item.author} size={16} />
-          {item.assignees.length > 0 && (
-            <>
-              <span className="muted small">{t('负责人')}</span>
-              <span className="people">
-                {item.assignees.map((a) => (
-                  <Person key={a} login={a} size={16} />
-                ))}
-              </span>
-            </>
+          {item.assignees.length > 0 && <span className="muted small">{t('负责人')}</span>}
+          {(item.assignees.length > 0 || removingAssignees.length > 0) && (
+            <span className="people" data-testid="detail-assignees" title={t('负责人 {who}', { who: item.assignees.join(t('、')) })} {...verbatimParts('github', item.assignees)}>
+              {item.assignees.map((a) => {
+                const m = assigneeMark(a);
+                return (
+                  <span key={a} className={m ? 'pending' : undefined} data-testid="detail-assignee" data-login={a} data-edit={m?.status} title={m ? t('正在设为负责人 · {status}', { status: tKey(EDIT_WORDS[m.status]) }) : undefined}>
+                    <Person login={a} size={16} />
+                  </span>
+                );
+              })}
+              {removingAssignees.map((m) => (
+                <span key={m.id} className="pending removing" data-testid="detail-assignee-removing" data-login={m.login} data-edit={m.status} title={t('正在去掉 · {status}', { status: tKey(EDIT_WORDS[m.status]) })}>
+                  <Person login={m.login ?? null} size={16} />
+                </span>
+              ))}
+            </span>
           )}
+        </span>
+        {/* GitHub#711: outside the people (which shrink and hide what overflows): the button always shows whole */}
+        <span className="head-assign">
+            {assigneeSaving && (
+              <span className="saving" data-testid="edit-status" data-field="assignee">
+                {tKey(EDIT_WORDS[assigneeSaving.status])}
+              </span>
+            )}
+            <button
+              className="label-plus assignee-edit"
+              data-testid="assignee-edit"
+              disabled={assignBlocked}
+              title={offlineWhy ?? t('候选是 {repo} 可指派的账号；一次加上或去掉一个（{key}）', { repo: item.repo, key: keyText('assignees') })}
+              {...verbatimParts('github', [item.repo])}
+              onClick={() => setPicker(picker === 'assignees' ? null : 'assignees')}
+            >
+              {item.assignees.length > 0 ? t('改负责人') : t('+ 指派')}
+              <kbd>{keyText('assignees')}</kbd>
+            </button>
         </span>
         {note?.kind === 'ok' && <HeadNote note={note} onExpire={() => setNote(null)} />}
         </span>
+        {picker === 'assignees' && (
+          <div className="head-picker">
+            <AssigneePicker
+              item={item}
+              candidates={cands}
+              viewer={state.phase === 'ready' ? state.viewer : null}
+              testid="assignee-picker"
+              disabled={!canWrite}
+              act={(action, done) => void change(action, done)}
+              onClose={() => setPicker(null)}
+            />
+          </div>
+        )}
         {/* GitHub#260: the buttons stay together; on a narrow panel they move to a line of their own instead of running off the edge */}
         <span className="head-actions">
         {/* GitHub#457: in the floating panel, the way into a tab of this app sits next to the way out to the

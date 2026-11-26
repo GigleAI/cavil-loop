@@ -48,6 +48,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     cachedDetail: async (key) => c.cachedDetail(String(key)),
     loadImage: (src) => c.loadImage(String(src)),
     repoOptions: (repo, fresh) => c.repoOptions(String(repo), Boolean(fresh)),
+    repoAssignees: (repo, fresh) => c.repoAssignees(String(repo), Boolean(fresh)),
     labelPermission: (repo) => c.labelPermission(String(repo)),
     startLabelCreate: (repo, wants) => c.startLabelCreate(String(repo), Array.isArray(wants) ? wants.map((w) => ({ name: String(w?.name ?? ''), role: w?.role })) : []),
     labelJobRetry: (id) => c.labelJobRetry(Number(id)),

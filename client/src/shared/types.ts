@@ -270,8 +270,10 @@ export interface Item {
  */
 export interface EditMark {
   id: string;
-  field: 'label' | 'milestone' | 'status' | 'iteration';
+  field: 'label' | 'assignee' | 'milestone' | 'status' | 'iteration';
   label?: string;
+  /** GitHub#711: the account of an assignee change */
+  login?: string;
   color?: string;
   projectKey?: string;
   status: 'saving' | 'verifying' | 'observing' | 'unconfirmed' | 'failed';

@@ -741,6 +741,15 @@ table.items td .cell-selects { display: inline-flex; flex-direction: column; gap
 /* ---- GitHub#229: changes shown before GitHub confirms them ---- */
 .label.pending { border: 1px dashed var(--border) !important; }
 .label.removing { text-decoration: line-through; opacity: 0.6; }
+/* GitHub#711: an assignee change on its way — added: faded; removed: faded and struck through */
+.people .pending { opacity: 0.5; }
+.people .pending.removing { text-decoration: line-through; }
+/* the assignee picker opens under the head (the head's info line hides what overflows it) */
+.detail-head .head-picker { position: absolute; top: 100%; left: 0; z-index: 8; }
+.detail-head .head-picker .picker { top: 4px; }
+.detail-head .head-assign { display: inline-flex; align-items: center; gap: 6px; }
+/* the header's people stay on one line (the info line hides what does not fit) */
+.detail-head .head-people .people { flex-wrap: nowrap; }
 .saving { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .spin { display: inline-block; width: 9px; height: 9px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: icon-spin 0.9s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
