@@ -5,11 +5,22 @@
 //
 // The panel closes like the view bar's fold (TallyBar): a press elsewhere, the window losing focus, Esc pressed
 // on the button or inside the panel (not a window-wide Esc, which belongs to the search box and the pages).
+//
+// GitHub#728: with a mouse it also opens on its own — the pointer resting on the button (HOVER_OPEN_MS) opens the
+// panel, the pointer leaving the button and the panel (HOVER_CLOSE_MS, so crossing the gap between them or coming
+// back in time does not close it) closes it. There is one rule for the mouse, whatever was clicked: a mouse click on
+// an open panel leaves it open, on a closed one opens it, and leaving closes it either way. Touch and the keyboard
+// do not hover: a tap or Enter / Space still opens and closes it as before. Every way of closing (press elsewhere,
+// Esc, blur, unmount) also drops a pending hover timer, so a panel just closed is not reopened by one.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { MineFilter } from '../shared/uiPrefs';
 import { t } from '../shared/i18n';
 import { Icon } from './Icons';
+
+/** how long the mouse rests on the button before the panel opens, and how long after it left before it closes */
+export const HOVER_OPEN_MS = 150;
+export const HOVER_CLOSE_MS = 300;
 
 /** the hover text of the button: what the switch does now */
 export function mineTip(f: MineFilter, viewer: string | null): string {
@@ -20,10 +31,47 @@ export function mineTip(f: MineFilter, viewer: string | null): string {
 }
 
 export function MineFilterButton({ filter, viewer, onChange }: { filter: MineFilter; viewer: string | null; onChange: (patch: Partial<MineFilter>) => void }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** the kind of pointer that pressed the button last ('' = none: the click came from the keyboard) */
+  const pressedBy = useRef('');
   const known = !!viewer;
   const lit = filter.on && known;
+  const stopTimer = () => {
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const later = (ms: number, next: boolean) => {
+    stopTimer();
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setOpenState(next);
+    }, ms);
+  };
+  /** open or close now, dropping any hover timer still waiting */
+  const setOpen = (next: boolean) => {
+    stopTimer();
+    setOpenState(next);
+  };
+  useEffect(() => {
+    // leaving the window drops a hover timer still waiting, open or not (the listener below only runs while open)
+    window.addEventListener('blur', stopTimer);
+    return () => {
+      window.removeEventListener('blur', stopTimer);
+      stopTimer();
+    };
+  }, []);
+  const enter = (ev: ReactPointerEvent) => {
+    if (ev.pointerType !== 'mouse' || !known) return;
+    if (open) stopTimer();
+    else later(HOVER_OPEN_MS, true);
+  };
+  const leave = (ev: ReactPointerEvent) => {
+    if (ev.pointerType !== 'mouse') return;
+    if (open) later(HOVER_CLOSE_MS, false);
+    else stopTimer();
+  };
   useEffect(() => {
     if (!open) return;
     const away = (ev: Event) => {
@@ -50,8 +98,11 @@ export function MineFilterButton({ filter, viewer, onChange }: { filter: MineFil
       className="mine-filter"
       ref={box}
       data-testid="mine-filter"
+      onPointerEnter={enter}
+      onPointerLeave={leave}
       onKeyDown={(ev) => {
-        if (ev.key !== 'Escape' || !open) return;
+        if (ev.key !== 'Escape') return;
+        if (!open) return stopTimer(); // Esc while the hover wait runs: it does not open
         ev.preventDefault();
         ev.stopPropagation();
         setOpen(false);
@@ -66,8 +117,16 @@ export function MineFilterButton({ filter, viewer, onChange }: { filter: MineFil
         aria-expanded={open}
         aria-haspopup="true"
         disabled={!known}
-        title={mineTip(filter, viewer)}
-        onClick={() => setOpen(!open)}
+        title={open ? undefined : mineTip(filter, viewer)}
+        onPointerDown={(ev) => {
+          pressedBy.current = ev.pointerType;
+        }}
+        onClick={() => {
+          const mouse = pressedBy.current === 'mouse';
+          pressedBy.current = '';
+          // the mouse opens it by resting on it and closes it by leaving: a click never closes it under the pointer
+          setOpen(mouse ? true : !open);
+        }}
       >
         {t('只看我的')}
         <Icon name="chevron" size={12} />
