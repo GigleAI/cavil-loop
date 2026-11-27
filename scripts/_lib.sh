@@ -8269,7 +8269,13 @@ start_session_logging() {
     case "$st" in
         found|single) ;;
         *)
-            log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 ${st}），本次不碰会话日志"
+            # 成功读到会话已不在 = 程序已经退出（GitHub#738：以前这里一律说「认不出」，像是读取出了错）
+            local _e=0; worker_session_exists "$sess" || _e=$?
+            if [ "$_e" = 1 ]; then
+                log "  $sess 里的程序已经退出，没挂上会话日志"
+            else
+                log "  ⚠️ 认不出 $sess 的 worker 窗格（或读不到，状态 ${st}），本次不碰会话日志"
+            fi
             return 0 ;;
     esac
     session_log_pipe_ensure "$sess" "$tgt" "$pipe" "$log_path" || \
@@ -12109,6 +12115,7 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
     WORKER_SESSION_ID=""
     AGENT_SESSION_PRELAUNCH_IDS=""
     OUTSIDER_SESSION_MARK=""
+    AGENT_SESSION_PLAN_NUM="$num"   # 给 agent_exit_wrap_into 记「这次启动续的是哪个编号的哪条对话」（GitHub#738）
 
     # 每次起会话（新建 / 续接 / 续接失败重建，三个派工脚本全部经过这里）之前先补目录信任
     agent_prepare_trust "$cwd"
@@ -12575,10 +12582,23 @@ agent_exit_wrap() {   # <tmux_session> <命令>
     printf '%s\n' "$tok" > "$f.launch" 2>/dev/null || return 3
     got=$(cat "$f.launch" 2>/dev/null) || return 3
     [ "$got" = "$tok" ] || return 3
-    rm -f "$f" 2>/dev/null || true   # 删不掉也不要紧：旧记录的记号对不上
+    rm -f "$f" "$f.screen" "$f.saved" "$f.session" 2>/dev/null || true   # 删不掉也不要紧：旧记录的记号对不上
     AGENT_EXIT_TOKEN="$tok"
     if ! agent_exit_shell_posix "$sess"; then printf '%s' "$cmd"; return 0; fi
-    printf "%s; __cavil_rc=\$?; printf '%%s %%s\\\\n' \"\$__cavil_rc\" '%s' > '%s' 2>/dev/null; exit \$__cavil_rc" "$cmd" "$tok" "$f"
+    printf "%s; __cavil_rc=\$?; printf '%%s %%s\\\\n' \"\$__cavil_rc\" '%s' > '%s' 2>/dev/null; %sexit \$__cavil_rc" \
+        "$cmd" "$tok" "$f" "$(agent_exit_screen_words "$sess" "$tok" "$f")"
+}
+
+# 退出码记下之后、窗格关闭之前存最后一屏（GitHub#738，规则在 scripts/agent-exit-screen.sh 开头）。
+# 输出要插进启动命令的那一段（以「; 」结尾）；路径里有单引号 / 换行就不抓——保存结果读出来是「不知道」，不会说已存
+AGENT_EXIT_SCREEN_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-exit-screen.sh"
+agent_exit_screen_words() {   # <tmux_session> <记号> <退出码记录路径>
+    local log sh="${BASH:-bash}" p
+    log="$(session_log_path "$1")"
+    for p in "$sh" "$AGENT_EXIT_SCREEN_SCRIPT" "$log"; do
+        case "$p" in *"'"*|*$'\n'*) return 0 ;; esac
+    done
+    printf "'%s' '%s' '%s' '%s' '%s' </dev/null >/dev/null 2>&1; " "$sh" "$AGENT_EXIT_SCREEN_SCRIPT" "$2" "$3" "$log"
 }
 # 在当前 shell 里包装 CMD（AGENT_EXIT_TOKEN 留在当前 shell）。返回非 0 = 不要起这个程序（原因已记日志）
 agent_exit_wrap_into() {   # <tmux_session>：读写全局 CMD
@@ -12595,6 +12615,11 @@ agent_exit_wrap_into() {   # <tmux_session>：读写全局 CMD
     fi
     CMD="$(cat "$out")"; rm -f "$out"
     [ -n "$CMD" ] || { log "  ❌ 包装启动命令失败（读不回包装结果），不起程序"; return 1; }
+    # 这次启动续的是哪条对话（GitHub#738）：自动恢复认出「续不上」时只退役这一条。写不进不拦启动——
+    # 读不到这份记录就不退役，照旧重试
+    printf '%s %s %s %s %s %s\n' "$AGENT_EXIT_TOKEN" "${AGENT_SESSION_PLAN_NUM:--}" "${WORKER_AGENT:--}" \
+        "${WORKER_SESSION_ROLE:--}" "${AGENT_LAUNCH_KIND:--}" "${WORKER_SESSION_ID:--}" \
+        > "$(agent_exit_file "$1").session" 2>/dev/null || true
 }
 
 # 这次启动的退出码（数字），读不到 / 不是这次的 → 空
@@ -12624,7 +12649,127 @@ agent_exit_explain() {   # <退出码或空>
 
 agent_exit_forget() {   # <tmux_session>
     local f; f="$(agent_exit_file "$1")"
-    rm -f "$f" "$f.launch"
+    rm -f "$f" "$f.launch" "$f.screen" "$f.saved" "$f.session"
+}
+
+# ── 续不上的对话、退出前的最后一屏（GitHub#738）──
+# 续接的对话里记着本机已经不认的东西（换掉的模型供应商、删掉的对话文件）时，CLI 一打开就报错退出，
+# 而且常常是 2 秒之后才退（派工脚本的「续接秒退就开新对话」只等 2 秒）。自动恢复以前只看到「会话不在」，
+# 每次都续同一条，用完次数交人，评论里只有一句退出码。
+#   · 认：worker 退出时 agent-exit-screen.sh 存下的最后一屏，交给 resume_failure.py（按真实截屏写的规则）
+#   · 退役：只在「这次启动是续接、以非 0 退出、最后一屏是这次启动的、认出是续不上、现在登记的仍是这次续的那条」
+#     五样齐时，用 agent_session_retire_verified（名单写进并读回才删登记）；之后派工自然开新对话。
+#     哪一样读不到都不退役，照旧重试
+#   · 告诉人：交人评论只写固定句子（认出的原因，或最后一屏存没存下），从不贴屏幕原文
+# 全部只认带这次启动记号的记录（同 agent_exit_read：记号来自 <记录>.launch），上一次启动留下的一律当不知道。
+RESUME_FAILURE_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resume_failure.py"
+
+agent_exit_want_token() {   # <tmux_session> [期望记号] → 记号；读不到返回 1
+    local want
+    if [ "$#" -ge 2 ]; then want="$2"; else want=$(cat "$(agent_exit_file "$1").launch" 2>/dev/null) || return 1; fi
+    [[ "$want" =~ ^[0-9a-f-]+$ ]] || return 1
+    printf '%s' "$want"
+}
+
+# 这次启动的最后一屏（不含记号行）；不是这次的 / 读不到 → 返回 1
+agent_exit_screen_read() {   # <tmux_session> [期望记号]
+    local f want first
+    f="$(agent_exit_file "$1")"
+    want="$(agent_exit_want_token "$@")" || return 1
+    IFS= read -r first < "$f.screen" 2>/dev/null || return 1
+    [ "$first" = "$want" ] || return 1
+    tail -n +2 "$f.screen" 2>/dev/null || return 1
+}
+
+# 这次启动最后一屏的保存结果：saved / log-off / failed <哪一步> / 空（不知道）
+agent_exit_saved_read() {   # <tmux_session> [期望记号]
+    local f want tok rest
+    f="$(agent_exit_file "$1")"
+    want="$(agent_exit_want_token "$@")" || return 0
+    read -r tok rest < "$f.saved" 2>/dev/null || return 0
+    [ "$tok" = "$want" ] || return 0
+    case "$rest" in
+        saved|log-off|"failed capture"|"failed redact"|"failed store"|"failed write") printf '%s' "$rest" ;;
+    esac
+}
+
+# 认出「续不上」时输出「<类别>\t<原因>」，否则什么都不输出。
+# 先要这次启动确实以非 0 退出（同一记号的退出码记录）：正常结束、读不到退出码的，屏幕上有什么都不算——
+# 屏幕最后几行可能只是 agent 在引用那句报错（PR #740 复审第 1 轮问题 2）
+agent_exit_resume_verdict() {   # <agent> <tmux_session> [期望记号]
+    local agent="$1" screen code
+    shift
+    code="$(agent_exit_read "$@")"
+    [[ "$code" =~ ^[0-9]+$ ]] && [ "$code" != 0 ] || return 0
+    screen="$(agent_exit_screen_read "$@")" || return 0
+    [ -n "$screen" ] || return 0
+    printf '%s\n' "$screen" | python3 "$RESUME_FAILURE_SCRIPT" "$agent" 2>/dev/null | head -n 1
+}
+
+# 派工脚本里续接 2 秒内就退出时：一句认出的原因（日志用，空 = 没认出）
+agent_exit_resume_reason() {   # <agent> <tmux_session> <期望记号>
+    local v
+    v="$(agent_exit_resume_verdict "$@")"
+    [ -n "$v" ] || return 0
+    printf '；认出的原因：%s' "${v#*$'\t'}"
+}
+
+# 自动恢复用：认出续不上就退役那条对话。设 RESUME_FAIL_REASON（空 = 没认出）、RESUME_FAIL_RETIRED（1 = 已退役）
+agent_exit_resume_heal() {   # <tmux_session>
+    local sess="$1" want info tok num agent role kind id v cur
+    RESUME_FAIL_REASON=""; RESUME_FAIL_RETIRED=0
+    want="$(agent_exit_want_token "$sess")" || return 0
+    read -r tok num agent role kind id < "$(agent_exit_file "$sess").session" 2>/dev/null || return 0
+    [ "$tok" = "$want" ] || return 0
+    v="$(agent_exit_resume_verdict "$agent" "$sess" "$want")"
+    [ -n "$v" ] || return 0
+    RESUME_FAIL_REASON="${v#*$'\t'}"
+    case "$kind" in resume|adopt) ;; *) return 0 ;; esac
+    [ "$id" != - ] && [ "$num" != - ] && [ "$role" != - ] || return 0
+    # 判定和动手之间隔着一轮轮询：现在登记的必须还是这次续的那条，换过了（或读不到）就不动
+    cur="$(agent_session_id_get "$num" "$agent" "$role" 2>/dev/null)" || cur=""
+    if [ "$cur" != "$id" ]; then
+        log "  #$num 的 $role 对话登记已不是这次续的那条（或读不到），不退役"
+        return 0
+    fi
+    if agent_session_retire_verified "$num" "$agent" "$role" "$id"; then
+        RESUME_FAIL_RETIRED=1
+    else
+        log "  ⚠️ #$num 的 $role 对话没能退役（退役名单写不进或登记删不掉，登记原样保留），照旧重试"
+    fi
+}
+
+# 和 agent_session_retire 同一件事，但每一步都核对：先追加进退役名单并读回确认，确认了才删当前登记，
+# 删完再读一次。任何一步不成就停在那里返回 1——名单没写进时登记原样保留，这条对话的归属不会丢
+# （PR #740 复审第 1 轮问题 1）。不直接改 agent_session_retire：它的两个调用方在开着 set -e 的
+# 派工路上，返回非 0 会让派工中途退出，那是另一件事
+agent_session_retire_verified() {   # <num> <agent> <role> <id>
+    local rf
+    rf="$(agent_session_retired_file "$1" "$2" "$3")"
+    mkdir -p "$AGENT_SESSION_DIR" 2>/dev/null || return 1
+    printf '%s\n' "$4" >> "$rf" 2>/dev/null || return 1
+    grep -qxF -- "$4" "$rf" 2>/dev/null || return 1
+    agent_session_id_forget "$1" "$2" "$3" 2>/dev/null || return 1
+    [ ! -e "$(agent_session_file "$1" "$2" "$3")" ]
+}
+
+# 交人评论里接在退出码后面的一句（固定句子，不带屏幕原文）。先调过 agent_exit_resume_heal
+agent_exit_detail() {   # <tmux_session> <session-log.sh 用的编号>
+    local st
+    if [ -n "${RESUME_FAIL_REASON:-}" ]; then
+        printf '认出的原因：%s，再续多少次都一样' "$RESUME_FAIL_REASON"
+        [ "${RESUME_FAIL_RETIRED:-0}" = 1 ] && printf '；daemon 已停用这条旧对话，标签改回后会开一条新对话接着做（之前对话里的上下文不会带过去）'
+        return 0
+    fi
+    st="$(agent_exit_saved_read "$1")"
+    case "$st" in
+        saved) printf '退出前的最后一屏已存进会话日志（令牌已去掉），在 daemon 机器上用 `session-log.sh %s -c` 看' "$2" ;;
+        log-off) printf '本项目关了会话日志，退出前的最后一屏没有存下来，需要在 daemon 机器上复现' ;;
+        "failed capture") printf '这次没能存下退出前的最后一屏（抓屏失败），需要在 daemon 机器上复现' ;;
+        "failed redact") printf '这次没能存下退出前的最后一屏（去掉令牌这一步失败，为了不留明文什么都没存），需要在 daemon 机器上复现' ;;
+        "failed store"|"failed write") printf '这次没能存下退出前的最后一屏（写文件失败），需要在 daemon 机器上复现' ;;
+        *) printf '不确定退出前的最后一屏有没有存下来（没有这一次启动的保存记录），需要在 daemon 机器上复现' ;;
+    esac
 }
 
 # 起完一条全新会话之后调用：给「启动时钉不了 id」的 driver（codex）把本次真正用上的

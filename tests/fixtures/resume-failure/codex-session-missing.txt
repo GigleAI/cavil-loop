@@ -1,0 +1,1 @@
+ERROR: No saved session found with ID 01a21a4d-0000-7000-8000-000000000000. Run `codex resume` without an ID to choose from existing sessions.

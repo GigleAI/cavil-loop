@@ -4652,6 +4652,41 @@ that file; if it cannot (the state directory is not writable), the worker is not
 
 </details>
 
+### A resumed conversation exits with an error as soon as it opens
+
+When a resumed conversation records something this machine no longer knows (for example a codex model provider that was
+removed from the config, or a conversation file that is gone), the agent exits with an error the moment it opens it, and
+retrying changes nothing. The daemon recognises these errors: on the next round self-heal retires that conversation, and the
+next dispatch starts a new one (the old conversation's context is not carried over; the dispatch prompt still has the item's
+full background). The self-heal line in `poll.log` says `认出的原因：…，已退役这条对话`. Nothing for a person to do.
+
+<details><summary>How it is recognised, and when it is not retired</summary>
+
+- Every time the worker's program exits, the shell in its pane saves the last ~60 lines before the window closes (tokens
+  removed first), appends them to the item's session log (`session-log.sh <number> -c`), and keeps a copy in
+  `$STATE_DIR/worker-exit/<tmux session>.screen` for the recogniser.
+- Recognised today: codex's "this chat uses a model provider that is no longer configured", and codex's and claude's
+  "no conversation found with this id". Any other error is retried as before and handed to a person when the retries run out.
+- The conversation is retired only when all of these hold: this launch was a resume, the program exited with a non-zero code,
+  the saved screen belongs to this launch, its last line is one of the errors above (a mention in the middle of a line, or more
+  output after it, does not count), and the conversation registered now is still the one this launch resumed.
+  Retiring = its id is appended to `$STATE_DIR/agent-sessions/<number>.<agent>.<role>.retired` and read back, and only then is
+  the current registration removed, exactly as when done by hand; if the list cannot be written or the registration cannot be
+  removed, the registration stays as it is and the item is retried.
+- A resume that exits within 2 seconds is replaced with a new conversation by the dispatch script right away; that line in
+  `poll.log` gives the recognised reason too.
+
+</details>
+
+<details><summary>The sentence in the hand-over message</summary>
+
+When self-heal runs out of retries and hands the item over, the message adds one sentence after the exit code: the reason, if
+recognised; otherwise whether the last screen was saved — saved in the session log, session logs are off for this project
+(`SESSION_LOG_DIR=""`), not saved this time (screen capture, token removal or writing the file failed; when token removal
+fails nothing is kept), or no save record for this launch (unknown). The screen itself is never posted.
+
+</details>
+
 ### Every project's poll.log stops at the same minute
 
 Not one stuck worker — the whole `systemd --user` manager is gone, and with it every timer, every tmux session,

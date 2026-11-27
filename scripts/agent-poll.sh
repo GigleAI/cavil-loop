@@ -221,20 +221,26 @@ self_heal_one() {
     pending_label="$(worker_requeue_label "$issue_n")"
     tries=$(selfheal_bump "$issue_n")
     # 程序最后一次退出时记下的退出码（GitHub#731）：127 = 命令不存在，不再一律说「会话损坏」
-    local exit_note
+    local exit_note heal_note=""
     exit_note="$(agent_exit_explain "$(agent_exit_read "$sess")")"
+    # 续接的对话本身续不上（GitHub#738）：认出来就退役那条，下一次派工开新对话，不再续同一条
+    agent_exit_resume_heal "$sess"
+    if [ -n "$RESUME_FAIL_REASON" ]; then
+        heal_note="；认出的原因：${RESUME_FAIL_REASON}"
+        [ "$RESUME_FAIL_RETIRED" = 1 ] && heal_note+="，已退役这条对话，下一次派工开新对话"
+    fi
     if [ "$tries" -le "$cap" ]; then
-        log "🔄 self-heal: $kind #$n session=$sess 不存在（${exit_note}）→ 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
+        log "🔄 self-heal: $kind #$n session=$sess 不存在（${exit_note}${heal_note}）→ 自动重新派工（第 $tries/$cap 次，model=${model:-default}，翻 $LABEL_AGENT_DOING → ${pending_label}）"
         pace_mark_acted
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/agent)" \
             gh_label_flip "$n" \
             --add "$pending_label" \
             --remove "$LABEL_AGENT_DOING" || true
     else
-        log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（${exit_note}）→ 转人工 $LABEL_PENDING_HUMAN"
+        log "⚠️ self-heal: $kind #$n 自动恢复 $((tries - 1)) 次仍死（${exit_note}${heal_note}）→ 转人工 $LABEL_PENDING_HUMAN"
         pace_mark_acted
         notify_bounced_to_human "$n" \
-            "worker 会话在工作中途消失，daemon 自动重新派工 $((tries - 1)) 次仍然立刻退出。${exit_note}。" \
+            "worker 会话在工作中途消失，daemon 自动重新派工 $((tries - 1)) 次仍然立刻退出。${exit_note}。$(agent_exit_detail "$sess" "$issue_n")。" \
             "在 daemon 机器上看 poll.log 里这一条的启动记录，并用 \`session-log.sh $issue_n\` 看 pane 历史；退出码 127 时先确认这个条目用的 agent 命令在 daemon 交给 worker 的 PATH 里（\`~/.config/cavil-loop/<项目>.conf\`）。处理后把标签改回 \`${pending_label}\` 继续。" || true
         run_gh "label 翻转 (self-heal $kind #$n doing/agent → pending/human)" \
             gh_label_flip "$n" \
