@@ -1,0 +1,1 @@
+Error: account/gatewayOAuth/read failed: This chat uses model provider “api-router”, which is no longer configured. Restore this provider’s configuration to continue. (code -32600), data: {"type":"modelProviderNotConfigured","modelProvider":"api-router"}
