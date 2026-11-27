@@ -133,6 +133,11 @@ if ! compat_skip "setup.sh 不带 --yes" "$OLD_SRC" "$NEW_SRC" setup.sh scripts 
         for ans in n y; do
             fresh_world; use_skill "$OLD_SRC"; run_setup "$SKILL" "$os" "$ans"; old="$(snapshot)"
             fresh_world; use_skill "$NEW_SRC"; run_setup "$SKILL" "$os" "$ans"; new="$(snapshot)"
+            # 第二处允许的差异：本版多一段 worker 令牌检查（GitHub#739）。去掉那一段再比，单独断言它在（这里
+            # 没配令牌、本机也没登录，所以是缺令牌的提醒；内容在第 9 组细测）
+            chk "$os / 答 $ans：多了 worker 令牌检查，报缺 GH_TOKEN" \
+                "$(printf '%s\n' "$new" | sed -n '/^── worker 令牌检查 ──$/,/^$/p' | grep -c 'worker 需要 GH_TOKEN')" 1
+            new="$(printf '%s\n' "$new" | sed '/^── worker 令牌检查 ──$/,/^$/d')"
             # 唯一允许的差异：配置模板开了暂缓标签（GitHub#463），本版 setup.sh 按配置建它，多一行建标签输出。
             # 两边都去掉这一行再比（合入之后改前的副本也会建它），并单独断言本版确实建了
             chk "$os / 答 $ans：按模板里的暂缓标签建了它" "$(printf '%s\n' "$new" | grep -cxF "$LATER_LINE")" 1
@@ -488,6 +493,51 @@ rc=0; out="$(sb_env disconnect Darwin widget 2>&1)" || rc=$?
 chk "单字节：断开退出 0、RESULT=disconnected、登记已撤" \
     "$rc $(tail -1 <<< "$out") $([ -e "$H/.config/cavil-loop/widget.conf" ] && echo still)" "0 RESULT=disconnected "
 chk_lacks "单字节：断开输出里没有变量未定义" "$out" "unbound variable"
+
+echo "── 9. worker 令牌：setup.sh 装完提醒、状态脚本的 secret_env（GitHub#739）──"
+# 判断只看启动配置文件 + 项目配置（后台真正看得到的），不看跑命令的人自己环境里的；本机 gh 已登录时借用
+# 它（维护者在 #739 选的）。fake gh 的登录态在 HOME 下（.fake-gh-login），借用时 gh 要在后台的 PATH 上：
+# 放进 ~/.local/bin（_lib.sh 和检查都会把它补到 PATH 前面）。
+restore_template
+secret_of() { jq -c '.projects[] | select(.key == "widget") | .secret_env' <<< "$1"; }
+ENVF="$H/.config/cavil-loop/widget.conf"
+for os in Linux Darwin; do
+    fresh_world; run_setup "$SKILL" "$os" --yes; out="$(cat "$SANDBOX/setup.out")"
+    chk_has "$os / 没令牌、没登录：setup 报缺 GH_TOKEN" "$out" "worker 需要 GH_TOKEN，后台启动时拿不到，本机 gh 也没登录"
+    chk_has "$os / 没令牌、没登录：写明补到哪个文件" "$out" "补法：在 $ENVF 加一行 GH_TOKEN=<值>"
+    chk "$os / 没令牌、没登录：setup 本身照常成功" "$(cat "$SANDBOX/setup.rc")" 0
+    chk "$os / 没令牌、没登录：状态 missing" "$(secret_of "$(status "$os" claude)")" '{"state":"missing","missing":["GH_TOKEN"],"borrowed":[]}'
+    # 调用方自己环境里的 GH_TOKEN 后台拿不到，不算数
+    chk "$os / 调用方环境里有 GH_TOKEN：状态仍是 missing" \
+        "$(secret_of "$(GH_TOKEN=ghp_callercallercallercallercaller000000 status "$os" claude)")" '{"state":"missing","missing":["GH_TOKEN"],"borrowed":[]}'
+    GH_TOKEN=ghp_callercallercallercallercaller000000 run_setup "$SKILL" "$os" --yes
+    chk_has "$os / 调用方环境里有 GH_TOKEN：setup 仍报缺" "$(cat "$SANDBOX/setup.out")" "worker 需要 GH_TOKEN"
+    chk_lacks "$os / setup 输出里不出现令牌值" "$(cat "$SANDBOX/setup.out")" "ghp_"
+    # 写进启动配置（重跑 setup：启动配置已存在的那条路同样检查）
+    echo "GH_TOKEN=ghp_envfileenvfileenvfileenvfile00000000" >> "$ENVF"
+    run_setup "$SKILL" "$os" --yes; out="$(cat "$SANDBOX/setup.out")"
+    chk_has "$os / 启动配置里有：setup 报已配置" "$out" "✓ GH_TOKEN 已配置"
+    chk_lacks "$os / 启动配置里有：没有缺令牌提醒" "$out" "worker 需要"
+    chk_lacks "$os / 启动配置里有：输出不带令牌值" "$out" "ghp_"
+    chk "$os / 启动配置里有：状态 ok" "$(secret_of "$(status "$os" claude)")" '{"state":"ok","missing":[],"borrowed":[]}'
+    # 写在项目配置里同样算
+    sed -i '/^GH_TOKEN=/d' "$ENVF"; echo 'WRITE_GH_TOKEN="ghp_writewritewritewritewrite000000000"' >> "$HOST/cavil-loop.config"
+    chk "$os / 项目配置里有写令牌：状态 ok" "$(secret_of "$(status "$os" claude)")" '{"state":"ok","missing":[],"borrowed":[]}'
+    sed -i '/^WRITE_GH_TOKEN=/d' "$HOST/cavil-loop.config"
+    # 本机 gh 已登录：借用
+    mkdir -p "$H/.local/bin"; cp "$FK/bin/gh" "$H/.local/bin/gh"
+    printf 'ghp_loginloginloginloginlogin0000000000' > "$H/.fake-gh-login"; printf 'octo-human' > "$H/.fake-gh-user"
+    run_setup "$SKILL" "$os" --yes; out="$(cat "$SANDBOX/setup.out")"
+    chk_has "$os / 本机已登录：setup 说借用哪个账号" "$out" "派工时借用本机 gh 登录的令牌（账号 octo-human）"
+    chk_lacks "$os / 本机已登录：没有缺令牌提醒" "$out" "worker 需要"
+    chk_lacks "$os / 本机已登录：输出不带令牌值" "$out" "ghp_"
+    chk "$os / 本机已登录：状态 ok + borrowed" "$(secret_of "$(status "$os" claude)")" '{"state":"ok","missing":[],"borrowed":["GH_TOKEN"]}'
+    rm -f "$H/.fake-gh-login" "$H/.fake-gh-user"
+    # 读不了项目配置：unknown，不当成缺也不当成齐
+    chmod 000 "$HOST/cavil-loop.config"
+    chk "$os / 项目配置读不了：状态 unknown" "$(secret_of "$(status "$os" claude)")" '{"state":"unknown","missing":null,"borrowed":null}'
+    chmod 600 "$HOST/cavil-loop.config"
+done
 
 echo
 compat_summary

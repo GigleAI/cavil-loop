@@ -210,6 +210,8 @@ bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 
 一条命令搞定：建项目专属配置、登记后台轮询、在 GitHub 仓库建好 `pending/agent` / `pending/human` 等标签、启动定时任务。无破坏性、可重复跑。
 
+worker 推分支、发评论要用一把 GitHub 令牌。没配的话用本机 `gh auth login` 登录的那个账号；要用专用账号，就在 `~/.config/cavil-loop/<项目>.conf` 里加一行 `GH_TOKEN=<令牌>`（下一轮轮询就生效，不用重跑）。`setup.sh` 结尾会说明用的是哪一种，两种都没有时给出提醒——没有令牌就派不出任何活。
+
 ### 3. logout 也要继续运行（可选）
 
 ```bash

@@ -17,12 +17,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# _lib.sh 顶部的 `exec 9>&- 2>/dev/null` 会永久吞掉 stderr；本脚本的报错（端口被谁占了、
-# 锁超时）必须让调用方看得见，所以 source 前后存还 fd 2。
-exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
-exec 2>&8 8>&-
 # shellcheck source=_preview_adopt.sh
 source "$SCRIPT_DIR/_preview_adopt.sh"
 

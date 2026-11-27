@@ -24,7 +24,7 @@
 # 不读评论内容，也不按评论去重：去重会把「刚发的这条汇报」当成已汇报，挡住首次叫醒。
 #
 # 写用 gh_write（与 worker 自己发评论是同一个身份），读用 gh。所有输出走 stdout：
-# _lib.sh 顶部把 fd 2 永久指向了 /dev/null，worker 看不到 stderr。
+# worker 的工具调用常常只看 stdout，stderr 上的说明不可靠。
 
 # ── External requester bot: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # External requester bot (GitHub#95 / #97: the waiting label, `scripts/notify-requester-bot.sh` (+ the

@@ -32,7 +32,7 @@ description: 用 GitHub label 驱动本机 agent 处理 issue/PR，daemon 自动
    bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/setup.sh" <host-project-path>
    ```
    `$CLAUDE_PLUGIN_ROOT` 是 Claude Code runtime 注入的 skill 根目录变量；没有时回退到规范的 `~/.agents/skills/cavil-loop`。
-4. setup.sh 跑完后会打印下一步指南，原文转给用户
+4. setup.sh 跑完后会打印下一步指南，原文转给用户。其中「worker 令牌检查」一段说明 worker 有没有 GitHub 令牌（配好的 `GH_TOKEN`，或本机 `gh auth login` 登录的账号）；那里出现提醒，说明在它写的文件里补上它写的那一行之前一条活都派不出去——要告诉用户
 
 ### status
 

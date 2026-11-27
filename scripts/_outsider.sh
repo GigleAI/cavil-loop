@@ -97,8 +97,8 @@ outsider_screen_timeout() {
     if [[ "$t" =~ ^[0-9]+$ ]] && [ "$t" -ge 1 ] && [ "$t" -le 600 ]; then echo "$t"; else echo 60; fi
 }
 # 跑一步 jq，要处理的 JSON 从标准输入进。GitHub 读回来的内容（正文、评论、修改历史、整条列表）大小没有上限，
-# 一律不经命令行参数（--arg / --argjson）传：Linux 单个参数上限 128 KB，超过了 jq 连起都起不来，而公共库把
-# stderr 永久丢弃了，失败时一个字都不留（GitHub#426）。结果在 OS_JQ；失败 → OS_WHY 写明是哪一步、jq 的退出码和
+# 一律不经命令行参数（--arg / --argjson）传：Linux 单个参数上限 128 KB，超过了 jq 连起都起不来，而它的
+# stderr 不进 poll.log，失败时日志里一个字都不留（GitHub#426）。结果在 OS_JQ；失败 → OS_WHY 写明是哪一步、jq 的退出码和
 # 报错首行，return 2。报错首行从第一个引号处截断：jq 的报错会引用处理到的值，那可能是外人写的原文
 OS_JQ=""
 os_jq() {   # <步骤说明> <jq 参数…>   （标准输入：要处理的 JSON）

@@ -73,6 +73,8 @@ fi
 source "$SKILL_DIR/scripts/_names.sh"
 # shellcheck source=scripts/_install.sh
 source "$SKILL_DIR/scripts/_install.sh"
+# shellcheck source=scripts/_secret_env.sh
+source "$SKILL_DIR/scripts/_secret_env.sh"
 set_layout() {
     LAYOUT="$1"
     if [ "$LAYOUT" = legacy ]; then
@@ -351,6 +353,37 @@ EOF
     harden_perms "$env_file"
     echo "  ✓ ${env_file}（权限 600）"
 fi
+
+# ── worker 令牌检查（GitHub#739）──
+# 项目配置出厂要求 worker 拿到 GH_TOKEN（WORKER_SECRET_ENV），而上面建的启动配置里不写令牌：
+# 以前装完一切正常，第一条活进来就被拒绝派工。这里按后台真正启动时看得到的来源（启动配置 +
+# 项目配置；不看本终端里临时 export 的）判断，和派工前检查是同一个函数（scripts/_secret_env.sh）。
+# 只说有没有、缺什么、补到哪，不读出、不打印任何值；不提问（桌面客户端无人值守地跑本脚本）。
+echo
+echo "── worker 令牌检查 ──"
+secret_check="$(cavil_secret_env_check "$env_file" "$config")" || true
+while read -r st var; do
+    case "$st" in
+        ok) echo "  ✓ $var 已配置" ;;
+        login)
+            login_name="$(env -u GH_TOKEN gh api user --jq .login 2>/dev/null || true)"
+            echo "  · $var 没配：派工时借用本机 gh 登录的令牌（账号 ${login_name:-读不出}），worker 会以这个账号推分支、发评论"
+            echo "    要换成专用账号：在 $env_file 加一行 ${var}=<令牌>"
+            ;;
+        missing)
+            if [ "$var" = GH_TOKEN ]; then
+                secret_why="后台启动时拿不到，本机 gh 也没登录"
+            else
+                secret_why="后台启动时拿不到"
+            fi
+            if [ -t 1 ]; then printf '\033[31m'; fi
+            echo "  ⚠️  worker 需要 ${var}，${secret_why}——不补的话每条活都会被拒绝派工"
+            echo "      补法：在 $env_file 加一行 ${var}=<值>（不用重跑 setup，下一轮轮询就生效）"
+            if [ -t 1 ]; then printf '\033[0m'; fi
+            ;;
+        unreadable) echo "  ⚠️  读不了 ${env_file} 或 ${config}，没能检查 worker 令牌" ;;
+    esac
+done <<< "$secret_check"
 
 # ── 4. 安装调度器 unit（按 OS 分支）──
 echo

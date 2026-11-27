@@ -210,6 +210,8 @@ Or just say "install cavil-loop on ~/path/to/your-project" inside Claude Code â€
 
 One command handles: per-project config, registering the background poller, creating `pending/agent` / `pending/human` etc. labels in the repo, starting the timer. Non-destructive, idempotent.
 
+The worker pushes branches and comments with a GitHub token. With none configured it uses the account `gh auth login` signed in on this machine; to use a dedicated account, add a line `GH_TOKEN=<token>` to `~/.config/cavil-loop/<project>.conf` (the next poll picks it up, no re-run needed). `setup.sh` ends by saying which of the two applies, and warns when there is neither â€” without a token no work gets dispatched.
+
 ### 3. Keep running while logged out (optional)
 
 ```bash
