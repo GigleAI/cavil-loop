@@ -207,9 +207,22 @@ export function parkedKeys(items: readonly Item[], shared: string, laterOf: (rep
  * GitHub#741: whether the search itself names the parked label, so the 「显示稍后处理」 switch steps aside (greyed out,
  * parked items listed as the search says) — as 「显示已关闭」 does for `is:open`. Named = the lit number is a flow row
  * following the parked label (its click query, narrowed per repository, is the parked label), or the search holds a
- * `label:` condition, negated or not, one of whose values is the shared parked name or a repository's own
- * (`names`; compared as `hasLabel` compares, whole name, any case). Empty names name nothing.
+ * `label:` condition, negated or not, one of whose values is a parked name in use (`names`, from `parkedNames`;
+ * compared as `hasLabel` compares, whole name, any case). Empty names name nothing.
  */
+/**
+ * GitHub#741: the parked names in use — each repository holding one of `items` (the ticked sources' items, the same
+ * items `parkedKeys` judges) by its own name (`laterOf`, the settings' one lookup: its own, else the shared one).
+ * A repository not ticked, or removed with settings left behind, holds no item here and names nothing, so its
+ * parked label cannot grey the switch out over a search of the ticked ones. The shared name empty = none.
+ */
+export function parkedNames(items: readonly Item[], shared: string, laterOf: (repo: string) => string): string[] {
+  if (shared.trim() === '') return [];
+  const repos = new Map<string, string>();
+  for (const it of items) if (!repos.has(it.repo.toLowerCase())) repos.set(it.repo.toLowerCase(), it.repo);
+  return [...new Set([...repos.values()].map((r) => laterOf(r).trim()).filter((n) => n !== ''))];
+}
+
 export function parkedStated(parsed: ReturnType<typeof parseFilter>, names: readonly string[], lit: Pick<TallyEntry, 'flow'> | null): boolean {
   if (lit?.flow === 'later') return true;
   const own = new Set(names.map((n) => n.trim().toLowerCase()).filter((n) => n !== ''));

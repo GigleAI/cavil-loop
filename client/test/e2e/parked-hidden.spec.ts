@@ -350,6 +350,47 @@ test.describe('relations board', () => {
     await app.close();
   });
 
+  test('GitHub#741 review round 1 problem 1: a parked label set for a repository that is not ticked names nothing — a search for it neither brings parked items back nor greys the switch out; a ticked repository\'s own name still does', async () => {
+    let app: RunningApp = await launchApp(env);
+    let page = app.page;
+    await signIn(page, [PROJECT_URL, REPO]);
+    await park(page, [349]);
+    setLabel(349, 'bug', true);
+    await sync(page, (all) => all.some((i) => i.key === K(349) && has(i, 'bug') && parked(i)));
+    // a repository that is not among the sources, with settings of its own left behind: its parked label is "bug"
+    await app.backend.call('setSetting', { key: 'repoLabels', value: { 'gigleai/not-selected': { hand: { later: 'bug' } } } });
+    await app.close();
+    app = await launchApp(env);
+    page = app.page;
+    await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).state.repoLabels))['gigleai/not-selected']?.hand?.later, { timeout: 15_000 }).toBe('bug');
+    await expect.poll(async () => (await items(page)).some((i) => i.key === K(349) && parked(i)), { timeout: 15_000 }).toBe(true);
+    await layout(page, 'table');
+    await showParked(page, false);
+    // not vacuous: the switch really hides #349 before the search
+    await expect.poll(() => allRowKeys(page)).not.toContain(K(349));
+    expect((await items(page)).some((i) => i.key !== K(349) && i.state === 'open')).toBe(true);
+
+    // 「bug」 names no ticked repository's parked label: #349 stays out, the switch stays usable
+    await page.getByTestId('search').fill('label:bug');
+    await expect.poll(() => allRowKeys(page)).not.toContain(K(349));
+    await expect(parkedBox(page)).toBeEnabled();
+    await expect(parkedToggle(page)).not.toHaveClass(/disabled/);
+    // the ticked repository's own parked label still decides: #349 listed, the switch greyed out
+    await page.getByTestId('search').fill('label:pending/later');
+    await expect.poll(() => rowKeys(page)).toEqual([K(349)]);
+    await expect(parkedBox(page)).toBeDisabled();
+    // the ticked repository renamed to "bug": now 「label:bug」 names it and decides
+    await app.backend.call('setSetting', { key: 'repoLabels', value: { 'gigleai/cavil-loop': { hand: { later: 'bug' } } } });
+    await app.close();
+    app = await launchApp(env);
+    page = app.page;
+    await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).state.repoLabels))['gigleai/cavil-loop']?.hand?.later, { timeout: 15_000 }).toBe('bug');
+    await page.getByTestId('search').fill('label:bug');
+    await expect.poll(() => rowKeys(page), { timeout: 15_000 }).toContain(K(349));
+    await expect(parkedBox(page)).toBeDisabled();
+    await app.close();
+  });
+
   test('GitHub#708 rows 8 / 8b: an ordinary parent #346 with a parked sub-issue #350 — not listed, not pulled; faded in the graph; listed when searched', async () => {
     const { page } = await launchApp(env);
     await signIn(page, [PROJECT_URL, REPO]);

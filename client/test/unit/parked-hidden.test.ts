@@ -5,7 +5,7 @@
 // open part of what it picks must be exactly what the view bar's "稍后处理" number counts — one recognition.
 
 import { describe, expect, it } from 'vitest';
-import { parkedKeys, parkedStated, viewBarTallies } from '../../src/data/flowTally';
+import { parkedKeys, parkedNames, parkedStated, viewBarTallies } from '../../src/data/flowTally';
 import { parseFilter } from '../../src/shared/filter';
 import { DEFAULT_VIEW, isValidView, normalizeView } from '../../src/shared/viewSettings';
 import { DEFAULT_HAND_BACK, type HandBackLabels, type Item } from '../../src/shared/types';
@@ -114,5 +114,30 @@ describe('the 「显示稍后处理」 view setting (GitHub#741)', () => {
     expect(isValidView({ ...DEFAULT_VIEW, showParked: 'no' })).toBe(false);
     const { showParked: _gone, ...old } = DEFAULT_VIEW;
     expect(isValidView(old)).toBe(false);
+  });
+});
+
+describe('parkedNames (GitHub#741 review round 1 problem 1): only the repositories holding the ticked sources\' items', () => {
+  const laterOf = (repo: string) => ({ 'o/b': 'later/b', 'o/gone': 'bug' } as Record<string, string>)[repo] ?? 'pending/later';
+  const items: Item[] = [item(A, 1, { labels: L('pending/later', 'bug') }), item(B, 2, {}), item(A, 3, {})];
+
+  it('each held repository by its own name, the shared one elsewhere, once each', () => {
+    expect(parkedNames(items, 'pending/later', laterOf).sort()).toEqual(['later/b', 'pending/later']);
+  });
+
+  it('a repository with settings of its own but no item here (not ticked, or removed) names nothing', () => {
+    const names = parkedNames(items, 'pending/later', laterOf);
+    expect(names).not.toContain('bug');
+    // so its name cannot step the switch aside: a search for "bug" over the ticked items hides o/a#1 as usual
+    expect(parkedStated(parseFilter('label:bug'), names, null)).toBe(false);
+    expect(parkedStated(parseFilter('label:pending/later'), names, null)).toBe(true);
+    // the same item is hidden by the one rule
+    expect([...parkedKeys(items, 'pending/later', laterOf)]).toEqual(['o/a#1']);
+  });
+
+  it('the shared name empty, or no item, names nothing', () => {
+    expect(parkedNames(items, '', laterOf)).toEqual([]);
+    expect(parkedNames([], 'pending/later', laterOf)).toEqual([]);
+    expect(parkedNames([item(A, 1, {})], 'pending/later', (r) => (r === A ? '' : 'x'))).toEqual([]);
   });
 });

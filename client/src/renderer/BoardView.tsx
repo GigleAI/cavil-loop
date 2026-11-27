@@ -37,7 +37,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, parkedKeys, parkedStated, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { litTally, parkedKeys, parkedNames, parkedStated, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
 import { parkedScope } from '../shared/tallies';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
@@ -574,11 +574,12 @@ export function BoardView({
   // in the tooltip) and its gaps are a little tighter (styles.css `.vbar.compact`). The table and the graph have the
   // room and keep the words.
   const compactBar = view.layout === 'board';
-  const parkedNames = useMemo(
-    () => [handBack.later, ...Object.keys(repoLabels).map((repo) => handBackFor({ handBack, repoLabels }, repo).later)],
-    [handBack, repoLabels],
+  // the names the ticked sources' repositories use (never a repository not ticked, or removed with its settings kept)
+  const namesInUse = useMemo(
+    () => parkedNames(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later),
+    [data.items, handBack, repoLabels],
   );
-  const parkedInSearch = parkedStated(parsed, parkedNames, litEntry);
+  const parkedInSearch = parkedStated(parsed, namesInUse, litEntry);
   const hideParked = !view.showParked && !parkedInSearch;
   const parked = useMemo(
     () => (hideParked ? parkedKeys(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later) : new Set<string>()),
