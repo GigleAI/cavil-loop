@@ -569,6 +569,11 @@ export function BoardView({
   // (the lit 「稍后处理」 number included) decides instead, and the switch is greyed out. The parked label left empty
   // hides nothing, and the switch is not shown.
   const parkedOff = handBack.later.trim() === '';
+  // GitHub#741: the board layout's bar (its widest: 分列 and 泳道 too) keeps one line at the window size the app opens
+  // with only when 「视图设置」 and 「快捷键」 show just their icon / key there (the words stay for screen readers and
+  // in the tooltip) and its gaps are a little tighter (styles.css `.vbar.compact`). The table and the graph have the
+  // room and keep the words.
+  const compactBar = view.layout === 'board';
   const parkedNames = useMemo(
     () => [handBack.later, ...Object.keys(repoLabels).map((repo) => handBackFor({ handBack, repoLabels }, repo).later)],
     [handBack, repoLabels],
@@ -960,7 +965,7 @@ export function BoardView({
         )}
 
       {/* second row: how this view is laid out */}
-      <div className="vbar">
+      <div className={`vbar${compactBar ? ' compact' : ''}`}>
         <div className="seg" data-testid="layout">
           {(['board', 'table', 'graph'] as Layout[]).map((l) => (
             <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} title={t('{label}（{key}）', { label: layoutLabel(l), key: keyText(LAYOUT_KEY[l]) })} onClick={() => api().setView({ layout: l })}>
@@ -1032,9 +1037,9 @@ export function BoardView({
           </label>
         )}
         {view.layout !== 'graph' && (
-          <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
+          <button data-testid="open-view-panel" className={`${panel ? 'on' : 'ghost'}${compactBar ? ' vbar-icon' : ''}`} onClick={() => setPanel(!panel)} title={t('视图设置')}>
             <Icon name="sliders" />
-            {t('视图设置')}
+            <span className={compactBar ? 'sr-only' : undefined}>{t('视图设置')}</span>
           </button>
         )}
         <span className="vbar-count">
@@ -1064,8 +1069,9 @@ export function BoardView({
             {t('{n} 个条目', { n: data.items.length })}
           </span>
         </span>
-        <button className="ghost" onClick={onKeysHelp} data-testid="open-shortcuts" title={t('快捷键一览（{key}）', { key: keyText('help') })}>
-          {t('快捷键')} <kbd>?</kbd>
+        <button className={`ghost${compactBar ? ' vbar-icon' : ''}`} onClick={onKeysHelp} data-testid="open-shortcuts" title={t('快捷键一览（{key}）', { key: keyText('help') })}>
+          <span className={compactBar ? 'sr-only' : undefined}>{t('快捷键')} </span>
+          <kbd>?</kbd>
         </button>
       </div>
       {/* everything under the view bar */}

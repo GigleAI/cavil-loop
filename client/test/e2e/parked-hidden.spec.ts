@@ -293,6 +293,18 @@ test.describe('relations board', () => {
     await layout(page, 'board');
     if (await page.getByTestId('ended-group').count()) await page.getByTestId('ended-group').first().click();
     await expect.poll(() => cardKeys(page)).toEqual(keys(open));
+    // the board's bar (its widest) stays on one line with the switch: 「视图设置」 and 「快捷键」 show only their icon /
+    // key there, still named for screen readers and in the tooltip; the table keeps their words
+    const tops = await page.locator('.vbar > *').evaluateAll((els) => els.map((e) => e.getBoundingClientRect()).map((r) => r.top + r.height / 2));
+    expect(Math.max(...tops) - Math.min(...tops)).toBeLessThan(8);
+    await expect(page.getByTestId('open-view-panel')).toHaveAccessibleName('视图设置');
+    await expect(page.getByTestId('open-view-panel')).toHaveAttribute('title', '视图设置');
+    await expect(page.getByTestId('open-shortcuts')).toHaveAccessibleName(/快捷键/);
+    const words = (page: Page) => page.getByTestId('open-view-panel').getByText('视图设置').evaluate((e) => e.getBoundingClientRect().width);
+    expect(await words(page)).toBeLessThanOrEqual(1);
+    await shot(page, 'parked-switch-03-board');
+    await layout(page, 'table');
+    expect(await words(page)).toBeGreaterThan(20);
     await layout(page, 'graph');
     await expect(parkedToggle(page)).toBeVisible();
     for (const n of family) await expect(node(page, n)).toHaveAttribute('data-dim', 'no');
