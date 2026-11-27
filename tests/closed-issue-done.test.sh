@@ -359,9 +359,143 @@ Closes #30" "pending/human,pending/merge"
     chk "Refs 的 issue 翻 pending/human" "$(labels_of 32)" "pending/human"
     chk "带关的 issue 也进了新队列、重读一次后零写入出队" "$(reread 30)/$(queued 30)" "1/无"
     chk "记为已清理" "$(jq -c '.cleaned_prs | sort' "$STATE")" "[31,33]"
+
+    # ── 【12】等待机器人标签：关闭之后挂上的留着（GitHub#736）──
+    # 机器人提的 issue 随合并关闭后，合并结果通知挂上等待标签、叫醒机器人；同一轮紧接着的清扫曾把它摘掉。
+    # 先后看事件记录里的位置（和 pending/human 同一条规则），夹具照真 GitHub 的形状：标签都有「加上」事件
+    local B="pending/requester" BOTCFG='LABEL_PENDING_REQUESTER_BOT="pending/requester"'
+    ev_add() {   # <n> <labeled|unlabeled|closed|reopened> [标签] [操作人]：在事件记录末尾追加一条
+        jset events.json '.[$n] += [{event:$e, actor:{login:$a, type:"User"}, created_at:"2026-01-02T00:00:00Z"}
+                + (if $l == "" then {} else {label:{name:$l}} end)]' --arg n "$1" --arg e "$2" --arg l "${3:-}" --arg a "${4:-loop-bot}"
+    }
+    lab_add() { jset labels.json '.[$n] += [$l]' --arg n "$1" --arg l "$2"; }
+
+    section "【12a】关闭之后挂上的等待机器人标签：留着，Done 照打、出队"
+    fresh "$BOTCFG"
+    mkissue 40 "pending/PR" closed completed
+    lab_add 40 "$B"; ev_add 40 labeled "$B"
+    tick
+    chk "标签：Done 加上、pending/PR 摘掉、等待标签留着" "$(labels_of 40)" "Done,$B"
+    chk "没有对等待标签发删除" "$(n_calls "^gh api -X DELETE $R/issues/40/labels/pending%2Frequester")" 0
+    chk "出队" "$(queued 40)" "无"
+    chk "日志写明保留了等待标签" "$(log_has "issue #40 手动关闭（已完成）→ Done，摘掉 pending/PR；保留关闭之后挂上的 $B")" 1
+    chk "到达性 · 确实摘了 pending/PR（清扫真的跑了）" "$(n_calls "^gh api -X DELETE $R/issues/40/labels/pending%2FPR")" 1
+    tick
+    chk "下一轮：等待标签仍在、零写入" "$(labels_of 40)/$(writes_on 40)" "Done,$B/0"
+
+    section "【12b】关闭之后同时挂着 pending/human 和等待标签：两个都留着"
+    fresh "$BOTCFG"
+    mkissue 41 "pending/PR" closed completed
+    lab_add 41 pending/human; ev_add 41 labeled pending/human
+    lab_add 41 "$B"; ev_add 41 labeled "$B"
+    tick
+    chk "Done 加上、两个都留着" "$(labels_of 41)" "Done,pending/human,$B"
+    chk "日志列出两个保留的标签" "$(log_has "保留关闭之后挂上的 pending/human $B")" 1
+
+    section "【12c】关闭之后挂上、机器人已自己摘掉：只加 Done"
+    fresh "$BOTCFG"
+    mkissue 42 "" closed completed
+    ev_add 42 labeled "$B"; ev_add 42 unlabeled "$B" req-bot
+    tick
+    chk "只剩 Done" "$(labels_of 42)" "Done"
+    chk "只写了一次（加 Done）" "$(writes_on 42)" 1
+    chk "出队" "$(queued 42)" "无"
+
+    section "【12d】关闭之后挂上，之后人重开又关上：等待标签排在最后一次关闭之前 → 摘掉"
+    fresh "$BOTCFG"
+    mkissue 43 "pending/PR" closed completed
+    lab_add 43 "$B"; ev_add 43 labeled "$B"; ev_add 43 reopened "" maint; ev_add 43 closed "" maint
+    tick
+    chk "等待标签摘掉、Done 加上" "$(labels_of 43)" "Done"
+    chk "出队" "$(queued 43)" "无"
+
+    section "【12e】挂着等待标签、事件记录里却没有它的「加上」：判不了，零写入、留队"
+    fresh "$BOTCFG"
+    mkissue 44 "pending/PR" closed completed
+    lab_add 44 "$B"
+    tick
+    chk "零写入" "$(writes_on 44)" 0
+    chk "确实重读过（不是没跑到）" "$(reread 44)" 1
+    chk "留队" "$(queued 44)" 1
+    chk "日志写明对不上" "$(log_has "issue #44 的事件记录和现状对不上")" 1
+
+    section "【12f】清扫两次写之间有人挂上等待标签：本轮停手；下一轮认出它是关闭之后挂的，留着"
+    fresh "$BOTCFG"
+    mkissue 45 "pending/PR,pending/agent" closed completed
+    # 第一次摘标签之前（判定已做完、请求还没生效）有人挂上等待标签
+    cat > "$GD/hook_DELETE_issues_45_labels_1" <<HOOK
+jq '.["45"] += ["$B"]' "$GD/labels.json" > "$GD/l.tmp" && mv "$GD/l.tmp" "$GD/labels.json"
+jq '.["45"] += [{event:"labeled", label:{name:"$B"}, actor:{login:"req-bot", type:"User"}, created_at:"2026-01-02T00:00:00Z"}]' "$GD/events.json" > "$GD/e.tmp" && mv "$GD/e.tmp" "$GD/events.json"
+HOOK
+    tick
+    chk "第 1 轮：只写成了第一步，没往下写" "$(writes_on 45)" 1
+    chk "第 1 轮：留队" "$(queued 45)" 1
+    chk "第 1 轮：日志写明有变化、停手" "$(log_has "issue #45 在 daemon 两次写标签之间有变化")" 1
+    tick
+    chk "第 2 轮：另一个流程标签摘掉、Done 加上、等待标签留着" "$(labels_of 45)" "Done,$B"
+    chk "第 2 轮：出队" "$(queued 45)" "无"
+}
+
+# 没配等待机器人标签时（功能关着），清扫的写入调用和改动前的脚本逐条一致（GitHub#736）
+off_case() {   # <scripts 目录> → 每个 issue 的写入调用 + 最终标签
+    local SCRIPTS="$1" W="$SANDBOX/run-off" GD CALLS STATE CONF
+    rm -rf "$W"; mkdir -p "$W/state" "$W/wt" "$W/gh"; git init -q -b main "$W/project" 2>/dev/null
+    GD="$W/gh"; CALLS="$GD/calls.log"; STATE="$W/state/state.json"; CONF="$W/cavil-loop.config"
+    cat > "$CONF" <<CONF
+REPO="example/cd"
+PROJECT_ROOT="$W/project"
+WORKTREE_BASE="$W/wt"
+STATE_DIR="$W/state"
+TMUX_PREFIX="cdoff"
+BRANCH_PREFIX="feature/issue-"
+SESSION_NAME_PREFIX="issue"
+LABEL_PENDING_AGENT="pending/agent"
+LABEL_PENDING_HUMAN="pending/human"
+LABEL_PENDING_BLOCKED=""
+LABEL_PENDING_LATER=""
+LABEL_AUTOPILOT=""
+LABEL_PENDING_PR="pending/PR"
+LABEL_AGENT_DOING="doing/agent"
+LABEL_PENDING_REVIEW="pending/review"
+LABEL_DONE="Done"
+POST_MERGE_RETROSPECTIVE=false
+PENDING_HUMAN_CONFLICT_CHECK=false
+POLL_BACKOFF_LADDER=""
+PRICE_AUTO_FETCH=0
+MAX_CONCURRENT_WORKERS=0
+SUB_ISSUE_ROLLUP_MAX_TRIES=3
+PATH="$SANDBOX/bin:\$PATH"
+GH_TOKEN="fake-token-for-test"
+CONF
+    echo '{}' > "$GD/labels.json"; echo '{}' > "$GD/comments.json"; echo '{}' > "$GD/perms.json"; echo loop-bot > "$GD/me"
+    echo '{"cleaned_prs":[],"cleaned_issues":[]}' > "$STATE"
+    jq -n '{"50":{kind:"issue",state:"closed",state_reason:"completed",title:"t",body:"x",user:{login:"maint"},updated_at:"2026-01-01T00:00:00Z"}}
+           | .["51"] = .["50"] | .["52"] = .["50"]' > "$GD/items.json"
+    jq -n '{"50":["pending/PR","pending/human","bug"],"51":["pending/agent","pending/requester"],"52":["pending/human"]}' > "$GD/labels.json"
+    # 50：pending/human 关闭之后挂上；51：和等待机器人标签同名、但没配置的标签关闭之后挂上；52：pending/human 关闭之前挂上
+    jq -n 'def l($n): {event:"labeled", label:{name:$n}, actor:{login:"maint", type:"User"}};
+           def c: {event:"closed", actor:{login:"maint", type:"User"}};
+           {"50":[l("pending/PR"), l("bug"), c, l("pending/human")],
+            "51":[l("pending/agent"), c, l("pending/requester")],
+            "52":[l("pending/human"), c]}' > "$GD/events.json"
+    local r
+    for r in 1 2; do
+        env FAKE_GH_DIR="$GD" CODING_AGENT_CONFIG="$CONF" bash "$SCRIPTS/agent-poll.sh" >/dev/null 2>&1
+        grep -E '^gh api -X (POST|PUT|DELETE|PATCH) repos/example/cd/issues/5[0-2]/' "$CALLS"
+        : > "$CALLS"
+    done
+    jq -c 'map_values(sort)' "$GD/labels.json"
 }
 
 run_scenarios "$REPO_DIR/scripts"
+
+section "【12g】没配等待机器人标签：清扫的写入调用和改动前的脚本逐条一致（GitHub#736）"
+if ! compat_skip "关闭清扫 · 没配等待机器人标签" "$SANDBOX/old" "$REPO_DIR" scripts; then
+    OFF_NEW=$(off_case "$REPO_DIR/scripts"); OFF_OLD=$(off_case "$SANDBOX/old/scripts")
+    chk "写入调用与最终标签逐条一致" "$OFF_NEW" "$OFF_OLD"
+    chk "到达性 · 确实写过（摘了 pending/PR、加了 Done）" \
+        "$(printf '%s\n' "$OFF_NEW" | grep -cE 'issues/50/labels/pending%2FPR|issues/50/labels -f labels\[\]=Done')" 2
+fi
 POS_PASS=$pass; POS_FAIL=$fail
 
 echo

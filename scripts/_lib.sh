@@ -3913,6 +3913,14 @@ closed_done_flow_labels() {
     } | awk 'NF && !seen[$0]++'
 }
 
+# 清扫另外按事件先后判断的标签：等待机器人标签（GitHub#736）。合并结果通知在 issue 关闭之后挂上它、叫醒机器人，
+# 同一轮紧接着的清扫不能把它摘掉。没配、或和 pending/human 同名时为空：清扫和以前逐字节一样
+closed_done_bot_label() {
+    local b="${LABEL_PENDING_REQUESTER_BOT:-}"
+    [ "$b" != "$LABEL_PENDING_HUMAN" ] || b=""
+    printf '%s' "$b"
+}
+
 # ── `Done` on issues closed by hand as completed: rules moved from the root AGENTS.md (GitHub#658); read before changing ──
 # `Done` on issues closed by hand as completed (GitHub#159: `closed_done_enqueue` /
 # `closed_done_drain` / `closed_done_label` / `closed_done_flow_labels` in `_lib.sh`, the enqueue +
@@ -3943,6 +3951,8 @@ closed_done_enqueue() {
 # 关闭之后挂上的 pending/human 留着（GitHub#461）：托管 PR 合并即关 issue，daemon 随后挂 pending/human 提醒人看；
 # 清扫要认出它，不能和「人在 pending/human 状态下直接关掉」的旧标签一起摘。先后看 issue 事件记录里的顺序
 # （closed_reminder_facts），不比秒级时间：合并关 issue 和 daemon 挂提醒常在同一秒。
+# 等待机器人标签同样处理（GitHub#736）：合并结果通知在关闭之后挂上它叫醒机器人，同一轮的清扫曾把它摘掉，
+# 机器人拉不到这一条，需求方就收不到结果；关闭之前挂上的（人在等机器人时直接关掉）照常摘。
 #
 # 一次只写一个标签，每写一个之前都现读判定两次（closed_done_judge），结论、依据、下一步都不变才写；写完回到开头，
 # 新读到的依据必须正好等于「上一次的依据 + daemon 自己刚确认写成的那一步」，否则停手、留队下轮从头判——
@@ -3960,12 +3970,13 @@ closed_done_label() {
 }
 
 closed_done_label_run() {
-    local issue="$1" step=0 v id next kind lab out expect="" prev_ev="" removed=() added=no
+    local issue="$1" step=0 v id next kind lab out expect="" prev_ev="" removed=() added=no B
+    B=$(closed_done_bot_label)
     while [ "$step" -lt 16 ]; do
         step=$((step + 1))
         closed_done_judge "$issue"
         if [ -n "$expect" ] && [ "$CD_V" != unknown ] \
-           && { [ "$CD_CMP" != "$expect" ] || ! closed_reminder_ev_after "$prev_ev" "$CD_HEV" "$kind" "$lab"; }; then
+           && { [ "$CD_CMP" != "$expect" ] || ! closed_reminder_ev_after "$prev_ev" "$CD_HEV" "$kind" "$lab" "$B"; }; then
             log "  issue #$issue 在 daemon 两次写标签之间有变化（${CD_CMP}${CD_HEV:+ / $CD_HEV}），本轮停手，下轮从头判"
             return 1
         fi
@@ -3974,7 +3985,7 @@ closed_done_label_run() {
             skip) [ -z "$CD_MSG" ] || log "  $CD_MSG"; return 0 ;;
             finished)
                 if [ "$added" = yes ] || [ ${#removed[@]} -gt 0 ]; then
-                    log "  issue #$issue 手动关闭（已完成）→ $LABEL_DONE${removed[*]:+，摘掉 ${removed[*]}}${CD_KEEP:+；保留关闭之后挂上的 $LABEL_PENDING_HUMAN}"
+                    log "  issue #$issue 手动关闭（已完成）→ $LABEL_DONE${removed[*]:+，摘掉 ${removed[*]}}${CD_KEEP:+；保留关闭之后挂上的 $CD_KEEP}"
                 fi
                 return 0 ;;
         esac
@@ -4046,7 +4057,11 @@ closed_done_label_run() {
 # (round 4: an "unknown" exit forgot to set it and a same-round retry finished the hand-over). Which
 # kind a record is comes from its own three-way reader, `autopilot_handoff_mode` (closes / refs /
 # unknown), never from `autopilot_state_get`, whose outer `// ""` turns `false` into an empty string
-# (round 5: every old `Refs #N` hand-over was then halted for the round) Both the sweep and the
+# (round 5: every old `Refs #N` hand-over was then halted for the round) The sweep applies the same "added
+# after the last close stays" rule to the requester-bot waiting label (GitHub#736: the merge-result notice adds it
+# after the close and the same round's sweep used to strip it); it passes that label to `closed_reminder_facts`,
+# `closed_reminder_consistent` and `closed_reminder_ev_after` as an extra tracked label, the hand-over passes none
+# and its output is unchanged. Both the sweep and the
 # closes-mode hand-over write one label at a time: judge twice from fresh reads before each write, and
 # after each write the next reading must equal "previous reading + the daemon's own step"
 # (`*_cmp_after`), anything else stops the round — a reminder re-added or the issue reopened after the
@@ -4057,56 +4072,73 @@ closed_done_label_run() {
 #
 # 读 issue 的事件记录，判定「关闭」与 pending/human 提醒的事实（GitHub#461）。清扫和合并即关的交接都只用这一个。
 # 先后按事件在记录里的位置比（GitHub 按发生先后给出，分页拼接后不变），不比时间戳。
-# stdout 一行五段：
+# 另外要看的标签（GitHub#736：清扫还要认出关闭之后挂上的等待机器人标签）跟在编号后面，记录仍只读一次；
+# 不给就和以前逐字节一样（托管交接只看 pending/human）。
+# stdout 一行，前五段：
 #   <最后一次关闭的事件 id 或 ->
 #   <after|before|->   最后一次「加上 pending/human」排在最后一次关闭之后 / 之前；没有关闭或没加上过 = -
 #   <on|off|none>      按记录推出的提醒现状：最后一个提醒事件是加上 = on，是摘掉 = off，从没出现过 = none
 #   <closed|open|none> 按记录推出的开关状态：最后一个关闭 / 重开事件是关闭 = closed，是重开 = open，从没有 = none
-#   <事件串>           关闭 / 重开 / 加上提醒 / 摘掉提醒这几类事件，按记录顺序「id:类型:操作人」逗号相连（没有 = -）
+#   <事件串>           关闭 / 重开 / 加上或摘掉所看标签（pending/human 和另外给的）这几类事件，按记录顺序
+#                      「id:类型:操作人」逗号相连（没有 = -）
+# 之后每个另外给的标签各两段，含义同第二、三段：<after|before|-> <on|off|none>（标签为空 = - none）
 # return 1 = 读不到，或用到的事件缺编号。调用方必须用 closed_reminder_consistent 核对现状，
 # 写完一步用 closed_reminder_ev_after 核对新多出的事件——两处都不许跳过（PR #478 复审第 1、2 轮）。
-closed_reminder_facts() {   # <issue>
-    local ev
-    ev=$(gh api --paginate --slurp "repos/$REPO/issues/$1/events" 2>/dev/null) || return 1
+closed_reminder_facts() {   # <issue> [另外要看的标签…]
+    local ev issue="$1" xs; shift
+    xs=$(jq -nc '$ARGS.positional' --args "$@") || return 1
+    ev=$(gh api --paginate --slurp "repos/$REPO/issues/$issue/events" 2>/dev/null) || return 1
     [ -n "$ev" ] || return 1
-    printf '%s' "$ev" | jq -er --arg H "$LABEL_PENDING_HUMAN" '
-        [.[] | if type == "array" then .[] else error("page") end] | to_entries
+    printf '%s' "$ev" | jq -er --arg H "$LABEL_PENDING_HUMAN" --argjson X "$xs" '
+        ([$H] + $X | map(select(. != ""))) as $track
+        | [.[] | if type == "array" then .[] else error("page") end] | to_entries
         | map(select(.value.event == "closed" or .value.event == "reopened"
-                     or ((.value.event == "labeled" or .value.event == "unlabeled") and ((.value.label.name // "") == $H and $H != "")))) as $e
+                     or ((.value.event == "labeled" or .value.event == "unlabeled")
+                         and ((.value.label.name // "") as $n | $track | index($n) != null)))) as $e
         | if any($e[]; (.value.id | type) != "number") then error("id") else . end
         | ([$e[] | select(.value.event == "closed")] | last) as $c
-        | ([$e[] | select(.value.event == "labeled")] | last) as $h
-        | ([$e[] | select(.value.event == "labeled" or .value.event == "unlabeled")] | last) as $last
         | ([$e[] | select(.value.event == "closed" or .value.event == "reopened")] | last) as $life
-        | "\(if $c == null then "-" else $c.value.id end) \(
-            if $c == null or $h == null then "-" elif $h.key > $c.key then "after" else "before" end) \(
-            if $last == null then "none" elif $last.value.event == "labeled" then "on" else "off" end) \(
+        | def rel($L): ([$e[] | select(.value.event == "labeled" and (.value.label.name // "") == $L)] | last) as $h
+              | if $L == "" or $c == null or $h == null then "-" elif $h.key > $c.key then "after" else "before" end;
+          def now($L): ([$e[] | select((.value.event == "labeled" or .value.event == "unlabeled") and (.value.label.name // "") == $L)] | last) as $last
+              | if $L == "" or $last == null then "none" elif $last.value.event == "labeled" then "on" else "off" end;
+          "\(if $c == null then "-" else $c.value.id end) \(rel($H)) \(now($H)) \(
             if $life == null then "none" elif $life.value.event == "closed" then "closed" else "open" end) \(
-            if ($e | length) == 0 then "-" else [$e[] | "\(.value.id):\(.value.event):\((.value.actor.login // "") | ascii_downcase)"] | join(",") end)"' 2>/dev/null
+            if ($e | length) == 0 then "-" else [$e[] | "\(.value.id):\(.value.event):\((.value.actor.login // "") | ascii_downcase)"] | join(",") end)\(
+            [$X[] | " \(rel(.)) \(now(.))"] | join(""))"' 2>/dev/null
 }
 
-# 记录推出的现状和 issue 现在读到的一致吗（两项都要对上，否则判不了）：
+# 记录推出的现状和 issue 现在读到的一致吗（每项都要对上，否则判不了）：
 #   开关：issue 已关闭 ⇔ 最后一个关闭 / 重开事件是关闭（打开的 issue 可以从没关过）——复审第 3 轮：旧的关闭事件不能
 #         证明它现在还关着
-#   提醒：挂着 pending/human ⇔ 最后一个提醒事件是「加上」——复审第 2 轮
-closed_reminder_consistent() {   # <排好序的标签 JSON> <on|off|none> <issue 状态 open|closed> <closed|open|none>
-    local has=no
+#   提醒：挂着 pending/human ⇔ 最后一个提醒事件是「加上」——复审第 2 轮；另外给的 <标签> <现状> 对同样核对（GitHub#736）
+closed_reminder_consistent() {   # <排好序的标签 JSON> <on|off|none> <issue 状态 open|closed> <closed|open|none> [<标签> <on|off|none>]…
+    local labs="$1" L s has
     case "$3" in
         closed) [ "$4" = closed ] || return 1 ;;
         open)   [ "$4" != closed ] || return 1 ;;
         *) return 1 ;;
     esac
-    [ -z "$LABEL_PENDING_HUMAN" ] && return 0
-    printf '%s' "$1" | jq -e --arg L "$LABEL_PENDING_HUMAN" 'index($L) != null' >/dev/null 2>&1 && has=yes
-    if [ "$has" = yes ]; then [ "$2" = on ]; else [ "$2" != on ]; fi
+    set -- "$LABEL_PENDING_HUMAN" "$2" "${@:5}"
+    while [ $# -ge 2 ]; do
+        L="$1"; s="$2"; shift 2
+        [ -n "$L" ] || continue
+        has=no
+        printf '%s' "$labs" | jq -e --arg L "$L" 'index($L) != null' >/dev/null 2>&1 && has=yes
+        if [ "$has" = yes ]; then [ "$s" = on ] || return 1; else [ "$s" != on ] || return 1; fi
+    done
+    return 0
 }
 
 # daemon 写成一步之后，新读到的事件串是否正好是「旧的 + 这一步自己的事件」：
-#   写的不是 pending/human → 一条都不能多；写的是它 → 正好多一条，类型对得上（加 = labeled，摘 = unlabeled）、
-#   操作人是 loop 的写入账号。人在这中间又加又摘、或写请求其实没落地（404 / 没生效），一律不算，调用方停手
-closed_reminder_ev_after() {   # <旧事件串> <新事件串> <add|del> <标签>
-    local old="$1" new="$2" kind="$3" lab="$4" me want tail
-    if [ "$lab" != "$LABEL_PENDING_HUMAN" ]; then [ "$new" = "$old" ]; return; fi
+#   写的不是事件串里看的标签（pending/human，加上读事件时另外给的）→ 一条都不能多；写的是它们 → 正好多一条，
+#   类型对得上（加 = labeled，摘 = unlabeled）、操作人是 loop 的写入账号。人在这中间又加又摘、或写请求其实没落地
+#   （404 / 没生效），一律不算，调用方停手。另外给的标签要和读事件时（closed_reminder_facts）给的一样
+closed_reminder_ev_after() {   # <旧事件串> <新事件串> <add|del> <标签> [另外看的标签…]
+    local old="$1" new="$2" kind="$3" lab="$4" me want tail x tracked=no
+    [ "$lab" != "$LABEL_PENDING_HUMAN" ] || tracked=yes
+    for x in "${@:5}"; do [ -z "$x" ] || [ "$x" != "$lab" ] || tracked=yes; done
+    if [ "$tracked" = no ]; then [ "$new" = "$old" ]; return; fi
     me=$(write_identity_login | tr '[:upper:]' '[:lower:]'); [ -n "$me" ] || return 1
     want=labeled; [ "$kind" = add ] || want=unlabeled
     if [ "$old" = - ]; then tail="$new"
@@ -4122,9 +4154,9 @@ closed_reminder_ev_after() {   # <旧事件串> <新事件串> <add|del> <标签
 #           finished 已经是目标状态；write 还要写，CD_NEXT = 下一步（del:<标签> / add:<标签>），一次一个
 #   CD_CMP  状态 | 关闭原因 | 排好序的标签集合 | 最后一次关闭的事件 id——两次判定、写前写后都逐字比较
 #   CD_HEV  关闭 / 重开 / 提醒加摘的事件串（closed_reminder_facts 第四段），整串比较
-#   CD_KEEP 非空 = pending/human 是关闭之后挂上的，留着
+#   CD_KEEP 关闭之后挂上、留着的标签，空格分隔：pending/human（GitHub#461）、等待机器人标签（GitHub#736）
 closed_done_judge() {   # <issue>
-    local issue="$1" info st reason labs facts c rel hst life evs L has_done=0 stale=()
+    local issue="$1" info st reason labs facts c rel hst life evs brel bst B L has_done=0 stale=()
     CD_V=unknown; CD_NEXT=""; CD_CMP=""; CD_HEV=""; CD_KEEP=""; CD_MSG=""
     if ! info=$(run_gh_capture "读取 issue #$issue 状态" \
         gh api "repos/$REPO/issues/$issue" \
@@ -4155,21 +4187,24 @@ closed_done_judge() {   # <issue>
     esac
     if [ -z "$labs" ]; then CD_MSG="issue #$issue 的标签读不懂"; return 0; fi
     _cd_has() { printf '%s' "$labs" | jq -e --arg L "$1" 'index($L) != null' >/dev/null 2>&1; }
-    if ! facts=$(closed_reminder_facts "$issue"); then
+    B=$(closed_done_bot_label)
+    if ! facts=$(closed_reminder_facts "$issue" "$B"); then
         CD_MSG="读不到 issue #$issue 的事件记录（或事件缺编号）"; unset -f _cd_has; return 0
     fi
-    read -r c rel hst life evs <<< "$facts"
-    if [ "$c" = - ] || ! closed_reminder_consistent "$labs" "$hst" "$st" "$life"; then
-        # 已关闭却没有关闭事件，或记录推出的开关（${life}）/ 提醒（${hst}）现状和读到的对不上：判不了
-        CD_MSG="issue #$issue 的事件记录和现状对不上（关闭事件 ${c}、记录里的开关 ${life}、提醒 ${hst}）"
+    read -r c rel hst life evs brel bst <<< "$facts"
+    if [ "$c" = - ] || ! closed_reminder_consistent "$labs" "$hst" "$st" "$life" "$B" "${bst:-}"; then
+        # 已关闭却没有关闭事件，或记录推出的开关（${life}）/ 提醒（${hst}）/ 等待机器人标签（${bst}）现状和读到的对不上：判不了
+        CD_MSG="issue #$issue 的事件记录和现状对不上（关闭事件 ${c}、记录里的开关 ${life}、提醒 ${hst}${B:+、$B ${bst:-}}）"
         unset -f _cd_has; return 0
     fi
     CD_CMP="$CD_CMP|$c"; CD_HEV="$evs"
-    if [ -n "$LABEL_PENDING_HUMAN" ] && _cd_has "$LABEL_PENDING_HUMAN" && [ "$rel" = after ]; then CD_KEEP=yes; fi
+    if [ -n "$LABEL_PENDING_HUMAN" ] && _cd_has "$LABEL_PENDING_HUMAN" && [ "$rel" = after ]; then CD_KEEP="$LABEL_PENDING_HUMAN"; fi
+    # 合并结果通知挂上的等待机器人标签（GitHub#736）：同一条规则，关闭之后挂上的留到机器人转达完自己摘
+    if [ -n "$B" ] && _cd_has "$B" && [ "${brel:-}" = after ]; then CD_KEEP="${CD_KEEP:+$CD_KEEP }$B"; fi
     _cd_has "$LABEL_DONE" && has_done=1
     while IFS= read -r L; do
         [ -n "$L" ] || continue
-        [ -z "$CD_KEEP" ] || [ "$L" != "$LABEL_PENDING_HUMAN" ] || continue
+        case " $CD_KEEP " in *" $L "*) continue ;; esac
         _cd_has "$L" && stale+=("$L")
     done < <(closed_done_flow_labels)
     unset -f _cd_has
