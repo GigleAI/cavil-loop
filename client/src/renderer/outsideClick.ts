@@ -13,6 +13,11 @@ export const OPENS_ITEM = 'data-opens-item';
  * another tab and back finds the panel still there) and the right-click menu of an item.
  */
 export const KEEPS_PANEL = 'data-keeps-panel';
+/**
+ * GitHub#747: marks an open table cell editor (the cell, with its picker or list inside). A press made while
+ * one is open only puts that editor away (TableView); it never also puts the panel away.
+ */
+export const CELL_EDITOR = 'data-cell-editor';
 /** The backdrop of a modal dialog: every dialog in the window draws one (styles.css, .modal-back). */
 const MODAL_SELECTOR = '.modal-back';
 /** A press that moved further than this before the click was a drag (scrollbar, selection), not a click. */
@@ -27,6 +32,8 @@ export type Press = {
   onScrollbar: boolean;
   /** a dialog was open when the button went down */
   dialogOpen: boolean;
+  /** a table cell editor was open when the button went down (GitHub#747) */
+  editorOpen: boolean;
 };
 
 export type Release = {
@@ -52,6 +59,7 @@ export function hidesPanel(press: Press | null, release: Release | null, draft: 
   if (press.opensItem || release.opensItem) return false;
   if (press.onScrollbar) return false;
   if (press.dialogOpen) return false;
+  if (press.editorOpen) return false;
   if (Math.abs(release.x - press.x) > MOVE_SLOP || Math.abs(release.y - press.y) > MOVE_SLOP) return false;
   // putting the panel away would throw the typed reply away
   if (draft !== '') return false;
@@ -76,6 +84,7 @@ export function pressAt(e: PointerEvent, panel: Element | null): Press {
     opensItem: opens(t),
     onScrollbar,
     dialogOpen: document.querySelector(MODAL_SELECTOR) !== null,
+    editorOpen: document.querySelector(`[${CELL_EDITOR}]`) !== null,
   };
 }
 

@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { hidesPanel, MOVE_SLOP, releaseOfClick, type Press, type Release } from '../../src/renderer/outsideClick';
 
-const press = (o: Partial<Press> = {}): Press => ({ button: 0, x: 100, y: 100, inPanel: false, opensItem: false, onScrollbar: false, dialogOpen: false, ...o });
+const press = (o: Partial<Press> = {}): Press => ({ button: 0, x: 100, y: 100, inPanel: false, opensItem: false, onScrollbar: false, dialogOpen: false, editorOpen: false, ...o });
 const release = (o: Partial<Release> = {}): Release => ({ x: 100, y: 100, inPanel: false, opensItem: false, ...o });
 
 describe('detail panel: does this click put it away?', () => {
@@ -15,6 +15,7 @@ describe('detail panel: does this click put it away?', () => {
     ['pressed outside, released inside', press(), release({ inPanel: true }), '', false],
     ['on a card / a row title: it switches items instead', press({ opensItem: true }), release({ opensItem: true }), '', false],
     ['a dialog was open when the button went down (its backdrop)', press({ dialogOpen: true }), release(), '', false],
+    ['a table cell editor was open: the press only puts that away (GitHub#747)', press({ editorOpen: true }), release(), '', false],
     ['a reply is typed', press(), release(), '看过了', false],
     ['a reply of spaces only is still typed text', press(), release(), ' ', false],
     ['on a scrollbar', press({ onScrollbar: true }), release(), '', false],

@@ -143,6 +143,7 @@
   "{board}：{value}": "{board}: {value}",
   "{repo}#{number}：{what}": "{repo}#{number}: {what}",
   "拖动改列宽；双击恢复默认": "Drag to change the width; double-click for the default",
+  "拖动换列的位置": "Drag to move the column",
   "点一下展开这一组": "Click to expand this group",
   "点一下收起这一组": "Click to collapse this group",
   "展开这一组": "Expand this group",

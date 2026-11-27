@@ -740,14 +740,34 @@ table.items .group-head .fold-run-group:hover { color: var(--accent); }
 table.items .group-head .fold-run-all { color: var(--accent); white-space: nowrap; }
 table.items.sized { table-layout: fixed; }
 table.items th { z-index: 2; border-bottom: none; box-shadow: inset 0 -1px 0 var(--border-muted); } /* GitHub#275: a pinned cell's collapsed border lets rows show through */
-table.items th .col-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 2; }
-table.items th .col-resize:hover, table.items th .col-resize.on { background: var(--accent); opacity: .5; }
+/* GitHub#747: a line between every two columns, so the width grip can be found: the heading's line is the grip
+   itself (drawn inside the heading: a pinned heading's background would cover anything past its edge), the body's
+   a lighter one; rows that span the table (group, repository, "+ new issue") draw none */
+table.items th .col-resize { position: absolute; top: 0; right: 0; width: 8px; height: 100%; cursor: col-resize; z-index: 2; }
+table.items th .col-resize::after { content: ''; position: absolute; top: 0; bottom: 0; right: 0; width: 1px; background: var(--border); }
+table.items th .col-resize:hover::after, table.items th .col-resize.on::after { width: 3px; background: var(--accent); }
+table.items tr:not(.group-head):not(.repo-head):not(.group-add):not(.repo-blank) > td + td { box-shadow: inset 1px 0 0 var(--border-muted); }
+/* GitHub#747: a heading moves by dragging it; the title column stays first */
+table.items th { user-select: none; -webkit-user-select: none; }
+table.items th.col-movable { cursor: grab; }
+table.items th.col-moving { background: var(--accent-subtle); color: var(--accent); }
+.col-drop-line { position: fixed; width: 3px; border-radius: 2px; background: var(--accent); z-index: 20; pointer-events: none; }
+.col-drag-ghost { position: fixed; z-index: 21; pointer-events: none; padding: 5px 12px; background: var(--raised); border: 1px solid var(--accent); border-radius: 6px; box-shadow: var(--shadow-lg); font-size: 12px; font-weight: 600; color: var(--accent); white-space: nowrap; cursor: grabbing; }
 table.items.sized td { overflow: hidden; text-overflow: ellipsis; }
 table.items td.editable { cursor: pointer; position: relative; }
 table.items td.editable:hover { box-shadow: inset 0 0 0 1px var(--border); }
 table.items td .cell-select { max-width: 100%; font: inherit; font-size: 12px; }
 table.items td[data-editing] { overflow: visible; z-index: 3; }
-table.items td .cell-selects { display: inline-flex; flex-direction: column; gap: 2px; }
+/* GitHub#747: the cell being edited on a faded row is not faded: its picker / list is drawn inside it */
+table.items tr.pulled > td[data-editing] { opacity: 1; }
+/* GitHub#747: milestone / iteration / status as a list in the page (one per Project), floating over the cell */
+table.items td .cell-lists { position: absolute; top: -4px; left: -4px; z-index: 8; display: flex; flex-direction: column; gap: 6px; padding: 4px; min-width: 220px; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); }
+table.items td .cell-lists .cell-select { display: block; width: 100%; max-width: none; border: none; outline: none; background: transparent; color: var(--fg); font-size: 13px; }
+table.items td .cell-lists .cell-select:focus { box-shadow: inset 0 0 0 1px var(--accent); border-radius: 6px; }
+/* GitHub#747: an editor that would stick out past the table's right edge opens leftwards from the cell's right edge */
+table.items td[data-flip] .picker-anchor { position: static; }
+table.items td[data-flip] .picker { left: auto; right: 0; }
+table.items td[data-flip] .cell-lists { left: auto; right: 4px; top: 3px; }
 
 /* ---- GitHub#229: changes shown before GitHub confirms them ---- */
 .label.pending { border: 1px dashed var(--border) !important; }

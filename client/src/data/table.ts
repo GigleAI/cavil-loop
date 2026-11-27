@@ -12,7 +12,7 @@
 // parent links count (`validParents`) is one rule, used for the walk and for
 // the indenting alike.
 
-import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, SourceConfig, SourceTimes, TableSettings } from '../shared/types';
+import type { ColumnMode, GroupBy, Item, Iteration, ProjectMeta, SourceConfig, SourceTimes, TableColumn, TableSettings } from '../shared/types';
 import type { GroupPreset } from '../shared/actions';
 import { isCurrentIteration } from '../shared/filter';
 import { COL_NO_ITERATION, COL_NO_MILESTONE, COL_NO_STATUS, dragScope, dropPlan, iterationColumnKey, type DropPlan } from './board';
@@ -616,4 +616,30 @@ export function foldTally(groups: readonly Pick<Group, 'rows' | 'unread'>[]): { 
     else rows += g.rows.length;
   }
   return { rows, unknown };
+}
+
+/**
+ * GitHub#747: a table column dragged by its heading. `mids` are the horizontal middles of the
+ * columns after the title, left to right, as drawn; the slot is where the dragged one goes in
+ * that list: 0 = right after the title (nothing ever goes before the title), mids.length = last.
+ */
+export function columnSlot(mids: readonly number[], x: number): number {
+  return mids.filter((m) => m < x).length;
+}
+
+/**
+ * The saved column list after moving `col` to `slot` (counted as `columnSlot` does, the dragged
+ * column itself included). Only the order of the columns after the title changes: the title keeps
+ * its place in the saved list, so the view settings' ticks stay as they are. null = nothing moved.
+ */
+export function moveColumn(saved: readonly TableColumn[], col: TableColumn, slot: number): TableColumn[] | null {
+  const rest: TableColumn[] = saved.filter((c) => c !== 'title');
+  const from = rest.indexOf(col);
+  if (from < 0) return null;
+  const to = Math.max(0, Math.min(rest.length - 1, slot > from ? slot - 1 : slot));
+  if (to === from) return null;
+  const moved: TableColumn[] = rest.filter((c) => c !== col);
+  moved.splice(to, 0, col);
+  let i = 0;
+  return saved.map((c) => (c === 'title' ? c : moved[i++]));
 }
