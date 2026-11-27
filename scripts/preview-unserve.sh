@@ -22,12 +22,8 @@ set -euo pipefail
 # （在 source _lib.sh 之前取，免得被配置里的同名变量盖掉）
 HOOK_ISSUE="${ISSUE:-}" HOOK_WORKTREE="${WORKTREE-__unset__}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# _lib.sh 顶部的 `exec 9>&- 2>/dev/null` 会永久吞掉 stderr；「端口属于谁、为什么不动」
-# 必须让调用方（cleanup hook 的日志）看得见，所以 source 前后存还 fd 2。
-exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
-exec 2>&8 8>&-
 
 usage() {
     sed -n '5,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2

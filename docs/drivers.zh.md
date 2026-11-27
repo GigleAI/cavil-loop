@@ -39,7 +39,7 @@ WORKER_AGENT="cursor"
 WORKER_AGENT=cursor bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-> launchd/systemd 下请确保 EnvironmentFile 含 `GH_TOKEN`，worker 里的 `gh` 才会用预期 PAT（见 `cavil-loop.config` 的 `WORKER_PASS_ENV`）。
+> launchd/systemd 下把 `GH_TOKEN` 写进 EnvironmentFile，worker 里的 `gh` 才会用预期 PAT（见 `cavil-loop.config` 的 `WORKER_PASS_ENV`）；不写时 worker 拿到的是本机 `gh auth login` 登录的那个账号的令牌。
 
 > **Cursor 注意：** `-p` 是 non-interactive print 模式，mid-task 的 issue/PR comment 无法通过 stdin 注入。driver 会 kill 当前 session 并用新 prompt 重起（Case B），不会 silent drop。
 

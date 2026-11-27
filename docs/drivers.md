@@ -39,7 +39,7 @@ WORKER_AGENT="cursor"
 WORKER_AGENT=cursor bash ~/.agents/skills/cavil-loop/setup.sh ~/path/to/your-project
 ```
 
-> Under launchd/systemd, ensure `GH_TOKEN` is in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `cavil-loop.config`).
+> Under launchd/systemd, put `GH_TOKEN` in the daemon EnvironmentFile so the worker's `gh` CLI uses the intended PAT (see `WORKER_PASS_ENV` in `cavil-loop.config`); without it the worker gets the token of the account `gh auth login` signed in on this machine.
 
 > **Cursor caveat:** `-p` is non-interactive print mode — mid-task issue/PR comments cannot be injected via stdin. The driver kills the live session and respawns with the new prompt (Case B) instead of silently dropping it.
 

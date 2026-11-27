@@ -383,6 +383,54 @@ chk_has "poll.log 里有 dispatch 漏出来的原因" "$e2e_log" "refusing to fe
 # 计数在升级时清零 —— 人工重标一次应该重新拿到完整的重试次数
 chk "升级后计数已清零"                      "$([ -f "$E2E/state/dispatch-fail/issue-50" ] && echo yes || echo no)" "no"
 
+# ────────────────────────────────────────────────────────────────────────────
+# 端到端：真的 dispatch-new-issue.sh 因为 worker 拿不到令牌被拒（GitHub#739）。
+#
+# 以前拒绝派工的两行说明只写 stderr，而 _lib.sh 顶部把 stderr 永久丢掉了：poll.log 里什么都没有，
+# 连续 3 次转人工的留言里只有「原因见上方 dispatch 日志」这句占位符。现在要看到：poll.log 有原因、
+# 留言里的「最后一次的错误」就是原因、全程不出现令牌值；本机 gh 已登录时借用它、不再拒绝。
+# 跑的是真 agent-poll.sh + 真 dispatch-new-issue.sh；GH_TOKEN 从环境里去掉（测试可能跑在 worker 里）。
+# ────────────────────────────────────────────────────────────────────────────
+echo "── 端到端：没令牌、本机 gh 没登录 → 拒绝派工，原因进 poll.log 和转人工留言 ──"
+E3="$SANDBOX/e3"
+mkdir -p "$E3/scripts" "$E3/state" "$E3/wt"
+for f in "$REPO_DIR"/scripts/*; do ln -sf "$f" "$E3/scripts/$(basename "$f")"; done
+ln -sfn "$REPO_DIR/prompts" "$E3/prompts"
+sed -e "s|$E2E/wt|$E3/wt|" -e "s|$E2E/state|$E3/state|" -e 's|TMUX_PREFIX="backoffe2e"|TMUX_PREFIX="backoffe3"|' "$E2E_CONF" > "$E3/coding-agent.config"
+printf 'pending/agent\n' > "$E3/labels.txt"; : > "$E3/gh-calls.log"
+e3_poll() {
+    env -u GH_TOKEN -u WRITE_GH_TOKEN -u GH_TOKEN_FILE E2E_LABELS="$E3/labels.txt" E2E_GH_CALLS="$E3/gh-calls.log" \
+        CODING_AGENT_CONFIG="$E3/coding-agent.config" bash "$E3/scripts/agent-poll.sh" >/dev/null 2>&1
+}
+for round in 1 2 3; do e3_poll; done
+e3_log=$(cat "$E3/state/poll.log" 2>/dev/null)
+e3_calls=$(cat "$E3/gh-calls.log")
+chk_has "poll.log 有拒绝派工的原因和变量名" "$e3_log" "❌ 拒绝派工：worker 需要的 GH_TOKEN 没有值"
+chk_has "poll.log 的失败行带上了这句原因（不是占位符）" "$e3_log" "派工失败（第 1/3 次，下轮重试）：拒绝派工：worker 需要的 GH_TOKEN"
+chk "第 3 次转了人工"                 "$(grep -c 'pending/human' "$E3/labels.txt")" "1"
+chk "转人工留了一条说明"              "$(grep -c -- '-X POST repos/example/none/issues/50/comments' "$E3/gh-calls.log")" "1"
+chk_has "留言里「最后一次的错误」就是原因" "$e3_calls" "最后一次的错误：\`拒绝派工：worker 需要的 GH_TOKEN 在 daemon 环境里没有值"
+chk "留言里不再是占位符"              "$(printf '%s' "$e3_calls" | grep -c '原因见上方 dispatch 日志')" "0"
+chk "留言和 poll.log 里都没有令牌值"  "$(printf '%s\n%s' "$e3_calls" "$e3_log" | grep -c 'ghp_')" "0"
+
+echo "── 端到端：没令牌、本机 gh 已登录 → 借用，不拒绝 ──"
+rm -rf "$E3/state"; mkdir -p "$E3/state"; printf 'pending/agent\n' > "$E3/labels.txt"; : > "$E3/gh-calls.log"
+# 假 gh 的「本机登录」：auth token 打印一把令牌，其余照旧
+mkdir -p "$E3/bin"
+cat > "$E3/bin/gh" <<GH3
+#!/usr/bin/env bash
+if [ "\${1:-} \${2:-}" = "auth token" ]; then echo ghp_loginloginloginloginlogin0000000000; exit 0; fi
+exec "$E2E/bin/gh" "\$@"
+GH3
+chmod +x "$E3/bin/gh"
+sed -i "s|^PATH=\"$E2E/bin:|PATH=\"$E3/bin:$E2E/bin:|" "$E3/coding-agent.config"
+e3_poll
+e3_log=$(cat "$E3/state/poll.log" 2>/dev/null)
+chk_has "poll.log 记了借用本机登录"   "$e3_log" "借用本机 gh 登录的令牌"
+chk "没有拒绝派工"                    "$(printf '%s' "$e3_log" | grep -c '拒绝派工')" "0"
+chk "交给 worker 的文件里是登录那把"  "$(cat "$E3/state/secrets/GH_TOKEN" 2>/dev/null)" "ghp_loginloginloginloginlogin0000000000"
+chk "poll.log 里没有令牌值"           "$(printf '%s' "$e3_log" | grep -c 'ghp_')" "0"
+
 echo
 echo "通过 $pass，失败 $fail"
 report_counts "$pass" "$fail"

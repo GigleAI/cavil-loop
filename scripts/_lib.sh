@@ -27,7 +27,11 @@ set -euo pipefail
 # 放在这里是因为：agent-poll.sh 是**先 source 本文件、后 exec 9>** 的，所以对 poll
 # 自己是 no-op；而所有 dispatch / cleanup 子脚本都在顶部 source，正好在它们 spawn
 # 常驻进程之前把 fd 关掉。关一个没打开的 fd 在 bash 里是安全的。
-exec 9>&- 2>/dev/null || true
+#
+# 大括号不能省（GitHub#739）：不带命令的 exec 上的重定向对当前 shell 永久生效，以前写成
+# `exec 9>&- 2>/dev/null` 等于把每个 source 本文件的脚本的 stderr 永久接到了 /dev/null——
+# 拒绝派工的说明、找不到配置的指引、set -e 下的所有报错全部无声消失。
+{ exec 9>&-; } 2>/dev/null || true
 
 # ── daemon PATH 强化 ──
 # systemd user timer 跑 daemon 时 PATH 通常 = minimal "/usr/local/sbin:/usr/local/bin:
@@ -48,9 +52,25 @@ export PATH
 # 新旧两套名字的对照表：下面找配置、找项目覆盖目录、找预览单元都从这里取。
 # shellcheck source=_names.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_names.sh"
+# 交给 worker 的敏感变量是哪几个、值从哪来（GitHub#739），setup.sh / install-status.sh 用同一份
+# shellcheck source=_secret_env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_secret_env.sh"
 # 令牌脱敏入口（GitHub#342）：log() 和所有往 poll.log / 窗格历史追加内容的地方都用它
 # shellcheck source=_redact.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_redact.sh"
+# ── stderr 先过令牌脱敏再出门（GitHub#739）──
+# log() 自己会脱敏，但 git、gh 等子程序直接写 stderr 时不经过它；stderr 接到的地方（systemd 的
+# journal、launchd 的 <项目>.err.log、终端）都是持久或可见的。所以本进程的 fd 2 改接到
+# redact_stream（poll.log、窗格历史用的同一套规则）再写回原来的 stderr。过滤程序起不来 / 中途
+# 出错时 redact_stream 丢掉其余内容、只留一行说明，并且一直读到写端全部关闭——写的一方不会
+# 因为管道没人读而被 SIGPIPE 打死。
+#   · stderr 本来就是 /dev/null 时不接（没有东西会出门，省一个进程）
+#   · 过滤进程的 stdout 指向原 stderr，不留着原 stdout：调用方 `$(脚本)` 只等脚本自己
+#   · 本进程拉起的后台常驻子进程会继承这条管道；会活过本进程的子进程要自己把 stderr 指到别处，
+#     否则 `$(脚本 2>&1)` 的调用方要等它退出才返回
+if ! [ /dev/fd/2 -ef /dev/null ]; then
+    exec 2> >(exec >&2; redact_stream)
+fi
 # 流程标签改名的共用规则（GitHub#569），scripts/project-config.sh 用的是同一份
 # shellcheck source=_label_rename.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_label_rename.sh"
@@ -1796,8 +1816,9 @@ log_debug() {
 WRITE_GH_TOKEN="${WRITE_GH_TOKEN:-}"
 
 # 有效的写 token（值）。给「需要值本身」的地方用：交接给 worker 的那把、复盘子进程。
+# 规则在 _secret_env.sh（setup.sh、install-status.sh 用同一份）
 gh_write_token() {
-    printf '%s' "${WRITE_GH_TOKEN:-${GH_TOKEN:-}}"
+    cavil_write_token
 }
 
 # 写 GitHub 的 gh 调用一律走它。**daemon 侧任何新增的写调用都用 gh_write，别用 gh。**
@@ -2218,8 +2239,8 @@ pace_state_sane() {
 # ⚠️ 极性是刻意反过来的：**只有明确得出「跳过」才返回 0**。判定整个跑在命令替换的子
 # shell 里，万一它自己出错被打死（某个算术表达式炸了、某个 helper 被改坏了），子 shell
 # 给不出 "skip"，这里就返回非 0 = 跑。反过来写（子 shell 失败当跳过）会把闸门自己的
-# bug 变成整个项目静默停摆，而 _lib.sh 顶部那个永久 stderr 重定向让这种死法在
-# poll.log 里一个字都看不见。
+# bug 变成整个项目静默停摆，而这种死法的报错只在 stderr（journal）上，poll.log 里
+# 一个字都看不见。
 #
 # 为什么不直接 `if ! pace_should_poll`：实测 bash 在 `if ! f` 里遇到致命算术错误时
 # **两个分支都不执行**、直接往下走——恰好也是 fail-open，但那是 bash 的冷僻行为，
@@ -3118,15 +3139,9 @@ WORKER_SECRET_ENV="${WORKER_SECRET_ENV:-GH_TOKEN}"
 # 既要透传、又属于敏感的那些变量（= WORKER_PASS_ENV ∩ WORKER_SECRET_ENV）。
 # 取交集而不是直接用 WORKER_SECRET_ENV：某个项目如果压根不透传 GH_TOKEN，
 # 就不该为它生成文件、也不该因为它没设而拒绝派工。
+# 判断写在 _secret_env.sh（setup.sh 的装完检查、install-status.sh 用同一份）。
 _secret_vars() {
-    local pass="${WORKER_PASS_ENV:-GH_TOKEN}" v s
-    for v in $pass; do
-        for s in $WORKER_SECRET_ENV; do
-            if [ "$v" = "$s" ]; then
-                echo "$v"
-            fi
-        done
-    done
+    cavil_secret_vars
 }
 
 # 把敏感 env 落到 0600 文件，echo 出路径。内容没变就不重写——poll 每分钟跑一次，
@@ -3142,14 +3157,10 @@ secret_env_file() {
     # 指向放在这一个函数里，是因为它是 require_secret_env 和 tmux_env_args 共同的
     # 唯一取值点 —— 散在各 dispatch 调用点上漏掉一个，后果是 worker **静默**拿到
     # 轮询那把 token：不报错、不失败，直到某次 push 署错名才看得出来。
-    if [ "$var" = GH_TOKEN ]; then
-        val="$(gh_write_token)"
-    else
-        eval "val=\${$var:-}"
-    fi
-    if [ -z "$val" ]; then
-        return 1
-    fi
+    # GH_TOKEN 两个都没配时借用本机 gh 登录的那把（GitHub#739，维护者的选择），来源记在
+    # CAVIL_SECRET_SRC，require_secret_env 据此记一行日志。取值规则在 _secret_env.sh。
+    cavil_secret_resolve "$var" || return 1
+    val="$CAVIL_SECRET_VAL"
     mkdir -p "$dir"
     chmod 700 "$dir" 2>/dev/null || true
     if [ ! -f "$f" ] || [ "$(cat "$f" 2>/dev/null)" != "$val" ]; then
@@ -3163,20 +3174,34 @@ secret_env_file() {
 # 派工前置校验：敏感变量缺失就**当场拒绝派工**，别让 worker 起来之后才撞 403。
 # 403 的表现是 worker 秒退或原地打转，self-heal 会把它当「会话损坏」反复重派，
 # 烧 API 还查不出根因——fail fast 在这里比 fail soft 便宜得多。
+#
+# 说明走 log()（进 poll.log），不只靠 stderr；另在 stdout 打一行只有变量名的短原因——
+# agent-poll.sh 的 dispatch_fail_excerpt 只收 stdout，连续失败转人工时这一行就是留言里的
+# 「最后一次的错误」（GitHub#739：以前留言里只有一句占位符）。留言发在 GitHub 上，所以这一行
+# 不带值、不带本机路径。
 require_secret_env() {
-    local var missing=0
+    local var missing="" borrowed="" env_hint
     while read -r var; do
         if [ -z "$var" ]; then
             continue
         fi
         if ! secret_env_file "$var" >/dev/null; then
-            echo "[cavil-loop] ERROR: $var 在 WORKER_SECRET_ENV 里但当前 env 没设 —— 拒绝派工。" >&2
-            echo "[cavil-loop]        systemd 路径检查 EnvironmentFile；手动跑请先 export $var=..." >&2
-            missing=1
+            missing="$missing $var"
+        elif [ "$CAVIL_SECRET_SRC" = login ]; then
+            borrowed="$borrowed $var"
         fi
     done < <(_secret_vars)
-    if [ "$missing" -ne 0 ]; then
+    missing="${missing# }"
+    if [ -n "$missing" ]; then
+        env_hint="$(cavil_project_env "$(asset_project_key)" 2>/dev/null || true)"
+        case "$env_hint" in */.conf|"") env_hint="$CAVIL_CONFIG_HOME/<项目>.conf" ;; esac
+        log "❌ 拒绝派工：worker 需要的 ${missing} 没有值（WORKER_SECRET_ENV 里列着；daemon 环境、项目配置里都没有$(case " $missing " in *" GH_TOKEN "*) printf '，本机 gh 也没登录' ;; esac)）。systemd / launchd 下在 ${env_hint} 加一行 ${missing%% *}=…；手动跑请先 export"
+        echo "拒绝派工：worker 需要的 ${missing} 在 daemon 环境里没有值$(case " $missing " in *" GH_TOKEN "*) printf '（本机 gh 也没登录，借用不到）' ;; esac)。补进 daemon 的启动配置文件后把标签改回派工标签"
         return 1
+    fi
+    borrowed="${borrowed# }"
+    if [ -n "$borrowed" ]; then
+        log "worker 的 ${borrowed} 没配，借用本机 gh 登录的令牌（GitHub#739）；要用别的账号就在 daemon 的启动配置里写 GH_TOKEN=…"
     fi
     return 0
 }
@@ -8365,14 +8390,9 @@ gh_last_id() {   # <endpoint>
 # run_gh 的孪生，给 git 用。**dispatch 脚本里的 git 一律走它**，别写
 # `git ... 2>&1 | tail -N`，也别 `2>/dev/null || log "失败"`。
 #
-# 为什么非它不可（实测）：_lib.sh 顶部那句 `exec 9>&- 2>/dev/null` 是**永久**重定向
-# （exec 不带命令时所有重定向都是永久的），所以每个 source 过本文件的脚本——包括
-# agent-poll.sh 自己和全部 dispatch 脚本——fd 2 从此就是 /dev/null。git 写在 stderr
-# 上的 `fatal:` 直接蒸发，既不进 poll.log 也不进 journal。
-# 2026-09-18 那次排查之所以要翻 journal 才找到原因，唯一的原因是当时那行写了
-# `2>&1`，把 stderr 转成了 stdout；把 `2>&1` 删掉，原因会彻底消失。
-# 这里显式把 `2>&1` 收进变量，再经 log() 的 tee 写进 poll.log——那是唯一能穿过
-# 那个 /dev/null 的通道。
+# 为什么非它不可：git 写在 stderr 上的 `fatal:` 只会去 journal（GitHub#739 之前连 journal
+# 都不去——_lib.sh 顶部那句 exec 把 stderr 永久丢掉了），poll.log 里看不到。
+# 这里显式把 `2>&1` 收进变量，再经 log() 的 tee 写进 poll.log——排查的人看的是那里。
 #
 # 只在失败时打，且**逐行**打、不截断：成功时一个字都不输出（日常噪音不变），失败时
 # 真正有用的那行不保证落在最后两行里（`| tail -2` 正是上次「看不见原因」的来源）。
@@ -9462,8 +9482,8 @@ label_rename_gate() {   # 不放行时 LABEL_GATE_KIND = rename（暂停 / 配�
     return 0
 }
 
-# 这两个 75 出口（等不到锁、锁里那份过闸门不放行）的原因同时打到 stdout（GitHub#715）：_lib.sh 顶部把
-# stderr 永久指向了 /dev/null，log() 只进 poll.log，跑脚本的 agent / 人原来只看到一个退出码。原因文字只在
+# 这两个 75 出口（等不到锁、锁里那份过闸门不放行）的原因同时打到 stdout（GitHub#715）：跑脚本的 agent
+# 常常只收 stdout（以前 _lib.sh 顶部还把 stderr 永久丢掉过，GitHub#739 才修），只靠 log() 时它只看到一个退出码。原因文字只在
 # poll_lock_say 一处。锁里那份已经说过具体原因时，往外层传来的标记文件（CAVIL_POLL_LOCK_SAID）里写一笔，
 # 外层就不再打总括的那一行，免得同一件事说两遍。
 POLL_LOCK_SAID_FILE="${CAVIL_POLL_LOCK_SAID:-}"

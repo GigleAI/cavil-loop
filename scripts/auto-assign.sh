@@ -70,10 +70,8 @@
 #   不接受（例如没有仓库权限的外部账号），记「不可指派」写一行日志；读回失败 = 不记（下一轮会看到已有人）。
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
-exec 2>&8 8>&-
 
 auto_assign_enabled || exit 0
 

@@ -21,6 +21,8 @@ SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 source "$SCRIPT_DIR/_names.sh"
 # shellcheck source=_install.sh
 source "$SCRIPT_DIR/_install.sh"
+# shellcheck source=_secret_env.sh
+source "$SCRIPT_DIR/_secret_env.sh"
 
 CHECK_AGENT=""
 CHECK_PROJECT=""
@@ -198,6 +200,18 @@ for env_file in "$CAVIL_CONFIG_HOME"/*.conf "$CAVIL_LEGACY_CONFIG_HOME"/*.conf; 
         agents+=("$(agent_json fable "${vals[6]}" "$host" false "label:${vals[5]}")")
     fi
 
+    # worker 要的敏感变量（GitHub#739）：判断和派工前检查是同一份（_secret_env.sh），只看启动配置
+    # 文件 + 项目配置，不看本脚本调用方自己的环境；读不了 = unknown，不当成缺、也不当成齐。
+    secret_json='{"state":"unknown","missing":null,"borrowed":null}'
+    if [ -n "$config" ] && secret_out="$(cavil_secret_env_check "$env_file" "$config")"; then
+        secret_json="$(printf '%s\n' "$secret_out" | jq -Rsc '
+            [split("\n")[] | select(length > 0) | split(" ")] as $r
+            | ([$r[] | select(.[0] == "missing") | .[1]]) as $m
+            | {state: (if ($m | length) > 0 then "missing" else "ok" end), missing: $m,
+               borrowed: [$r[] | select(.[0] == "login") | .[1]]}')" \
+            || secret_json='{"state":"unknown","missing":null,"borrowed":null}'
+    fi
+
     sched_json=null
     case "$SCHEDULER" in
         systemd)
@@ -224,7 +238,8 @@ for env_file in "$CAVIL_CONFIG_HOME"/*.conf "$CAVIL_LEGACY_CONFIG_HOME"/*.conf; 
         --argjson host "$(json_str_or_null "$host")" --argjson config "$(json_str_or_null "$config")" \
         --arg config_state "$config_state" --argjson repo "$(json_str_or_null "$repo")" \
         --argjson state_dir "$(json_str_or_null "$state_dir")" --argjson agents "$agents_json" \
-        --argjson scheduler "$sched_json" --argjson last_poll "$(last_poll_json "$state_dir")" '
+        --argjson scheduler "$sched_json" --argjson last_poll "$(last_poll_json "$state_dir")" \
+        --argjson secret_env "$secret_json" '
         {key:$key, layout:$layout, env_file:$env_file, host:$host, config:$config,
          config_state:$config_state, repo:$repo, state_dir:$state_dir, agents:$agents,
          deps: (if $agents == null then {state:"unknown", missing:null}
@@ -232,7 +247,7 @@ for env_file in "$CAVIL_CONFIG_HOME"/*.conf "$CAVIL_LEGACY_CONFIG_HOME"/*.conf; 
                   | if any($req[]; .state == "no_driver") then {state:"unknown", missing:([$req[].missing[]] | unique)}
                     else ([$req[].missing[]] | unique) as $m
                       | {state:(if ($m|length) == 0 then "ok" else "missing" end), missing:$m} end end),
-         scheduler:$scheduler, last_poll:$last_poll}')")
+         secret_env:$secret_env, scheduler:$scheduler, last_poll:$last_poll}')")
 done
 if [ ${#projects[@]} -gt 0 ]; then
     projects_json="$(printf '%s\n' "${projects[@]}" | jq -cs '.')"

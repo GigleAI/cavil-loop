@@ -482,9 +482,10 @@ collect_queue_rows() {
 trigger_labels_array
 
 # dispatch 子进程漏在 stdout 上的输出，压成一行跟着失败一起进 poll.log。
-# 只能捕 stdout：_lib.sh 顶部的永久 `2>/dev/null` 让子进程的 fd 2 就是 /dev/null，
-# 捕它永远是空的（实测）。子进程自己 log() 出来的行已经由 tee 写进同一个 poll.log，
-# 所以这里兜的是那些没走 log()、漏在 stdout 上的输出。
+# 只收 stdout、不收 stderr：这段摘录会进转人工留言（发在 GitHub 上），而 stderr 里是子程序的
+# 原始报错，可能带本机路径甚至令牌片段；要进留言的原因由派工脚本自己往 stdout 写一行确定不含
+# 敏感内容的话（例：require_secret_env 的「拒绝派工：…」，GitHub#739）。子进程自己 log()
+# 出来的行已经由 tee 写进同一个 poll.log；stderr 照常去 journal（先过脱敏，见 _lib.sh 顶部）。
 dispatch_fail_excerpt() {
     local t
     t=$(printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -3 | tr '\n' ' ' | sed 's/[[:space:]]*$//') || true

@@ -9,9 +9,7 @@
 # 手动跑要指明项目：CODING_AGENT_CONFIG=<本项目配置文件路径> bash ci-failure-report.sh --list
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec 8>&2
 source "$SCRIPT_DIR/_lib.sh"
-exec 2>&8 8>&-
 
 MODE=tick
 case "${1:-}" in
