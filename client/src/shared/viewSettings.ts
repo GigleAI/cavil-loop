@@ -103,6 +103,7 @@ export const DEFAULT_VIEW: ViewSettings = {
   detailFields: true,
   codeWrap: false,
   showClosed: DEFAULT_SHOW_CLOSED,
+  showParked: true,
 };
 
 /** The floating detail panel: narrowest it can be dragged to, and the widest any saved value may be. */
@@ -167,7 +168,8 @@ export function isValidView(v: unknown): v is ViewSettings {
     (x.panelWidth === null || validWidth(x.panelWidth)) &&
     typeof x.detailFields === 'boolean' &&
     typeof x.codeWrap === 'boolean' &&
-    validShowClosed(x.showClosed)
+    validShowClosed(x.showClosed) &&
+    typeof x.showParked === 'boolean'
   );
 }
 
@@ -202,5 +204,7 @@ export function normalizeView(raw: unknown): ViewSettings {
     detailFields: pick('detailFields', (v) => typeof v === 'boolean'),
     codeWrap: pick('codeWrap', (v) => typeof v === 'boolean'),
     showClosed: normalizeShowClosed(r.showClosed),
+    // GitHub#741: a view saved before the switch (or holding anything but a boolean) shows parked items
+    showParked: pick('showParked', (v) => typeof v === 'boolean'),
   };
 }

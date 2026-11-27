@@ -186,7 +186,8 @@ export function showClosedDefault(entry: Pick<TallyEntry, 'flow'> | null): boole
 }
 
 /**
- * GitHub#708: the items the board leaves out while the search box is empty — the ones carrying their own
+ * GitHub#708: the items the board leaves out while 「显示稍后处理」 is off (GitHub#741; before it, while the search box
+ * was empty) — the ones carrying their own
  * repository's parked label (`LABEL_PENDING_LATER`), open or closed. The parked label is recognised exactly as the
  * "稍后处理" number recognises it (`tallyEntries`): the shared name empty = off for every repository (the number is
  * left out then too), else each item by its repository's own name, compared by `hasLabel`. Keys, so the list and
@@ -200,6 +201,33 @@ export function parkedKeys(items: readonly Item[], shared: string, laterOf: (rep
     if (own !== '' && hasLabel(it, own)) out.add(it.key);
   }
   return out;
+}
+
+/**
+ * GitHub#741: whether the search itself names the parked label, so the 「显示稍后处理」 switch steps aside (greyed out,
+ * parked items listed as the search says) — as 「显示已关闭」 does for `is:open`. Named = the lit number is a flow row
+ * following the parked label (its click query, narrowed per repository, is the parked label), or the search holds a
+ * `label:` condition, negated or not, one of whose values is a parked name in use (`names`, from `parkedNames`;
+ * compared as `hasLabel` compares, whole name, any case). Empty names name nothing.
+ */
+/**
+ * GitHub#741: the parked names in use — each repository holding one of `items` (the ticked sources' items, the same
+ * items `parkedKeys` judges) by its own name (`laterOf`, the settings' one lookup: its own, else the shared one).
+ * A repository not ticked, or removed with settings left behind, holds no item here and names nothing, so its
+ * parked label cannot grey the switch out over a search of the ticked ones. The shared name empty = none.
+ */
+export function parkedNames(items: readonly Item[], shared: string, laterOf: (repo: string) => string): string[] {
+  if (shared.trim() === '') return [];
+  const repos = new Map<string, string>();
+  for (const it of items) if (!repos.has(it.repo.toLowerCase())) repos.set(it.repo.toLowerCase(), it.repo);
+  return [...new Set([...repos.values()].map((r) => laterOf(r).trim()).filter((n) => n !== ''))];
+}
+
+export function parkedStated(parsed: ReturnType<typeof parseFilter>, names: readonly string[], lit: Pick<TallyEntry, 'flow'> | null): boolean {
+  if (lit?.flow === 'later') return true;
+  const own = new Set(names.map((n) => n.trim().toLowerCase()).filter((n) => n !== ''));
+  if (own.size === 0) return false;
+  return parsed.clauses.some((c) => c.kind === 'field' && c.field === 'label' && c.values.some((v) => own.has(v.trim().toLowerCase())));
 }
 
 /**

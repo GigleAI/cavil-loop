@@ -37,7 +37,7 @@ import type { BoardRequest } from './App';
 import { keyText, type ShortcutId } from './shortcuts';
 import { useRepoDrag } from './repoDrag';
 import { RepoWebLink } from './RepoWebLink';
-import { litTally, parkedKeys, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
+import { litTally, parkedKeys, parkedNames, parkedStated, showClosedDefault, showClosedKey, tallyClick, tallyForget, tallyName, searchList, viewBarTallies, type TallyEntry } from '../data/flowTally';
 import { parkedScope } from '../shared/tallies';
 import { TallyBar, tallyCountText } from './TallyBar';
 import { getLang, t, tKey } from '../shared/i18n';
@@ -562,13 +562,28 @@ export function BoardView({
   // match brings that issue along, faded (board and table, with PRs under issues on — the builders check that)
   // GitHub#689: 「只看我的」 is a condition too — what it brings along is faded the same way
   const carrying = isFiltering(parsed) || mineOn;
-  // GitHub#708: while the search box is empty (no number lit, no condition), items carrying their repository's
-  // parked label are left out — from the list, and from the data the board and table bring related items in from
-  // (sub-issues under a parent, an issue under its PR), so nothing brings them back. The graph keeps every item as
-  // the other end of a relation: a parked blocker still shows, faded, and still counts in "被 N 项挡住".
+  // GitHub#708 / #741: while 「显示稍后处理」 is off, items carrying their repository's parked label are left out —
+  // from the list, and from the data the board and table bring related items in from (sub-issues under a parent, an
+  // issue under its PR), so nothing brings them back. The graph keeps every item as the other end of a relation: a
+  // parked blocker still shows, faded, and still counts in "被 N 项挡住". A search that names the parked label itself
+  // (the lit 「稍后处理」 number included) decides instead, and the switch is greyed out. The parked label left empty
+  // hides nothing, and the switch is not shown.
+  const parkedOff = handBack.later.trim() === '';
+  // GitHub#741: the board layout's bar (its widest: 分列 and 泳道 too) keeps one line at the window size the app opens
+  // with only when 「视图设置」 and 「快捷键」 show just their icon / key there (the words stay for screen readers and
+  // in the tooltip) and its gaps are a little tighter (styles.css `.vbar.compact`). The table and the graph have the
+  // room and keep the words.
+  const compactBar = view.layout === 'board';
+  // the names the ticked sources' repositories use (never a repository not ticked, or removed with its settings kept)
+  const namesInUse = useMemo(
+    () => parkedNames(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later),
+    [data.items, handBack, repoLabels],
+  );
+  const parkedInSearch = parkedStated(parsed, namesInUse, litEntry);
+  const hideParked = !view.showParked && !parkedInSearch;
   const parked = useMemo(
-    () => (isFiltering(parsed) ? new Set<string>() : parkedKeys(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later)),
-    [parsed, data.items, handBack, repoLabels],
+    () => (hideParked ? parkedKeys(data.items, handBack.later, (repo) => handBackFor({ handBack, repoLabels }, repo).later) : new Set<string>()),
+    [hideParked, data.items, handBack, repoLabels],
   );
   const related = useMemo(() => (parked.size ? data.items.filter((it) => !parked.has(it.key)) : data.items), [parked, data.items]);
   const { items, parkedHidden } = useMemo(() => {
@@ -951,7 +966,7 @@ export function BoardView({
         )}
 
       {/* second row: how this view is laid out */}
-      <div className="vbar">
+      <div className={`vbar${compactBar ? ' compact' : ''}`}>
         <div className="seg" data-testid="layout">
           {(['board', 'table', 'graph'] as Layout[]).map((l) => (
             <button key={l} className={view.layout === l ? 'on' : ''} data-value={l} title={t('{label}（{key}）', { label: layoutLabel(l), key: keyText(LAYOUT_KEY[l]) })} onClick={() => api().setView({ layout: l })}>
@@ -1001,10 +1016,31 @@ export function BoardView({
           {t('显示已关闭')}
           {litEntry && tNode('（{name}）', { name: tallyName(litEntry).own ? <Verbatim from="user">{litEntry.name}</Verbatim> : tallyName(litEntry).text })}
         </label>
+        {/* GitHub#741: between 「显示已关闭」 and 「视图设置」; one switch for every layout */}
+        {!parkedOff && (
+          <label
+            className={`toggle${parkedInSearch ? ' disabled' : ''}`}
+            data-testid="show-parked-toggle"
+            title={
+              parkedInSearch
+                ? t('搜索框已经指定了暂缓标签（点亮了「稍后处理」，或写了这个标签），以搜索框为准')
+                : t('关掉后，挂着暂缓标签的条目（设置 →「流程标签」的「暂缓」一格，按各仓库自己的名字认）不在看板、表格里列出，也不随别的条目带出来；依赖图只在它们和别的条目有关系时淡色画出。搜索框写了这个标签时以搜索框为准。\n看板、表格、依赖图共用这一个开关。')
+            }
+          >
+            <input
+              type="checkbox"
+              data-testid="show-parked"
+              checked={view.showParked}
+              disabled={parkedInSearch}
+              onChange={(e) => api().setView({ showParked: e.target.checked })}
+            />
+            {t('显示稍后处理')}
+          </label>
+        )}
         {view.layout !== 'graph' && (
-          <button data-testid="open-view-panel" className={panel ? 'on' : 'ghost'} onClick={() => setPanel(!panel)}>
+          <button data-testid="open-view-panel" className={`${panel ? 'on' : 'ghost'}${compactBar ? ' vbar-icon' : ''}`} onClick={() => setPanel(!panel)} title={t('视图设置')}>
             <Icon name="sliders" />
-            {t('视图设置')}
+            <span className={compactBar ? 'sr-only' : undefined}>{t('视图设置')}</span>
           </button>
         )}
         <span className="vbar-count">
@@ -1022,7 +1058,7 @@ export function BoardView({
                   `${tallyCountText(e)} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
                   ...(mineOn ? [t('只看我的：其中 {n} 个', { n: pool.length })] : []),
-                  ...(parkedHidden > 0 ? [t('另有 {n} 个稍后处理的条目没显示（点「稍后处理」查看）', { n: parkedHidden })] : []),
+                  ...(parkedHidden > 0 ? [t('另有 {n} 个稍后处理的条目没显示（打开「显示稍后处理」查看）', { n: parkedHidden })] : []),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
                   ...(filtering && carriedCount > 0 ? [t('另有 {n} 个 issue 随命中的 PR 显示', { n: carriedCount })] : []),
@@ -1034,8 +1070,9 @@ export function BoardView({
             {t('{n} 个条目', { n: data.items.length })}
           </span>
         </span>
-        <button className="ghost" onClick={onKeysHelp} data-testid="open-shortcuts" title={t('快捷键一览（{key}）', { key: keyText('help') })}>
-          {t('快捷键')} <kbd>?</kbd>
+        <button className={`ghost${compactBar ? ' vbar-icon' : ''}`} onClick={onKeysHelp} data-testid="open-shortcuts" title={t('快捷键一览（{key}）', { key: keyText('help') })}>
+          <span className={compactBar ? 'sr-only' : undefined}>{t('快捷键')} </span>
+          <kbd>?</kbd>
         </button>
       </div>
       {/* everything under the view bar */}

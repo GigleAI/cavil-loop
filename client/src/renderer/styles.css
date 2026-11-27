@@ -216,6 +216,10 @@ input[type='checkbox'], input[type='radio'] { accent-color: var(--accent); margi
 .seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--hover); border: 1px solid var(--border-muted); }
 .seg button { min-height: 24px; padding: 0 10px; border: none; border-radius: 6px; background: transparent; color: var(--muted); }
 .seg button.on { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border-muted); }
+/* GitHub#741: the board layout's bar (分列, 泳道, two 显示… switches) — tighter gaps, 「视图设置」 / 「快捷键」 as icon / key
+   only, so it stays on one line at 1280 px with room for a count one digit longer (BoardView `compactBar`) */
+.vbar.compact { gap: 8px; }
+.vbar button.vbar-icon { padding: 0 8px; }
 .vbar label.inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .vbar label.inline select { color: var(--fg); }
 .vbar .vbar-count { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
