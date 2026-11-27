@@ -21,6 +21,7 @@
 // wider than on the web, never empty because of a word we did not understand.
 
 import type { Item, Iteration, ProjectMeta } from './types';
+import type { MineFilter } from './uiPrefs';
 
 export type Field = 'label' | 'status' | 'milestone' | 'assignee' | 'author' | 'repo' | 'project' | 'iteration' | 'is' | 'no' | 'has';
 
@@ -240,15 +241,59 @@ export function applyFilter(items: Item[], parsed: ParsedFilter, ctx: FilterCont
 
 /**
  * GitHub#689: 「只看我的」 — what the switch picks, by the very rule of `author:@me` / `assignee:@me`
- * (one `valueHit`, so ticking only 我提出的 lists exactly what `author:@me` lists), either ticked box
- * matching. Off, or no signed-in account (`viewer` null): every item, unchanged — an unknown account
- * must not empty the board; the switch stays saved and applies again once the account is known.
+ * (one `valueHit`, so ticking only 我提出的 lists exactly what `author:@me` lists), any ticked box
+ * matching. GitHub#746: each picked account is one more condition by the same rule — a picked 提出者
+ * `alice` matches what `author:alice` matches, a picked 负责人 what `assignee:alice` matches — and an
+ * item shows when any condition matches. Off, or no signed-in account (`viewer` null): every item,
+ * unchanged — an unknown account must not empty the board; the switch stays saved and applies again
+ * once the account is known.
  */
-export function mineOnly(items: Item[], pick: { on: boolean; author: boolean; assignee: boolean }, viewer: string | null): Item[] {
+export function mineOnly(items: Item[], pick: MineFilter, viewer: string | null): Item[] {
   if (!mineActive(pick, viewer)) return items;
   const ctx: FilterContext = { viewer, today: '', projects: [] };
   const none = new Map<string, Record<string, string | null>>();
-  return items.filter((it) => (pick.author && valueHit(it, 'author', '@me', ctx, none)) || (pick.assignee && valueHit(it, 'assignee', '@me', ctx, none)));
+  const hit = (it: Item, field: 'author' | 'assignee', v: string) => valueHit(it, field, v, ctx, none);
+  return items.filter(
+    (it) =>
+      (pick.author && hit(it, 'author', '@me')) ||
+      (pick.assignee && hit(it, 'assignee', '@me')) ||
+      pick.authors.some((a) => hit(it, 'author', a)) ||
+      pick.assignees.some((a) => hit(it, 'assignee', a)),
+  );
+}
+
+/** GitHub#746: one account the panel offers — its login as GitHub spells it, and how many of the items it opened / is assigned */
+export interface MineCandidate {
+  login: string;
+  count: number;
+}
+
+/**
+ * GitHub#746: the accounts the 提出者 (`author`) or 负责人 (`assignee`) search offers — everyone who opened /
+ * is assigned one of `items` (the items read so far, every source, open and closed), counted per account (not
+ * case-sensitive; the first spelling met is shown), most items first, then by name. The signed-in account is
+ * left out: it is the box above the list (a picked one stays a chip in the panel, where it can be taken off).
+ * Accounts already `picked` are always there (count 0 when no item has them any more), so they can be taken off.
+ */
+export function mineCandidates(items: readonly Item[], field: 'author' | 'assignee', viewer: string | null, picked: readonly string[]): MineCandidate[] {
+  const by = new Map<string, MineCandidate>();
+  const add = (login: string, n: number) => {
+    const k = lc(login);
+    const cur = by.get(k);
+    if (cur) cur.count += n;
+    else by.set(k, { login, count: n });
+  };
+  for (const it of items) {
+    if (field === 'author') {
+      if (it.author) add(it.author, 1);
+    } else {
+      // an account listed twice on one item counts once
+      for (const a of new Set(it.assignees.map(lc))) add(it.assignees.find((x) => lc(x) === a)!, 1);
+    }
+  }
+  for (const p of picked) add(p, 0);
+  if (viewer) by.delete(lc(viewer));
+  return [...by.values()].sort((a, b) => b.count - a.count || (lc(a.login) < lc(b.login) ? -1 : lc(a.login) > lc(b.login) ? 1 : 0));
 }
 
 /** GitHub#689: whether 「只看我的」 narrows anything right now (on, and the account is known) */

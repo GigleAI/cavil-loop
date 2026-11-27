@@ -205,7 +205,7 @@ export interface CavilApi {
   setTableFold(groupBy: GroupBy, key: string, folded: boolean): Promise<void>;
   /** fold / unfold one board swimlane, by repository (GitHub#297) */
   setLaneFold(lane: string, folded: boolean): Promise<void>;
-  /** GitHub#689: change 「只看我的」 (the switch and / or its two boxes); unticking the last box is refused */
+  /** GitHub#689: change 「只看我的」 (the switch, its two boxes and / or, GitHub#746, its two lists of accounts); leaving no condition is refused */
   setMineFilter(patch: Partial<MineFilter>): Promise<void>;
   /** whether "托管" asks first (GitHub#231) */
   setAutopilotConfirm(on: boolean): Promise<void>;

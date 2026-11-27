@@ -2416,7 +2416,7 @@ export class Controller {
     this.set({ laneFolds: next });
   }
 
-  /** GitHub#689: 「只看我的」 changed. Anything but booleans is ignored; unticking the last box is refused. */
+  /** GitHub#689: 「只看我的」 changed. Fields of the wrong type are ignored; leaving no condition is refused (GitHub#746: the account lists count). */
   setMineFilter(patch: unknown): void {
     const next = setMineFilter(this.state.mineFilter, patch);
     if (next === this.state.mineFilter) return;
