@@ -101,8 +101,13 @@
 #   agent_session_has_tag <cwd> <session_id> <标记>
 #     返回 0 = 这条会话的记录里，有一条用户输入带着这个标记；1 = 没有（记录还不存在也算）；
 #     2 = 读不了。实现了它，daemon 每次起会话都用附了一次性标记的提示词副本（agent_launch_prompt_copy），
-#     self-heal 只在本次标记出现后才清零连续失败计数（selfheal_alive）。续接时旧记录一直都在，
-#     所以不能拿「记录存在」当证据。不实现 = 会话活着就清零，和以前一样。
+#     self-heal 只在本次标记出现后才清零连续失败计数（selfheal_alive），这次没有记下标记也不清零。
+#     续接时旧记录一直都在，所以不能拿「记录存在」当证据。不实现 = 会话活着就清零，和以前一样。
+#
+#   AGENT_INPUT_MARK（可选，GitHub#744）
+#     输入框那一行开头的字符（claude：❯）。设了，default_inject_prompt 只在画面里确实认出这一行、
+#     而且框里是空的时，才把「没看到在忙」算成已提交；没认出输入框 = 没送进去。不设 = 和以前一样
+#     （按 ❯ 找，找不到也算已提交）——codex 的空输入框里有占位文字，不能按「框是空的」判。
 #
 #   ── 用量上限（可选，GitHub#341）──
 #   包月订阅的 agent 有时段用量上限；撞上之后界面停在一条提示上，会话还活着、却不再干活。
@@ -343,9 +348,16 @@ default_inject_prompt() {
                 #      grep -m1 会抓到那条回显（内容非空）而不是真正的输入框。
                 #   2. 空输入框的占位是 **U+00A0 不换行空格**（字节 c2 a0），不是普通空格。
                 #      C locale 下 [[:space:]] 不认它，不显式清掉就永远判「非空」。
-                local _box _cap
+                local _box _cap _line _mark="${AGENT_INPUT_MARK:-❯}"
                 _cap="$(tmux capture-pane -t "$sess" -p 2>/dev/null)" || { _inject_gone; return 1; }
-                _box=$(printf '%s\n' "$_cap" | tail -"${AGENT_BUSY_TAIL}" | grep '❯' | tail -1 | sed 's/.*❯//; s/\xc2\xa0//g' | tr -d '[:space:]')
+                _line=$(printf '%s\n' "$_cap" | tail -"${AGENT_BUSY_TAIL}" | grep -F -- "$_mark" | tail -1)
+                if [ -z "$_line" ] && [ -n "${AGENT_INPUT_MARK:-}" ]; then
+                    # driver 声明了输入框的样子、画面里却没有：不知道停在哪个界面，不按键、不算提交（GitHub#744）
+                    retries=$((retries + 1))
+                    [ "$retries" -ge 5 ] && { echo "[default_inject_prompt] WARN: $sess 画面里认不出输入框，不知道提示是否送达 → 没送进去" >&2; return 1; }
+                    continue
+                fi
+                _box=$(printf '%s\n' "$_line" | sed "s/.*$_mark//; s/\xc2\xa0//g" | tr -d '[:space:]')
                 if [ -z "$_box" ]; then
                     return 0
                 fi
@@ -393,6 +405,7 @@ source_driver() {
     AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
     # bypass 模式确认框、开工证据同理（GitHub#744）
     AGENT_BYPASS_PROMPT_TITLE=""; AGENT_BYPASS_PROMPT_OPTION_RE=""; AGENT_BYPASS_PROMPT_FOOTER_RE=""
+    AGENT_INPUT_MARK=""
     unset -f agent_session_has_tag 2>/dev/null || true
     # 用量上限同理（GitHub#341）：没声明的 driver 不能沿用上一个 driver 的规则和账号目录
     AGENT_USAGE_LIMIT=""

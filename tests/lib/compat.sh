@@ -119,6 +119,12 @@ COMPAT_MERGE_STATE_JQ='walk(if type == "object" then del(.["[]"]) else . end)
 compat_cut_after_merge() {   # stdin：调用记录（可以是几轮拼在一起的）；stdout：到合并请求那一行为止
     awk '{ print } / -X PUT [^ ]*\/pulls\/[0-9]+\/merge( |$)/ { exit }'
 }
+# ── self-heal 看到会话活着时读会话上记的 agent（GitHub#744）──
+# 没有这次启动的记录时，self-heal 要知道会话跑的 agent 支不支持「开工证据」，多读一次会话选项。
+# 和改动前比 tmux 调用时把这一行去掉：判据本身在 tests/claude-bypass-launch.test.sh 测
+compat_selfheal_tmux() {   # stdin：tmux 调用记录；stdout：去掉那一行
+    grep -vE '^(tmux )?show-options -qv -t =[^ ]+: @worker_agent$' || true
+}
 # ── 起 worker 前的 agent 命令检查和退出码记录（GitHub#731）──
 # 每次起程序之前多一次检查（读 shell 设置、起一个检查会话 / 窗口、等它的信号、收掉它），启动命令末尾多一段记退出码。
 # 和改动前比 tmux 调用时把这些去掉：检查本身在 tests/agent-bin-check.test.sh 测。

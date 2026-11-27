@@ -92,7 +92,7 @@ key=\$(basename "\$PWD")
 echo "$a \$\$" >> "$CTL/runs.\$key"
 last="__none__"
 while :; do
-    cur=\$(cat "$CTL/screen.\$key" 2>/dev/null || echo "> ")
+    cur=\$(cat "$CTL/screen.\$key" 2>/dev/null || echo "❯ ")
     if [ "\$cur" != "\$last" ]; then
         printf '\\033[2J\\033[H'
         for _ in \$(seq 1 60); do echo; done
@@ -237,7 +237,8 @@ mk_wt() {   # <工作编号>
 screen() {   # <工作编号> <画面>
     printf '%s\n' "$2" > "$CTL/screen.issue-$1"; sleep 0.6
 }
-IDLE='> '
+# 空闲画面带 claude 的输入框（❯）：送字后认得出输入框、框是空的，才算送达（GitHub#744）
+IDLE='❯ '
 BUSY_CLAUDE='✻ Working… (12s · esc to interrupt)'
 # 只有 codex 的规则认这一行是忙（claude 的规则要「省略号 + 括号时长」或 esc to interrupt）
 BUSY_CODEX_ONLY='• Thinking'
@@ -1577,7 +1578,7 @@ if ! compat_skip "功能关闭时的调用、state.json、标签与改动前" "$
         jq -S . "$STATE" > "$TMP/off.$tag/state"
         # 窗格编号、进程号每次起 server 都从头数，两边一致；抓的是参数原文
         # 两边脚本目录不同（日志脱敏管道里带着脚本的路径），换成同一个占位再比
-        sed "s|$root/|ROOT/|g" "$CTL/tmux.log" | compat_bincheck_tmux > "$TMP/off.$tag/tmux"   # 起 worker 前的检查见 compat_bincheck_tmux
+        sed "s|$root/|ROOT/|g" "$CTL/tmux.log" | compat_bincheck_tmux | compat_selfheal_tmux > "$TMP/off.$tag/tmux"   # 起 worker 前的检查见 compat_bincheck_tmux，self-heal 读会话 agent 见 compat_selfheal_tmux
         echo "$(alive "$N")/$(labels_of "$N")/$(labels_of "$M")" > "$TMP/off.$tag/end"
         ROOT="$NEW"; STUCK_OFF=0
     }

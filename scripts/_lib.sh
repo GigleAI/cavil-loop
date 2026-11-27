@@ -1924,9 +1924,12 @@ selfheal_reset() {
 # 以前「探到活着就 reset」：worker 停在启动确认框上时会话一直活着，每轮都把计数清零；催促把它
 # 关掉、自愈重派、又停在框上——永远是「第 1/3 次」，一条 issue 循环了一整夜。
 # 现在起会话时记下本次启动（会话 id + 提示词副本里那个一次性标记，见 agent_launch_prompt_copy），
-# 只有 driver 在会话记录里查到这个标记（agent_session_has_tag）才清零，并删掉这份启动记录。
-# 查到没有 / 读不了 / 启动记录读不懂 → 不清零（读不到 ≠ 已开工）。没有启动记录（driver 不支持、
-# 续接的是没有 id 的旧会话、本功能之前起的会话、已经核实过的）→ 和以前一样清零。
+# 只有 driver 在会话记录里查到这个标记（agent_session_has_tag）才清零，并在启动记录里记下「已核实」，
+# 之后每轮直接清零、不再读会话记录。
+# 不清零的情况（读不到 ≠ 已开工）：查到没有 / 读不了 / 启动记录读不懂；会话跑的 agent 支持这项检查，
+# 却没有启动记录——这次的标记副本或启动记录写不出（代码复审第 1 轮问题 1：以前没有记录就照旧清零，
+# 写失败反而等于「核实过」）、续接的是没有 id 的旧会话、本功能上线前起的会话；会话上记的 agent 读不出。
+# 只有会话跑的 agent 不支持这项检查（driver 没有 agent_session_has_tag）时，才和以前一样会话活着就清零。
 selfheal_launch_file() { printf '%s/%s.launch' "$SELFHEAL_DIR" "$1"; }
 selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话后调用
     local n="$1" cwd="$2" pf="${3:-}" f tag tmp
@@ -1937,19 +1940,37 @@ selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话
     [ -f "$pf.launch.md" ] || return 0
     tag="$(agent_session_prompt_tag "$pf.launch.md")"
     [ -n "$tag" ] && [ -n "${WORKER_SESSION_ID:-}" ] || return 0
-    mkdir -p "$SELFHEAL_DIR" 2>/dev/null || return 0
-    tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
-    if jq -n --arg agent "$WORKER_AGENT" --arg cwd "$cwd" --arg id "$WORKER_SESSION_ID" --arg tag "$tag" \
+    if mkdir -p "$SELFHEAL_DIR" 2>/dev/null && tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" \
+       && jq -n --arg agent "$WORKER_AGENT" --arg cwd "$cwd" --arg id "$WORKER_SESSION_ID" --arg tag "$tag" \
             '{agent: $agent, cwd: $cwd, id: $id, tag: $tag}' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
         return 0
     fi
-    rm -f "$tmp" 2>/dev/null || true
-    log "  ⚠️ 记不下 #$n 这次启动的开工标记（${f}）：self-heal 会照旧在会话活着时清零失败计数"
+    [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null || true
+    log "  ⚠️ 记不下 #$n 这次启动的开工标记（${f}）：self-heal 在这条会话活着时不清零失败计数"
 }
-selfheal_alive() {   # <工作编号>：self-heal 看到会话活着时调用
-    local n="$1" f doc agent cwd id tag rc=0
+selfheal_alive() {   # <工作编号> <tmux_session>：self-heal 看到会话活着时调用
+    local n="$1" sess="${2:-}" f doc agent cwd id tag rc=0 tmp
     f="$(selfheal_launch_file "$n")"
-    if [ ! -e "$f" ]; then selfheal_reset "$n"; return 0; fi
+    if [ ! -e "$f" ]; then
+        # 没有启动记录：看会话跑的是哪个 agent，它支持「开工证据」就不清零（这次没有证据）
+        if ! agent="$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null)" \
+           || ! [[ "$agent" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_debug "self-heal: #$n 读不出会话 $sess 跑的是哪个 agent，不清零失败计数"
+            return 0
+        fi
+        (
+            agent_screen_rules_reset
+            source_driver "$agent" >/dev/null 2>&1 || exit 3
+            declare -f agent_session_has_tag >/dev/null && exit 1
+            exit 0
+        ) || rc=$?
+        case "$rc" in
+            0) selfheal_reset "$n" ;;
+            1) log_debug "self-heal: #$n 会话活着，但没有这次启动的记录（标记或记录写不出、旧会话），不清零失败计数" ;;
+            *) log_debug "self-heal: #$n 加载不了 agent「${agent}」，不清零失败计数" ;;
+        esac
+        return 0
+    fi
     if ! doc="$(cat "$f" 2>/dev/null)" \
        || ! agent="$(printf '%s' "$doc" | jq -er '.agent | strings | select(test("^[A-Za-z0-9._-]+$"))' 2>/dev/null)" \
        || ! cwd="$(printf '%s' "$doc" | jq -er '.cwd | strings | select(length > 0)' 2>/dev/null)" \
@@ -1958,6 +1979,9 @@ selfheal_alive() {   # <工作编号>：self-heal 看到会话活着时调用
         log_debug "self-heal: #$n 的启动记录读不懂（${f}），不清零失败计数"
         return 0
     fi
+    if [ "$(printf '%s' "$doc" | jq -r '.proven // false' 2>/dev/null)" = true ]; then
+        selfheal_reset "$n"; return 0
+    fi
     (
         agent_screen_rules_reset
         source_driver "$agent" >/dev/null 2>&1 || exit 3
@@ -1965,7 +1989,13 @@ selfheal_alive() {   # <工作编号>：self-heal 看到会话活着时调用
         agent_session_has_tag "$cwd" "$id" "$tag"
     ) || rc=$?
     case "$rc" in
-        0|4) selfheal_reset "$n"; rm -f "$f" 2>/dev/null || true ;;
+        0|4)
+            selfheal_reset "$n"
+            # 记下「已核实」，之后不用每轮再读会话记录；记不下就下一轮再核实一次
+            if tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)"; then
+                if printf '%s' "$doc" | jq -c '.proven = true' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then :
+                else rm -f "$tmp" 2>/dev/null || true; fi
+            fi ;;
         1) log_debug "self-heal: #$n 会话活着，但还没有本次启动已开工的证据，不清零失败计数" ;;
         *) log_debug "self-heal: #$n 查不了本次启动是否已开工（rc=${rc}），不清零失败计数" ;;
     esac
@@ -12280,7 +12310,7 @@ agent_launch_command() {   # <cwd> <session_name> <prompt_file>
 # 不是提示词文件本身，而是 <提示词>.launch.md：原文 + 一行本次启动独有的标记。self-heal 凭它判断
 # 「这次真的开工了」（selfheal_alive）。原文件不动：它是渲染结果，别处（和测试）按原样读它。
 # 在算转交文件之前做：提示词太长时，短指令照抄的是副本里的标记。
-# 写不出副本就用原文件启动（日志一行）：self-heal 那时没有启动记录，照旧在会话活着时清零。
+# 写不出副本就用原文件启动（日志一行）：self-heal 那时没有启动记录，会话活着时不清零失败计数。
 agent_launch_prompt_copy() {   # <prompt_file> → stdout：这次启动实际用的提示词文件
     local f="${1:-}" copy
     if ! declare -f agent_session_has_tag >/dev/null || [ ! -f "$f" ]; then printf '%s' "$f"; return 0; fi
@@ -12290,7 +12320,7 @@ agent_launch_prompt_copy() {   # <prompt_file> → stdout：这次启动实际�
         printf '%s' "$copy"; return 0
     fi
     rm -f "$copy" 2>/dev/null || true
-    log "  ⚠️ 写不出带本次启动标记的提示词副本（${copy}），用原提示词启动；self-heal 这次没法核实是否已开工" 2>/dev/null || true
+    log "  ⚠️ 写不出带本次启动标记的提示词副本（${copy}），用原提示词启动；self-heal 这次没法核实是否已开工，会话活着时不清零失败计数" 2>/dev/null || true
     printf '%s' "$f"
 }
 

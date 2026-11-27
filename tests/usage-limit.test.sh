@@ -723,7 +723,7 @@ off_run() {   # <根目录> <输出前缀> [额外配置行…]
         env POLL_FAKE_NOW="$NOW" CODING_AGENT_CONFIG="$CONF" bash "$root/scripts/agent-poll.sh" > /dev/null 2>&1
         compat_merge_calls < "$CALLS" >> "$out.gh"   # 合并清理那一段见 compat_merge_calls
     done
-    sed -E 's/%[0-9]+/%N/g' "$CTL/tmux.log" > "$out.tmux"
+    sed -E 's/%[0-9]+/%N/g' "$CTL/tmux.log" | compat_selfheal_tmux > "$out.tmux"   # self-heal 读会话 agent 见 compat_selfheal_tmux
     jq -S "$COMPAT_MERGE_STATE_JQ" "$STATE" > "$out.state"
     ls "$W/state" | grep -v '^poll' | sort > "$out.files"
 }

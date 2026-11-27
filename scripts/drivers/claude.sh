@@ -25,8 +25,10 @@ claude_encoded_cwd() {
     printf %s "$1" | tr -c 'A-Za-z0-9' '-'
 }
 
+# 会话记录在账号目录下：和 agent_account_dir 同一来源（CLAUDE_CONFIG_DIR，没设就是 ~/.claude）。
+# 以前写死 ~/.claude，worker 用别的账号目录时「本次启动开工了没有」查错地方（代码复审第 1 轮问题 3）。
 claude_session_dir() {
-    echo "$HOME/.claude/projects/$(claude_encoded_cwd "$1")"
+    echo "$(agent_account_dir)/projects/$(claude_encoded_cwd "$1")"
 }
 
 agent_has_history() {
@@ -84,6 +86,9 @@ AGENT_BUSY_RE='esc to interrupt|…[[:space:]]*\([0-9]+[hms]'
 # spinner 实测稳定落在倒数第 8 行（下面还有输入框 + 两行 footer），老的 tail -5
 # 刚好够不着。给到 20 留余量；idle pane 整屏 0 命中，放宽不会引入误判。
 AGENT_BUSY_TAIL=20
+# 输入框那一行以 ❯ 开头；空框里是一个不换行空格（见 default_inject_prompt）。设了它，画面里认不出
+# 输入框时送字不算成功（GitHub#744）。
+AGENT_INPUT_MARK='❯'
 
 agent_is_busy() {
     local sess="$1"
