@@ -951,7 +951,10 @@ closed issue and removes `pending/PR` and other flow labels.
 **The closed-issue sweep keeps a reminder added after the close.** The pass that gives issues closed as completed `Done`
 and strips their flow labels reads the event history — if the last "added `pending/human`" comes after the last
 "closed", it is the post-close reminder and stays; one added before the close (a human closing an issue that sat on
-`pending/human`) is removed.
+`pending/human`) is removed. The requester-bot waiting label follows the same rule: when a bot-filed issue is closed by
+a merge, the merge-result notice adds the waiting label after the close and it stays until the bot has passed the result
+on and removed it; a waiting label added before the close (a human closing the issue while it waited for the bot) is
+removed.
 
 - Order is the position in the event history, never the timestamp (closing on merge and adding the reminder often share
   a second).

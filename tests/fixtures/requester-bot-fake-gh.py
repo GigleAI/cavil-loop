@@ -125,6 +125,8 @@ def issue_view(it):
     o["pull_request"] = {"url": "x"} if it.get("is_pr") else None
     if not it.get("is_pr"):
         del o["pull_request"]
+    if "state_reason" in it:   # 关闭清扫（GitHub#159）读它；夹具没写就不给，和以前一样
+        o["state_reason"] = it["state_reason"]
     return o
 
 
@@ -185,6 +187,13 @@ if args[:2] == ["pr", "list"] and "--label" not in args:
                          "baseRefName": it.get("base_ref", "main"), "headRefOid": it.get("head_sha", "abc"),
                          "headRepository": {"name": it.get("head_repo", REPO).split("/")[-1]},
                          "headRepositoryOwner": {"login": it.get("head_repo", REPO).split("/")[0]}})
+    emit(rows)
+# gh issue list --state closed：§ 4 的关闭清扫入口（GitHub#736）。只在 state.json 里 list_closed 为真时给真数据，
+# 其余用例照旧拿到空列表、不跑清扫
+if args[:2] == ["issue", "list"] and st.get("list_closed") and "--state" in args \
+        and args[args.index("--state") + 1] == "closed":
+    rows = [{"number": it["number"]} for it in sorted(items.values(), key=lambda x: -x["number"])
+            if not it.get("is_pr") and it.get("state") == "closed"]
     emit(rows)
 if args and args[0] in ("pr", "issue"):
     emit([])

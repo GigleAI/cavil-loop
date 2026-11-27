@@ -1220,7 +1220,28 @@ $old_mark" '[{"user":"worker-bot","body":$b}]')"
         chk "旧通知接管（旧评论 $sent）· 等待标签挂上、唤醒一次（#52 是夹具里关闭未合并那条）、出队" "$(has_wait 50)/$(hook_numbers)/$(queue_len)" "1/50:issue 52:issue/0"
     done
 }
+# 维护者手动合并、issue 随之以「已完成」关闭（GitHub#736）：同一轮里合并结果通知先挂上等待标签、叫醒机器人，
+# 紧接着的关闭清扫（§ 4）打 Done。清扫曾把刚挂上的等待标签摘掉，机器人来拉取时这一条已经不在。
+# 夹具照真 GitHub 的形状：issue 有关闭原因、挂着的标签有「加上」事件、有关闭事件；关闭清扫入口打开（list_closed）
+done_manual_close_suite() {   # <scripts 副本>
+    local S="$1"
+    done_env on
+    set_field "$DW" 50 state_reason '"completed"'
+    set_field "$DW" 50 events '[{"event":"labeled","actor":"maintainer","label":"pending/PR"},{"event":"closed","actor":"maintainer"}]'
+    jq '.list_closed = true' "$DW/gh/state.json" > "$DW/gh/s.tmp" && mv "$DW/gh/s.tmp" "$DW/gh/state.json"
+    done_tick "$S"
+    chk "手动合并关闭 · 同一轮：结果评论发了" "$(my_marks 50)" "pr=60 kind=merged"
+    chk "手动合并关闭 · 同一轮：webhook 叫过来源 issue" "$(hook_numbers | tr ' ' '\n' | grep -cx '50:issue')" 1
+    chk "手动合并关闭 · 同一轮：等待标签和 Done 都在" "$(labels_of "$DW" 50 | tr ',' '\n' | grep -cxE 'waiting/bot|Done')" 2
+    chk "手动合并关闭 · 到达性：关闭清扫这一轮确实处理了它" "$(grep -c 'auto-cleanup closed issue #50 → cleanup-issue.sh' "$DW/state/poll.log")" 1
+    chk "手动合并关闭 · 关闭清扫出队" "$(jq -r '(.closed_done_queue // {}) | has("50")' "$DW/state/state.json")" false
+    chk "手动合并关闭 · 没有摘等待标签" "$(grep -cE '^WRITE DELETE .*/issues/50/labels/waiting%2Fbot' "$DW/gh/calls.log")" 0
+    hook_reset
+    done_tick "$S"
+    chk "手动合并关闭 · 下一轮：等待标签仍在" "$(has_wait 50)" 1
+}
 done_suite "$NEW"; done_retry_suite "$NEW"; done_rerun_suite "$NEW"; actor_suite "$NEW"; done_legacy_suite "$NEW"
+done_manual_close_suite "$NEW"
 # 地址里带 [1-2] / {a,b}（复审 #101 第 1 轮）：curl 默认把它们展开成多个请求。叫醒和结果通知
 # 两条真实路径各跑一遍：恰好 1 次、路径和查询原样、记 HTTP 200
 GLOB_QS='?filter[1-2]=x&pick={a,b}'
