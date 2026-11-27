@@ -26,13 +26,16 @@ cavil_write_token() {
     printf '%s' "${WRITE_GH_TOKEN:-${GH_TOKEN:-}}"
 }
 
-# 本机 gh 已登录的那把令牌（维护者在 GitHub#739 选的：项目没配令牌时借用它，而不是拒绝派工）。
-# 去掉 GH_TOKEN 再问：走到这里时它本来就是空的，空值留在环境里时 gh 的行为没有文档保证。
-# 拿不到（没装 gh、没登录、读失败、输出为空）→ 返回 1，不输出任何东西。
+# 本机 gh **保存的**登录（`gh auth login` 存下的那份）的令牌——维护者在 GitHub#739 选的：项目没配令牌时
+# 借用它，而不是拒绝派工。gh 认的四个环境令牌（`gh help environment`：GH_TOKEN、GITHUB_TOKEN 和两个
+# 企业版的）都排在保存的登录前面，全部去掉再问：否则环境里临时放的一把会被当成「本机登录」交给
+# worker，派工、装完检查、状态三处口径就分了叉。GH_CONFIG_DIR 不去掉——它就是「保存在哪」。
+# 拿不到（没装 gh、没保存登录、读失败、输出为空）→ 返回 1，不输出任何东西。
 cavil_gh_login_token() {
     local t
     command -v gh >/dev/null 2>&1 || return 1
-    t="$(env -u GH_TOKEN gh auth token --hostname github.com 2>/dev/null)" || return 1
+    t="$(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN \
+        gh auth token --hostname github.com 2>/dev/null)" || return 1
     [ -n "$t" ] || return 1
     printf '%s' "$t"
 }
@@ -70,8 +73,12 @@ cavil_secret_resolve() {
 #
 # 每个变量输出一行：「ok <变量>」「login <变量>」（借用本机 gh 登录）「missing <变量>」，返回 0。
 # 任一文件读不了 → 只输出「unreadable」，返回 2（读不到 ≠ 缺，也 ≠ 齐）。不输出任何值。
-cavil_secret_env_check() {   # <启动配置文件> <项目配置>
-    local env_file="$1" config="$2" lib
+# 第三个参数 who：借用登录的那一行后面再加上账号名（`login GH_TOKEN <账号>`，问不到写 `?`）。账号是
+# 拿**解析出来、真正要交给 worker 的那把令牌**去问的，和上面同一个干净环境、同一个 gh、固定
+# github.com——不在调用方的环境里另猜（调用终端可能带着另一个人的令牌）。令牌经环境变量交给 gh，
+# 不进命令行。要联网，所以只有 setup.sh 用；状态脚本不带它。
+cavil_secret_env_check() {   # <启动配置文件> <项目配置> [who]
+    local env_file="$1" config="$2" who="${3:-}" lib
     lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_secret_env.sh"
     if [ ! -r "$env_file" ] || [ ! -r "$config" ]; then
         echo unreadable
@@ -88,11 +95,17 @@ cavil_secret_env_check() {   # <启动配置文件> <项目配置>
         cavil_secret_vars | while read -r v; do
             [ -n "$v" ] || continue
             if cavil_secret_resolve "$v"; then
-                if [ "$CAVIL_SECRET_SRC" = login ]; then echo "login $v"; else echo "ok $v"; fi
+                if [ "$CAVIL_SECRET_SRC" != login ]; then echo "ok $v"
+                elif [ "$4" != who ]; then echo "login $v"
+                else
+                    a="$(GH_TOKEN="$CAVIL_SECRET_VAL" gh api --hostname github.com user --jq .login 2>/dev/null)" || a=""
+                    case "$a" in ""|*[!A-Za-z0-9-]*) a="?" ;; esac
+                    echo "login $v $a"
+                fi
             else
                 echo "missing $v"
             fi
         done
         exit 0
-    ' _ "$env_file" "$config" "$lib"
+    ' _ "$env_file" "$config" "$lib" "$who"
 }

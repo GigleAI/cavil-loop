@@ -58,14 +58,16 @@ exec 8>&2
 source "$REPO_DIR/scripts/_lib.sh"
 exec 2>&8 8>&-
 set +e
-# 假 gh：只回答「本机登录的令牌」（GitHub#739：GH_TOKEN 两把都没配时借用它）。FAKE_GH_LOGIN 有值 =
-# 已登录，没有 = 没登录。放在 PATH 最前面（_lib.sh 会在前面补上 ~/.local/bin 等，所以 source 之后再放），
-# 本机真的 gh 登录态进不来。
+# 假 gh：只回答「auth token」（GitHub#739：GH_TOKEN 两把都没配时借用本机保存的登录）。照真 gh 的先后：
+# GH_TOKEN → GITHUB_TOKEN → 保存的登录（FAKE_GH_LOGIN 有值 = 已保存）。放在 PATH 最前面（_lib.sh 会在
+# 前面补上 ~/.local/bin 等，所以 source 之后再放），本机真的 gh 登录态进不来。
 mkdir -p "$SANDBOX/bin"
 cat > "$SANDBOX/bin/gh" <<'GH'
 #!/usr/bin/env bash
-if [ "${1:-} ${2:-}" = "auth token" ] && [ -n "${FAKE_GH_LOGIN:-}" ]; then printf '%s\n' "$FAKE_GH_LOGIN"; exit 0; fi
-exit 1
+[ "${1:-} ${2:-}" = "auth token" ] || exit 1
+t="${GH_TOKEN:-${GITHUB_TOKEN:-${FAKE_GH_LOGIN:-}}}"
+[ -n "$t" ] || exit 1
+printf '%s\n' "$t"
 GH
 chmod +x "$SANDBOX/bin/gh"
 PATH="$SANDBOX/bin:$PATH"
@@ -225,6 +227,17 @@ rm -f "$sf"; : > "$LOG_FILE"
 ( export FAKE_GH_LOGIN="$LOGIN_TOKEN"; require_secret_env >/dev/null 2>&1 )
 chk "配了 GH_TOKEN → 用配的那把"     "$(cat "$sf" 2>/dev/null)" "$FAKE_TOKEN"
 chk "配了 GH_TOKEN → 不记借用"       "$(grep -c '借用' "$LOG_FILE")" "0"
+# 没保存登录、环境里只有 GITHUB_TOKEN：那不是「本机登录」，不借用、照样拒绝（复审第 1 轮问题 2：以前只
+# 去掉 GH_TOKEN，gh 把 GITHUB_TOKEN 当成令牌返回，环境里的这一把被当成本机登录交给了 worker）
+rm -f "$sf"
+( unset GH_TOKEN WRITE_GH_TOKEN FAKE_GH_LOGIN; export GITHUB_TOKEN=ghp_ENVONLYENVONLYENVONLYENVONLY3333
+  require_secret_env >/dev/null 2>&1 )
+chk "只有 GITHUB_TOKEN、没保存登录 → 拒绝派工、不落文件" "$?:$([ -e "$sf" ] && echo file || echo nofile)" "1:nofile"
+# 保存了登录、环境里同时有 GITHUB_TOKEN：交给 worker 的是保存的那把
+rm -f "$sf"
+( unset GH_TOKEN WRITE_GH_TOKEN; export FAKE_GH_LOGIN="$LOGIN_TOKEN" GITHUB_TOKEN=ghp_ENVONLYENVONLYENVONLYENVONLY3333
+  require_secret_env >/dev/null 2>&1 )
+chk "保存了登录 + 环境里有 GITHUB_TOKEN → 用保存的那把" "$(cat "$sf" 2>/dev/null)" "$LOGIN_TOKEN"
 
 echo
 echo "通过 $pass / 失败 $fail"

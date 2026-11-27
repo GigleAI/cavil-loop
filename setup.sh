@@ -361,13 +361,14 @@ fi
 # 只说有没有、缺什么、补到哪，不读出、不打印任何值；不提问（桌面客户端无人值守地跑本脚本）。
 echo
 echo "── worker 令牌检查 ──"
-secret_check="$(cavil_secret_env_check "$env_file" "$config")" || true
-while read -r st var; do
+secret_check="$(cavil_secret_env_check "$env_file" "$config" who)" || true
+while read -r st var login_name; do
     case "$st" in
         ok) echo "  ✓ $var 已配置" ;;
         login)
-            login_name="$(env -u GH_TOKEN gh api user --jq .login 2>/dev/null || true)"
-            echo "  · $var 没配：派工时借用本机 gh 登录的令牌（账号 ${login_name:-读不出}），worker 会以这个账号推分支、发评论"
+            # 账号是拿后台真正会交给 worker 的那把令牌问出来的（同一个检查里），不在本终端的环境里另猜
+            [ "${login_name:-?}" != "?" ] || login_name="读不出"
+            echo "  · $var 没配：派工时借用本机 gh 登录的令牌（账号 ${login_name}），worker 会以这个账号推分支、发评论"
             echo "    要换成专用账号：在 $env_file 加一行 ${var}=<令牌>"
             ;;
         missing)

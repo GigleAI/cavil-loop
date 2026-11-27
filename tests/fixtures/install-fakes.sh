@@ -4,9 +4,11 @@
 # install_fakes <目录>：在 <目录> 下写出
 #   uname      -s 报 $FAKE_UNAME（默认 Linux），其余参数交给真 uname
 #   gh         auth status 的退出码 = $FAKE_GH_AUTH（默认 0）；repo view 报 $FAKE_GH_REPO（默认 acme/widget）；
-#              建标签、列 issue / PR 都成功、返回空；auth token：有 $HOME/.fake-gh-login 就打印它（= 本机已登录，
-#              内容是那把令牌），没有就退出 1；api user：打印 $HOME/.fake-gh-user（GitHub#739 的借用登录）。
-#              登录态放在 HOME 下而不是环境变量里：被测的检查在只带 HOME 的干净环境里问 gh
+#              建标签、列 issue / PR 都成功、返回空。令牌按真 gh 的先后（`gh help environment`）：
+#              GH_TOKEN → GITHUB_TOKEN → 保存的登录 $HOME/.fake-gh-login（内容是那把令牌）。auth token 打印
+#              这样选出的令牌，一个都没有就退出 1；api user 按 $HOME/.fake-gh-users（每行「令牌 账号」）报
+#              这把令牌是谁，查不到退出 1（GitHub#739 的借用登录）。保存的登录放在 HOME 下：被测的检查在只带
+#              HOME 的干净环境里问 gh，环境变量带不进去
 #   systemctl  有状态：$FAKE_SD/<unit>.active / .enabled。FAKE_SD_MODE=fail → 连不上（stderr + 退出 1）；
 #              =empty → 什么都不输出、退出 0；FAKE_SD_STUCK=1 → disable / stop 不生效
 #   launchctl  有状态：$FAKE_LD/<label>.path（加载的是哪个文件）+ .content（加载那一刻的内容）。
@@ -29,8 +31,13 @@ EOF
 #!/usr/bin/env bash
 case "$*" in
     "auth status"*) exit "${FAKE_GH_AUTH:-0}" ;;
-    "auth token"*) [ -f "$HOME/.fake-gh-login" ] || exit 1; cat "$HOME/.fake-gh-login"; exit 0 ;;
-    "api user"*) [ -f "$HOME/.fake-gh-user" ] || exit 1; cat "$HOME/.fake-gh-user"; exit 0 ;;
+    "auth token"*|"api "*"user"*)
+        tok="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+        [ -n "$tok" ] || tok="$(cat "$HOME/.fake-gh-login" 2>/dev/null)"
+        [ -n "$tok" ] || exit 1
+        case "$*" in "auth token"*) printf '%s\n' "$tok"; exit 0 ;; esac
+        u="$(awk -v t="$tok" '$1 == t { print $2 }' "$HOME/.fake-gh-users" 2>/dev/null)"
+        [ -n "$u" ] || exit 1; echo "$u"; exit 0 ;;
     "label create"*) exit 0 ;;
     "repo view"*) echo "${FAKE_GH_REPO:-acme/widget}"; exit 0 ;;
     *"pr list"*|*"issue list"*) echo ""; exit 0 ;;

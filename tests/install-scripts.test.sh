@@ -524,15 +524,29 @@ for os in Linux Darwin; do
     sed -i '/^GH_TOKEN=/d' "$ENVF"; echo 'WRITE_GH_TOKEN="ghp_writewritewritewritewrite000000000"' >> "$HOST/cavil-loop.config"
     chk "$os / 项目配置里有写令牌：状态 ok" "$(secret_of "$(status "$os" claude)")" '{"state":"ok","missing":[],"borrowed":[]}'
     sed -i '/^WRITE_GH_TOKEN=/d' "$HOST/cavil-loop.config"
-    # 本机 gh 已登录：借用
+    # 没有保存的登录，后台环境里只临时放了一把 GITHUB_TOKEN：不算「本机登录」，照样是缺（复审第 1 轮问题 2）
     mkdir -p "$H/.local/bin"; cp "$FK/bin/gh" "$H/.local/bin/gh"
-    printf 'ghp_loginloginloginloginlogin0000000000' > "$H/.fake-gh-login"; printf 'octo-human' > "$H/.fake-gh-user"
+    printf 'ghp_loginloginloginloginlogin0000000000 octo-human\nghp_callercallercallercallercaller000000 caller-account\nghp_envtokenenvtokenenvtokenenvtok0000 env-account\n' > "$H/.fake-gh-users"
+    echo "GITHUB_TOKEN=ghp_envtokenenvtokenenvtokenenvtok0000" >> "$ENVF"
     run_setup "$SKILL" "$os" --yes; out="$(cat "$SANDBOX/setup.out")"
-    chk_has "$os / 本机已登录：setup 说借用哪个账号" "$out" "派工时借用本机 gh 登录的令牌（账号 octo-human）"
+    chk_has "$os / 只有环境里的 GITHUB_TOKEN、没保存登录：setup 报缺" "$out" "worker 需要 GH_TOKEN，后台启动时拿不到，本机 gh 也没登录"
+    chk_lacks "$os / 只有环境里的 GITHUB_TOKEN：不说借用" "$out" "借用本机 gh 登录"
+    chk "$os / 只有环境里的 GITHUB_TOKEN：状态 missing" "$(secret_of "$(status "$os" claude)")" '{"state":"missing","missing":["GH_TOKEN"],"borrowed":[]}'
+    # 本机 gh 保存了登录：借用。后台环境里的 GITHUB_TOKEN 还在、本终端又带着另一个人的令牌——
+    # setup 报的账号必须是真正交给 worker 的那把（保存的登录 = octo-human），不是终端的（复审第 1 轮问题 1）
+    printf 'ghp_loginloginloginloginlogin0000000000' > "$H/.fake-gh-login"
+    GITHUB_TOKEN=ghp_callercallercallercallercaller000000 run_setup "$SKILL" "$os" --yes; out="$(cat "$SANDBOX/setup.out")"
+    chk_has "$os / 本机已登录：setup 报的是后台交给 worker 的账号" "$out" "派工时借用本机 gh 登录的令牌（账号 octo-human）"
+    chk_lacks "$os / 本机已登录：不报本终端的账号" "$out" "caller-account"
+    chk_lacks "$os / 本机已登录：不报后台环境令牌的账号" "$out" "env-account"
     chk_lacks "$os / 本机已登录：没有缺令牌提醒" "$out" "worker 需要"
     chk_lacks "$os / 本机已登录：输出不带令牌值" "$out" "ghp_"
     chk "$os / 本机已登录：状态 ok + borrowed" "$(secret_of "$(status "$os" claude)")" '{"state":"ok","missing":[],"borrowed":["GH_TOKEN"]}'
-    rm -f "$H/.fake-gh-login" "$H/.fake-gh-user"
+    # 账号问不到（这把令牌查不出是谁）：照样借用，账号写「读不出」，不拿别的身份顶上
+    sed -i '/octo-human/d' "$H/.fake-gh-users"
+    run_setup "$SKILL" "$os" --yes
+    chk_has "$os / 账号问不到：写读不出" "$(cat "$SANDBOX/setup.out")" "派工时借用本机 gh 登录的令牌（账号 读不出）"
+    rm -f "$H/.fake-gh-login" "$H/.fake-gh-users"; sed -i '/^GITHUB_TOKEN=/d' "$ENVF"
     # 读不了项目配置：unknown，不当成缺也不当成齐
     chmod 000 "$HOST/cavil-loop.config"
     chk "$os / 项目配置读不了：状态 unknown" "$(secret_of "$(status "$os" claude)")" '{"state":"unknown","missing":null,"borrowed":null}'
