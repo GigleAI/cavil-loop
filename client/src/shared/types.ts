@@ -670,6 +670,9 @@ export interface ViewSettings {
   codeWrap: boolean;
   /** GitHub#464: per view, whether closed / merged items are listed too (all false by default) */
   showClosed: ShowClosed;
+  /** GitHub#741: the 「显示稍后处理」 switch, one for every layout — false = items carrying their repository's parked
+   *  label are left out (unless the search names that label itself). true by default; a view saved before it had none. */
+  showParked: boolean;
 }
 
 export type LoginStatus = 'idle' | 'requesting' | 'waiting' | 'denied' | 'expired' | 'error';

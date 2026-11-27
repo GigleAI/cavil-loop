@@ -579,7 +579,7 @@ export function SettingsView({
                 <label>
                   <span className="label-head">
                     {t('暂缓')}
-                    <InfoTip testid="hand-back-later-help" textTestid="hand-back-later-hint">{t('顶栏「稍后处理」；搜索框空着时列表里不显示带它的条目；标签下拉里排在等人处理之后；留空 = 三样都不做')}</InfoTip>
+                    <InfoTip testid="hand-back-later-help" textTestid="hand-back-later-hint">{t('顶栏「稍后处理」；「显示稍后处理」关掉时列表里不显示带它的条目；标签下拉里排在等人处理之后；留空 = 三样都不做')}</InfoTip>
                   </span>
                   <input data-testid="hand-back-later" defaultValue={state.handBack.later} onBlur={(e) => api().setHandBack({ later: e.target.value })} />
                 </label>
