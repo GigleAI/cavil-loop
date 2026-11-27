@@ -73,12 +73,15 @@ BRANCH_PREFIX="feature/issue-"
 SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
-WORKER_AGENT_DEFAULT="$agent"
+WORKER_AGENT="$agent"
 CONF
     env CODING_AGENT_CONFIG="$d/config" PATH="$SANDBOX/bin:$PATH" FAKE_OUT="$SANDBOX/out" \
         bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; shift; set +e; "$@"' _ "$REPO_DIR" "$@"
 }
 LIBP() { printf '%s/lib-%s/state/prompts' "$SANDBOX" "$1"; }
+# claude 每次起会话给提示词末尾附一行一次性的启动标记（GitHub#744：self-heal 靠它认「本次启动开工了」），
+# codex 只在起全新会话、回捞要用时由 agent_session_plan 附。去掉标记行再比对原文：
+untag() { sed '/^<!-- coding-agent-launch: [0-9a-f-]\{36\} -->$/d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; }
 
 echo "── 0. 本机确实有这个上限（不然下面「起得来」证明不了什么）──"
 mkdir -p "$(LIBP claude)"
@@ -137,16 +140,26 @@ for agent in claude codex; do
         "$(lib_run "$agent" agent_prompt_argv_used "$P/1-pr-2.md")" "$P/1-pr-2.md"
     rm -f "$SANDBOX/out/last"
     env PATH="$SANDBOX/bin:$PATH" FAKE_OUT="$SANDBOX/out" bash -c "$cmd"
-    chk "$agent：程序收到的是原提示词" "$(cat "$SANDBOX/out/last")" "$(printf '小提示词\n第二行')"
+    chk "$agent：程序收到的是原提示词（去掉启动标记）" "$(untag < "$SANDBOX/out/last")" "$(printf '小提示词\n第二行')"
+    if [ "$agent" = claude ]; then
+        yes_ "claude：提示词带上了本次启动的标记" grep -qE '^<!-- coding-agent-launch: [0-9a-f-]{36} -->$' "$SANDBOX/out/last"
+    else
+        no_ "codex：拼命令时不另附启动标记" grep -q 'coding-agent-launch' "$SANDBOX/out/last"
+    fi
 done
 
 echo "── 2b. 上限正好等于提示词大小：照旧整份传 ──"
+# 比的是附上启动标记之后的大小（标记行固定 68 字节：换行 + 「<!-- coding-agent-launch: 」+ 36 位 id + 「 -->」+ 换行）
 P="$(LIBP claude)"
-head -c 1000 /dev/zero | tr '\0' 'a' > "$P/5-new.md"
+p1000() { head -c 932 /dev/zero | tr '\0' 'a' > "$P/5-new.md"; }
+p1000
 cmd="$(CAVIL_PROMPT_ARGV_MAX=1000 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
+chk "附上标记后正好 1000 字节" "$(wc -c < "$P/5-new.md" | tr -d ' ')" 1000
 yes_ "1000 字节、上限 1000：读原文件" grep -qF "\"\$(cat $P/5-new.md)\"" <<<"$cmd"
+p1000
 cmd="$(CAVIL_PROMPT_ARGV_MAX=999 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
 yes_ "1000 字节、上限 999：读短指令" grep -qF "$P/5-new.md.argv.md" <<<"$cmd"
+p1000
 cmd="$(CAVIL_PROMPT_ARGV_MAX=999999 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
 yes_ "测试上限超出范围按真机上限算（1000 字节照旧整份传）" grep -qF "\"\$(cat $P/5-new.md)\"" <<<"$cmd"
 

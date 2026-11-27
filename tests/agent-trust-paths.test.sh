@@ -416,12 +416,15 @@ scenario() {
     write_config "$D/config" "$PROOT" "$D/wt" "$D/state" "$agent"
     WT="$D/wt/issue-$N"
     PANE="$D/pane"; DIE=""
-    # 屏幕内容一律用真机截屏：yes = 信任确认框；no = 正常界面；prose = 正常界面里对话引用了整段确认框文字
+    # 屏幕内容一律用真机截屏：yes = 信任确认框；no = 正常界面；prose = 正常界面里对话引用了整段确认框文字；
+    # bypass = 项目带跳过权限确认的参数、屏幕停在 bypass 模式确认框；bpok = 同样的参数、屏幕正常（GitHub#744）
     case "$dialog" in
-        yes)   cp "$FIX/$agent-trust.txt" "$PANE" ;;
-        prose) prose_screen "$agent" quote-full > "$PANE" ;;
-        *)     cp "$FIX/$agent-normal.txt" "$PANE" ;;
+        yes)    cp "$FIX/$agent-trust.txt" "$PANE" ;;
+        prose)  prose_screen "$agent" quote-full > "$PANE" ;;
+        bypass) cp "$FIX/claude-bypass-modal.txt" "$PANE" ;;
+        *)      cp "$FIX/$agent-normal.txt" "$PANE" ;;
     esac
+    case "$dialog" in bypass|bpok) echo 'CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"' >> "$D/config" ;; esac
     case "$entry" in
         new)  run_dispatch "$R" "$D" dispatch-new-issue.sh "$N" ;;
         cmtB|cmtR|prB)
@@ -458,7 +461,31 @@ scenario() {
     done
     [ "$okall" = yes ] && echo "PASS disp·$name·每次起会话那一刻已信任 $(basename "$key")" \
         || echo "FAIL disp·$name·每次起会话那一刻已信任 $(basename "$key") :: 快照里没有 $key"
-    if [ "$dialog" = yes ]; then
+    if [ "$dialog" = bypass ] || [ "$dialog" = bpok ]; then
+        # 每次起会话的命令都在项目参数后面附了临时设置，设置文件那一刻已经写好、只含「已接受」那一项
+        local sf okset=yes
+        for i in $(seq 1 "$launches"); do
+            sf="$(grep -o -- '--dangerously-skip-permissions --settings [^ ]*' "$D/tmux/snap.$i/cmd" | awk '{print $3}')"
+            [ -n "$sf" ] && [ "$(jq -c . "$sf" 2>/dev/null)" = '{"skipDangerousModePermissionPrompt":true}' ] || okset=no
+        done
+        [ "$okset" = yes ] && echo "PASS disp·$name·每次起会话都附了「已接受 bypass 模式」的临时设置" \
+            || echo "FAIL disp·$name·每次起会话都附了「已接受 bypass 模式」的临时设置 :: $(cat "$D/tmux/snap.1/cmd" 2>/dev/null)"
+        [ ! -e "$H/.claude/settings.json" ] && echo "PASS disp·$name·账号的设置文件没被写" \
+            || echo "FAIL disp·$name·账号的设置文件没被写 :: $(cat "$H/.claude/settings.json")"
+    fi
+    if [ "$dialog" = bypass ]; then
+        if grep -q "issues/$N/labels.*labels\[\]=pending/human" "$D/gh.log" && grep -q "Bypass Permissions mode" "$D/gh.log" \
+           && grep -q "trusttest-issue$N" "$D/tmux/killed" 2>/dev/null && [ "$(sort "$D/items/$N" 2>/dev/null | tr '\n' ,)" = "pending/human," ]; then
+            echo "PASS disp·$name·卡在 bypass 框：杀会话、留言说的是 bypass 模式、转 pending/human"
+        else
+            echo "FAIL disp·$name·卡在 bypass 框：杀会话、留言说的是 bypass 模式、转 pending/human :: killed=$(tr "\n" " " < "$D/tmux/killed" 2>/dev/null)；标签=$(tr '\n' , < "$D/items/$N" 2>/dev/null)"
+        fi
+        grep -q "bypass 模式（跳过权限确认）确认框" "$D/state/poll.log" 2>/dev/null && ! grep -q "目录信任确认框" "$D/state/poll.log" \
+            && echo "PASS disp·$name·poll.log 写明是 bypass 框、不说成目录信任" \
+            || echo "FAIL disp·$name·poll.log 写明是 bypass 框、不说成目录信任 :: $(grep '确认框' "$D/state/poll.log" | tail -2 | tr '\n' '|')"
+        [ ! -e "$D/state/selfheal/$N.launch" ] && echo "PASS disp·$name·没起成：不记本次启动" \
+            || echo "FAIL disp·$name·没起成：不记本次启动 :: $(cat "$D/state/selfheal/$N.launch")"
+    elif [ "$dialog" = yes ]; then
         local num_lbl="issues/$N/labels"
         # 起会话之前已经认领（GitHub#700），转人工时摘掉 doing/agent：最后只剩 pending/human
         if grep -q "$num_lbl.*labels\[\]=pending/human" "$D/gh.log" && grep -q "issues/$N/comments" "$D/gh.log" \
@@ -473,6 +500,16 @@ scenario() {
         grep -q "labels\[\]=doing/agent" "$D/gh.log" && ! grep -q "labels\[\]=pending/human" "$D/gh.log" \
             && echo "PASS disp·$name·没有确认框：照常翻 doing/agent" \
             || { local calls; calls="$(tr '\n' '|' < "$D/gh.log" 2>/dev/null)"; echo "FAIL disp·$name·没有确认框：照常翻 doing/agent :: ${calls:0:300}"; }
+        if [ "$agent" = claude ]; then
+            # 起成了：记下本次启动的会话 id 和提示词里最后那个一次性标记（self-heal 凭它判「开工了没有」）
+            local rec ptag pfile
+            rec="$(jq -r '[.id, .tag] | join(" ")' "$D/state/selfheal/$N.launch" 2>/dev/null)"
+            pfile="$(grep -o '"$(cat [^)]*)"' "$D/tmux/snap.$launches/cmd" | sed 's/^"$(cat //; s/)"$//')"
+            ptag="$(grep -o 'coding-agent-launch: [0-9a-f-]*' "$pfile" 2>/dev/null | tail -1 | awk '{print $2}')"
+            [ -n "$ptag" ] && [ "${rec#* }" = "$ptag" ] && [ -n "${rec%% *}" ] \
+                && echo "PASS disp·$name·记下了本次启动（会话 id + 提示词里的标记）" \
+                || echo "FAIL disp·$name·记下了本次启动（会话 id + 提示词里的标记） :: 记录=[$rec] 提示词标记=[$ptag]"
+        fi
     fi
 }
 suite_dispatch() {   # <skill 目录> [只跑这些场景名的子串]
@@ -499,6 +536,11 @@ dlg-prB-codex sub codex prB yes
 dlg-prC-claude normal claude prC yes
 prose-new-claude normal claude new prose
 prose-prB-codex sub codex prB prose
+bp-new-claude normal claude new bypass
+bp-cmtR-claude sub claude cmtR bypass
+bpok-new-claude normal claude new bpok
+bpok-cmtR-claude sub claude cmtR bpok
+bpok-prC-claude normal claude prC bpok
 EOF
 }
 

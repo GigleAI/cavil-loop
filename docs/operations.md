@@ -125,7 +125,9 @@ POLL_DUE_SLACK_SECS=10
 # Counters live in $STATE_DIR/dispatch-fail/ and reset on success and on escalation.
 DISPATCH_MAX_RETRIES=3
 # Same idea for self-heal: how many times a worker whose tmux session died may
-# be auto-redispatched before the item goes to pending/human instead.
+# be auto-redispatched before the item goes to pending/human instead. A live
+# session only resets the count once the worker really started (claude: this
+# launch's prompt is in its conversation record), not while it sits on a dialog.
 SELFHEAL_MAX_RETRIES=3
 
 # An item on doing/agent whose session is alive but nobody is working: the agent
@@ -4597,6 +4599,33 @@ restart of the user manager also forgets it (an enabled timer then starts at log
 ### Worker session stuck on permission prompt
 
 Make sure `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"` is set in `cavil-loop.config`. Strongly recommended in trusted local environments.
+
+### Worker stuck on the "Bypass Permissions mode" warning
+
+With `--dangerously-skip-permissions` (or `--permission-mode bypassPermissions`) in `CLAUDE_EXTRA_FLAGS`, a Claude
+account that has never accepted that mode first shows `WARNING: Claude Code running in Bypass Permissions mode`, with
+"No, exit" preselected. The daemon adds a one-off setting to each launch command that says it was accepted
+(`--settings` pointing at a file next to the dispatch prompt; your own last `--settings` is merged into it), so the
+warning does not appear and the account's own settings are left alone. When it appears anyway, the daemon ends the
+session, comments and moves the item to `pending/human`; `poll.log` has a line
+`卡在 claude 的 bypass 模式（跳过权限确认）确认框上` and, just before it, the reason the setting was not added.
+The daemon never presses a key on this screen: both Esc and Enter make Claude exit.
+
+<details><summary>What to do</summary>
+
+1. Look in `poll.log` just before that line. "读不了项目启动参数里的设置文件" or "不是 JSON 对象": the `--settings` file
+   in your `CLAUDE_EXTRA_FLAGS` cannot be read (a relative path is taken from the worktree) or is not a JSON object —
+   fix it. "判断不了是否进 bypass 模式": the flags contain shell syntax the daemon does not interpret (`$VAR`, `*`, …) —
+   write them out literally. "写不出 bypass 临时设置文件": the state directory is not writable.
+2. If none of those lines is there, an administrator policy may disable the mode, or Claude changed how it decides.
+   As a way out, on the daemon machine, as the worker's user, go into the directory from the comment and run
+   `claude` with your `CLAUDE_EXTRA_FLAGS`, choose "Yes, I accept" and exit. That writes
+   `"skipDangerousModePermissionPrompt": true` into that account's `~/.claude/settings.json` (or the one under
+   `CLAUDE_CONFIG_DIR`), so the warning no longer appears for any start of Claude under that account, including
+   your own; deleting that line brings it back.
+3. Relabel the item `pending/agent`.
+
+</details>
 
 ### Worker stuck on a folder-trust dialog ("Quick safety check" / "Trust this folder?")
 

@@ -90,6 +90,20 @@
 #
 #   入口统一是 agent_trust_dirs <dir>...（本文件），setup.sh 和每次派工都走它。
 #
+#   ── 启动确认框：bypass 模式（可选，GitHub#744）──
+#   AGENT_BYPASS_PROMPT_TITLE / AGENT_BYPASS_PROMPT_OPTION_RE / AGENT_BYPASS_PROMPT_FOOTER_RE
+#     「跳过权限确认」模式的首次确认框，结构的含义同上面三样。配齐后：起完会话认出它 → 转人工
+#     （留言说的是 bypass 模式，不是目录信任）；往会话里送字之前认出它（或目录信任框）→ 一个键
+#     都不按（这类框的默认项是退出，Esc 和回车都会把 agent 关掉）。判定在 agent_launch_dialog_kind。
+#     怎么让框不出现是 driver 自己的事（claude：启动命令上附一份临时设置，见 claude.sh）。
+#
+#   ── 开工证据（可选，GitHub#744）──
+#   agent_session_has_tag <cwd> <session_id> <标记>
+#     返回 0 = 这条会话的记录里，有一条用户输入带着这个标记；1 = 没有（记录还不存在也算）；
+#     2 = 读不了。实现了它，daemon 每次起会话都给提示词附一个一次性标记（agent_session_tag_prompt），
+#     self-heal 只在本次标记出现后才清零连续失败计数（selfheal_alive）。续接时旧记录一直都在，
+#     所以不能拿「记录存在」当证据。不实现 = 会话活着就清零，和以前一样。
+#
 #   ── 用量上限（可选，GitHub#341）──
 #   包月订阅的 agent 有时段用量上限；撞上之后界面停在一条提示上，会话还活着、却不再干活。
 #   下面三样配齐，daemon 才会认这个 agent 的上限提示（认出后：这个 agent 停派到解除时间，
@@ -210,8 +224,17 @@ default_inject_prompt() {
     # （成功判据）；wait = compaction / stop hook 等分钟级中间态（别打扰）；
     # idle = 真闲着，可以清输入框然后灌 prompt。
     # 判据见 agent_screen_state（和卡住检测共用一份）。
+    # 抓不到画面 = gone（窗格已经不在，或 tmux 读不了）：之后一个键都不按，算没送进去（GitHub#744）。
+    # 以前抓屏失败时输出是空的、被当成 idle，再被当成「输入框已空 = 提交成功」——窗格早没了，
+    # poll.log 照样写「已发催促」。
     _inject_pane_state() {
-        agent_pane_tail "$sess" | agent_screen_state
+        local t
+        t="$(tmux capture-pane -t "$sess" -p 2>/dev/null)" || { echo gone; return 0; }
+        printf '%s\n' "$t" | tail -"${AGENT_BUSY_TAIL}" | agent_screen_state
+    }
+    _inject_gone() {
+        echo "[default_inject_prompt] $sess 抓不到画面（窗格可能已经不在）→ 没送进去" >&2
+        return 1
     }
 
     # 0. 若正处 compaction/stop-hook 中间态，先等它结束（默认最多 180s，可配）
@@ -222,6 +245,16 @@ default_inject_prompt() {
     [ "$waited" -gt 0 ] && \
         echo "[default_inject_prompt] $sess 处于 compaction/stop-hook，等了 ${waited}s" >&2
 
+    # 0b. 停在启动确认框（目录信任 / bypass 模式）上：这类框的默认项是退出，下面第 1 步的 Escape
+    #     和第 2 步的 Enter 都会把 agent 关掉（claude 2.1.330 实测：Esc 退出码 0，文字 + 回车退出码 1）。
+    #     一个键都不按，算没送进去；派工会退回重起程序，起会话后的识别负责转人工（GitHub#744）。
+    local _screen _dialog
+    _screen="$(tmux capture-pane -t "$sess" -p 2>/dev/null)" || { _inject_gone; return 1; }
+    if _dialog="$(printf '%s\n' "$_screen" | agent_launch_dialog_kind)"; then
+        echo "[default_inject_prompt] $sess 停在启动确认框（${_dialog}）上，Esc / 回车都会让它退出 → 一个键都不按，没送进去" >&2
+        return 1
+    fi
+
     # 1. 退出挡路的 modal —— Escape 是安全的（实测对 idle pane 是 no-op）
     local mtries=0
     while [ "$(_inject_pane_state)" = modal ] && [ "$mtries" -lt 3 ]; do
@@ -229,10 +262,12 @@ default_inject_prompt() {
         sleep 0.5
         mtries=$((mtries + 1))
     done
-    if [ "$(_inject_pane_state)" = modal ]; then
-        echo "[default_inject_prompt] $sess 卡在 modal，Escape ${mtries} 次退不出 → 放弃注入，交给 fallback resume" >&2
-        return 1
-    fi
+    case "$(_inject_pane_state)" in
+        modal)
+            echo "[default_inject_prompt] $sess 卡在 modal，Escape ${mtries} 次退不出 → 放弃注入，交给 fallback resume" >&2
+            return 1 ;;
+        gone) _inject_gone; return 1 ;;
+    esac
 
     # 1b. 清输入框 —— 仅当真 idle 时（busy 时按键会打断 thinking；wait 时会搅乱 compaction）
     #
@@ -254,20 +289,25 @@ default_inject_prompt() {
     # 2. paste prompt（bracketed paste 让 claude 当一段而不是逐行）
     buf=$(mktemp)
     cat "$prompt_file" > "$buf"
-    tmux load-buffer -t "$sess" "$buf"
+    if ! tmux load-buffer -t "$sess" "$buf" 2>/dev/null || ! tmux paste-buffer -t "$sess" -p 2>/dev/null; then
+        rm -f "$buf"
+        echo "[default_inject_prompt] $sess 粘贴失败（tmux 报错，窗格可能已经不在）→ 没送进去" >&2
+        return 1
+    fi
     rm -f "$buf"
-    tmux paste-buffer -t "$sess" -p
     sleep 0.5   # 给 claude UI 处理 paste 的时间，防 Enter 抢跑
 
     # paste 本身也可能把 UI 带进 modal（内容被当成命令 / 筛选词）。发 Enter 前必须再确认一次：
     # 在 rewind 选择器里 Enter 是「确认回滚」，敲下去可能把 worker 已经做完的工作抹掉。
-    if [ "$(_inject_pane_state)" = modal ]; then
-        echo "[default_inject_prompt] $sess paste 后进入 modal，拒绝发 Enter（避免误触 rewind）→ 交给 fallback resume" >&2
-        tmux send-keys -t "$sess" Escape
-        return 1
-    fi
+    case "$(_inject_pane_state)" in
+        modal)
+            echo "[default_inject_prompt] $sess paste 后进入 modal，拒绝发 Enter（避免误触 rewind）→ 交给 fallback resume" >&2
+            tmux send-keys -t "$sess" Escape
+            return 1 ;;
+        gone) _inject_gone; return 1 ;;
+    esac
 
-    tmux send-keys -t "$sess" Enter
+    tmux send-keys -t "$sess" Enter 2>/dev/null || { _inject_gone; return 1; }
 
     # 3. verify：busy = 成功；wait = submit 触发了 pre-turn compaction，干等
     #    （消化完排队的 prompt 会自动开跑）；idle = 没 submit 上，补 Enter 最多 5 次
@@ -278,6 +318,7 @@ default_inject_prompt() {
         state="$(_inject_pane_state)"
         case "$state" in
             busy) return 0 ;;
+            gone) _inject_gone; return 1 ;;
             wait)
                 waited=$((waited + 2))
                 if [ "$waited" -ge "$max_wait" ]; then
@@ -302,15 +343,16 @@ default_inject_prompt() {
                 #      grep -m1 会抓到那条回显（内容非空）而不是真正的输入框。
                 #   2. 空输入框的占位是 **U+00A0 不换行空格**（字节 c2 a0），不是普通空格。
                 #      C locale 下 [[:space:]] 不认它，不显式清掉就永远判「非空」。
-                local _box
-                _box=$(agent_pane_tail "$sess" | grep '❯' | tail -1 | sed 's/.*❯//; s/\xc2\xa0//g' | tr -d '[:space:]')
+                local _box _cap
+                _cap="$(tmux capture-pane -t "$sess" -p 2>/dev/null)" || { _inject_gone; return 1; }
+                _box=$(printf '%s\n' "$_cap" | tail -"${AGENT_BUSY_TAIL}" | grep '❯' | tail -1 | sed 's/.*❯//; s/\xc2\xa0//g' | tr -d '[:space:]')
                 if [ -z "$_box" ]; then
                     return 0
                 fi
                 retries=$((retries + 1))
                 [ "$retries" -ge 5 ] && break
                 # 没进 busy → prompt 还卡输入框 / Enter 被某个 modal 吃了 → 补 Enter
-                tmux send-keys -t "$sess" Enter
+                tmux send-keys -t "$sess" Enter 2>/dev/null || { _inject_gone; return 1; }
                 ;;
         esac
     done
@@ -349,6 +391,9 @@ source_driver() {
     # 目录信任是可选能力：上一个 driver 留下的实现会让新 driver 往别人的配置文件里写
     unset -f agent_trust_key agent_trust_paths 2>/dev/null || true
     AGENT_TRUST_PROMPT_TITLE=""; AGENT_TRUST_PROMPT_OPTION_RE=""; AGENT_TRUST_PROMPT_FOOTER_RE=""
+    # bypass 模式确认框、开工证据同理（GitHub#744）
+    AGENT_BYPASS_PROMPT_TITLE=""; AGENT_BYPASS_PROMPT_OPTION_RE=""; AGENT_BYPASS_PROMPT_FOOTER_RE=""
+    unset -f agent_session_has_tag 2>/dev/null || true
     # 用量上限同理（GitHub#341）：没声明的 driver 不能沿用上一个 driver 的规则和账号目录
     AGENT_USAGE_LIMIT=""
     unset -f agent_account_dir agent_session_record 2>/dev/null || true
@@ -488,14 +533,28 @@ trust_real_file() {
 # 返回 0 = 是。判定看结构（见文件头「目录信任」）：最后一个非空行是底栏、其上有一整行
 # 「信任」选项、标题也在这几行里。driver 没给齐三样 → 返回 1（不认、不误杀）。
 agent_trust_prompt_on_screen() {
-    [ -n "${AGENT_TRUST_PROMPT_TITLE:-}" ] && [ -n "${AGENT_TRUST_PROMPT_OPTION_RE:-}" ] \
-        && [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || { cat >/dev/null; return 1; }
+    _agent_dialog_on_screen "${AGENT_TRUST_PROMPT_TITLE:-}" "${AGENT_TRUST_PROMPT_OPTION_RE:-}" "${AGENT_TRUST_PROMPT_FOOTER_RE:-}"
+}
+# 同上，认的是 bypass 模式的首次确认框（GitHub#744，见文件头「启动确认框」）
+agent_bypass_prompt_on_screen() {
+    _agent_dialog_on_screen "${AGENT_BYPASS_PROMPT_TITLE:-}" "${AGENT_BYPASS_PROMPT_OPTION_RE:-}" "${AGENT_BYPASS_PROMPT_FOOTER_RE:-}"
+}
+_agent_dialog_on_screen() {   # <标题> <选项行正则> <底栏正则>；stdin = 整屏文字
+    [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || { cat >/dev/null; return 1; }
     local tail_lines last
     tail_lines="$(grep -v '^[[:space:]]*$' | tail -n "${AGENT_TRUST_PROMPT_TAIL:-25}")"
     last="$(printf '%s\n' "$tail_lines" | tail -n 1)"
-    printf '%s\n' "$last" | grep -qE "$AGENT_TRUST_PROMPT_FOOTER_RE" || return 1
-    printf '%s\n' "$tail_lines" | grep -qE "$AGENT_TRUST_PROMPT_OPTION_RE" || return 1
-    printf '%s\n' "$tail_lines" | tr -s '[:space:]' ' ' | grep -qF "$AGENT_TRUST_PROMPT_TITLE"
+    printf '%s\n' "$last" | grep -qE "$3" || return 1
+    printf '%s\n' "$tail_lines" | grep -qE "$2" || return 1
+    printf '%s\n' "$tail_lines" | tr -s '[:space:]' ' ' | grep -qF "$1"
+}
+# 屏幕上是不是一个启动确认框：stdout 写 trust（目录信任）/ bypass（bypass 模式），返回 0；都不是返回 1。
+agent_launch_dialog_kind() {   # stdin = 整屏文字
+    local screen
+    screen="$(cat)"
+    if printf '%s\n' "$screen" | agent_trust_prompt_on_screen; then echo trust; return 0; fi
+    if printf '%s\n' "$screen" | agent_bypass_prompt_on_screen; then echo bypass; return 0; fi
+    return 1
 }
 
 trust_fingerprint() {

@@ -183,7 +183,7 @@ self_heal_one() {
     local sess
     sess="$(tmux_session_name "$issue_n")"
     if session_alive "$sess"; then
-        selfheal_reset "$issue_n"   # 活着 → 清连续失败计数
+        selfheal_alive "$issue_n"   # 活着、且本次启动确实开工了 → 清连续失败计数（GitHub#744）
         return 0                    # session 真活着，不是 zombie
     fi
     # 卡住检测停住的条目（GitHub#339）：会话不在也不翻标签，等人恢复。功能关着时恒为否。
