@@ -11,7 +11,8 @@
 #   1. 识别规则：tests/fixtures/resume-failure/ 的真实截屏认对；用量上限、目录信任框的真实截屏都不认
 #   2. 续接 3 秒后才退出、屏幕上是「找不到这条对话」→ 下一轮自动恢复退役那条 id（进退役名单、登记清空），
 #      日志写原因；再派工开的是新对话（新 id）；会话日志里有那段报错和保存标记，令牌样式的字符串已换掉
-#   3. 不退役的两种：登记在两轮之间换成了别的 id；最后一屏不是这次启动的（记号对不上）——都照旧重试
+#   3. 不退役的：登记在两轮之间换成了别的 id；最后一屏不是这次启动的（记号对不上）；程序以 0 正常结束、
+#      屏幕最后一行恰好是那句报错——都照旧重试。退役名单写不进 / 登记删不掉 → 登记原样保留（归属不丢）
 #   4. 用完次数交人：认出原因时写原因和「已停用旧对话」；认不出时按保存结果写——存好 / 关了会话日志 /
 #      抓屏失败 / 去令牌失败（什么都不留）/ 写入日志失败 / 只有上一次启动的记录（结果不明）；评论里都没有屏幕原文
 #   5. 派工脚本（issue 评论、PR 评论两个入口）续接 2 秒内就退出：日志写认出的原因，照旧降级开新对话
@@ -58,8 +59,14 @@ chk "反例（用量上限、信任框的真实截屏，$negn 次）一个都不
 chk "到达性 · 反例确实读到了" "$([ "$negn" -ge 20 ] && echo yes)" yes
 chk "别的 agent 的规则不串：claude 的规则不认 codex 的报错" \
     "$(python3 "$REPO_DIR/scripts/resume_failure.py" claude < "$FIX/codex-session-missing.txt")" ""
-chk "报错在上文、最后 20 行里没有 → 不认" \
-    "$( { cat "$FIX/claude-session-missing.txt"; seq 1 25; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude)" ""
+chk "报错后面还有 3 行别的输出 → 不认" \
+    "$( { cat "$FIX/claude-session-missing.txt"; seq 1 3; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude)" ""
+chk "到达性 · 报错后面只有 2 行 → 仍认" \
+    "$( { cat "$FIX/claude-session-missing.txt"; seq 1 2; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude | cut -f1)" session-missing
+chk "引用在行中间（agent 在说明里提到那句报错）→ 不认" \
+    "$(printf '%s\n' '文档示例：{"type":"modelProviderNotConfigured"}' '任务完成，以上只是说明里引用的报错。' | python3 "$REPO_DIR/scripts/resume_failure.py" codex)" ""
+chk "引用在行中间（claude 那句）→ 不认" \
+    "$(sed 's/^/报错原文是：/' "$FIX/claude-session-missing.txt" | python3 "$REPO_DIR/scripts/resume_failure.py" claude)" ""
 
 CTL="$TMP/ctl"; mkdir -p "$CTL"
 NEXT_TMUX="$(command -v tmux)"   # 沙盒的 tmux 包装
@@ -77,6 +84,7 @@ printf '%s\n' "$TMP/__none__" >> "$CTL/hide"
 #   gone    续接时打出 claude 真实的「找不到这条对话」，等测试放行（$CTL/go）后以 1 退出——派工早已结束，
 #           等于「2 秒之后才退出」，不靠固定时长
 #   gone-now 续接时打出同一句，立刻以 1 退出（派工脚本的 2 秒检查看得到）；新开时一直睡
+#   gone0   续接时打出同一句，放行后以 0 退出（正常结束，屏幕最后一行恰好是那句）
 #   boom    打出一句认不出的报错和一个令牌样式的字符串，放行后以 1 退出
 #   ok-exit 放行后以 0 退出
 mkdir -p "$TMP/agentbin"
@@ -92,6 +100,7 @@ case "\$(cat "$CTL/mode" 2>/dev/null)" in
     gone) [ -n "\$res" ] || exec sleep 120; echo "No conversation found with session ID: \$res"; waitgo; exit 1 ;;
     gone-now) [ -n "\$res" ] || exec sleep 120; echo "No conversation found with session ID: \$res"; exit 1 ;;
     boom) echo "boom: unexpected failure near $TOKEN"; waitgo; exit 1 ;;
+    gone0) echo "No conversation found with session ID: \$res"; waitgo; exit 0 ;;
     ok-exit) waitgo; exit 0 ;;
 esac
 exec sleep 120
@@ -247,6 +256,38 @@ chk "登记没动" "$(reg)" "$OLD_ID"
 chk "退役名单是空的" "$(retired)" ""
 lacks "日志没有认出的原因" "$(plog)" "认出的原因"
 has "到达性 · 这一轮确实做了自动恢复" "$(plog)" "self-heal: issue #$N session=$SESS 不存在"
+
+echo "【3c】程序以 0 正常结束、屏幕最后一行恰好是那句报错 → 不退役、不说原因"
+setup exit0
+resume_and_die gone0
+has "到达性 · 那句话确实存进了最后一屏" "$(cat "$(xdir)/$SESS.screen")" "No conversation found with session ID: $OLD_ID"
+poll_round
+chk "登记没动" "$(reg)" "$OLD_ID"
+chk "退役名单是空的" "$(retired)" ""
+lacks "日志没有认出的原因" "$(plog)" "认出的原因"
+has "到达性 · 这一轮确实做了自动恢复（退出码 0）" "$(plog)" "不存在（退出码 0：程序自己正常结束了"
+
+echo "【3d】退役名单写不进 → 登记原样保留"
+setup retired-unwritable
+resume_and_die gone
+mkdir -p "$P/state/agent-sessions/$N.claude.worker.retired"   # 退役名单的位置被一个目录占着：追加写不进
+poll_round
+has "日志写明没能退役、登记保留" "$(plog)" "对话没能退役（退役名单写不进或登记删不掉，登记原样保留）"
+chk "登记还在" "$(reg)" "$OLD_ID"
+has "到达性 · 这一轮确实认出了原因" "$(plog)" "认出的原因：claude 找不到这条对话的记录）"
+chk "照旧送回派工标签" "$(plabels)" "pending/agent"
+
+echo "【3e】登记删不掉 → 不算退役"
+setup forget-fails
+resume_and_die gone
+: > "$P/state/agent-sessions/$N.claude.worker.retired"
+chmod 555 "$P/state/agent-sessions"   # 目录只读：名单（已有文件）还能追加，登记删不掉
+poll_round
+chmod 755 "$P/state/agent-sessions"
+has "日志写明没能退役" "$(plog)" "对话没能退役"
+chk "登记还在" "$(reg)" "$OLD_ID"
+chk "到达性 · 名单确实写进了" "$(retired)" "$OLD_ID"
+lacks "日志不说已退役" "$(plog)" "已退役这条对话"
 
 echo "【4】用完次数交人：评论按事实写"
 at_cap() { mkdir -p "$P/state/selfheal"; echo 9 > "$P/state/selfheal/$N"; }

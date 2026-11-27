@@ -12657,8 +12657,9 @@ agent_exit_forget() {   # <tmux_session>
 # 而且常常是 2 秒之后才退（派工脚本的「续接秒退就开新对话」只等 2 秒）。自动恢复以前只看到「会话不在」，
 # 每次都续同一条，用完次数交人，评论里只有一句退出码。
 #   · 认：worker 退出时 agent-exit-screen.sh 存下的最后一屏，交给 resume_failure.py（按真实截屏写的规则）
-#   · 退役：只在「这次启动是续接、最后一屏是这次启动的、认出是续不上、现在登记的仍是这次续的那条」四样齐时，
-#     用现有的 agent_session_retire；之后派工自然开新对话。哪一样读不到都不退役，照旧重试
+#   · 退役：只在「这次启动是续接、以非 0 退出、最后一屏是这次启动的、认出是续不上、现在登记的仍是这次续的那条」
+#     五样齐时，用 agent_session_retire_verified（名单写进并读回才删登记）；之后派工自然开新对话。
+#     哪一样读不到都不退役，照旧重试
 #   · 告诉人：交人评论只写固定句子（认出的原因，或最后一屏存没存下），从不贴屏幕原文
 # 全部只认带这次启动记号的记录（同 agent_exit_read：记号来自 <记录>.launch），上一次启动留下的一律当不知道。
 RESUME_FAILURE_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resume_failure.py"
@@ -12692,10 +12693,14 @@ agent_exit_saved_read() {   # <tmux_session> [期望记号]
     esac
 }
 
-# 认出「续不上」时输出「<类别>\t<原因>」，否则什么都不输出
+# 认出「续不上」时输出「<类别>\t<原因>」，否则什么都不输出。
+# 先要这次启动确实以非 0 退出（同一记号的退出码记录）：正常结束、读不到退出码的，屏幕上有什么都不算——
+# 屏幕最后几行可能只是 agent 在引用那句报错（PR #740 复审第 1 轮问题 2）
 agent_exit_resume_verdict() {   # <agent> <tmux_session> [期望记号]
-    local agent="$1" screen
+    local agent="$1" screen code
     shift
+    code="$(agent_exit_read "$@")"
+    [[ "$code" =~ ^[0-9]+$ ]] && [ "$code" != 0 ] || return 0
     screen="$(agent_exit_screen_read "$@")" || return 0
     [ -n "$screen" ] || return 0
     printf '%s\n' "$screen" | python3 "$RESUME_FAILURE_SCRIPT" "$agent" 2>/dev/null | head -n 1
@@ -12727,14 +12732,25 @@ agent_exit_resume_heal() {   # <tmux_session>
         log "  #$num 的 $role 对话登记已不是这次续的那条（或读不到），不退役"
         return 0
     fi
-    agent_session_retire "$num" "$agent" "$role" 2>/dev/null || true
-    # 退役 = 进了退役名单、登记里没了；两样都核对过才算
-    if [ -z "$(agent_session_id_get "$num" "$agent" "$role" 2>/dev/null)" ] && \
-       grep -qxF -- "$id" "$(agent_session_retired_file "$num" "$agent" "$role")" 2>/dev/null; then
+    if agent_session_retire_verified "$num" "$agent" "$role" "$id"; then
         RESUME_FAIL_RETIRED=1
     else
-        log "  ⚠️ #$num 的 $role 对话没能退役（退役名单写不进或登记删不掉），照旧重试"
+        log "  ⚠️ #$num 的 $role 对话没能退役（退役名单写不进或登记删不掉，登记原样保留），照旧重试"
     fi
+}
+
+# 和 agent_session_retire 同一件事，但每一步都核对：先追加进退役名单并读回确认，确认了才删当前登记，
+# 删完再读一次。任何一步不成就停在那里返回 1——名单没写进时登记原样保留，这条对话的归属不会丢
+# （PR #740 复审第 1 轮问题 1）。不直接改 agent_session_retire：它的两个调用方在开着 set -e 的
+# 派工路上，返回非 0 会让派工中途退出，那是另一件事
+agent_session_retire_verified() {   # <num> <agent> <role> <id>
+    local rf
+    rf="$(agent_session_retired_file "$1" "$2" "$3")"
+    mkdir -p "$AGENT_SESSION_DIR" 2>/dev/null || return 1
+    printf '%s\n' "$4" >> "$rf" 2>/dev/null || return 1
+    grep -qxF -- "$4" "$rf" 2>/dev/null || return 1
+    agent_session_id_forget "$1" "$2" "$3" 2>/dev/null || return 1
+    [ ! -e "$(agent_session_file "$1" "$2" "$3")" ]
 }
 
 # 交人评论里接在退出码后面的一句（固定句子，不带屏幕原文）。先调过 agent_exit_resume_heal

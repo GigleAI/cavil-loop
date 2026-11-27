@@ -10,18 +10,20 @@ daemon 在 worker 退出时存下最后一屏（scripts/agent-exit-screen.sh）�
 
 规则只按真实截屏写，样本在 tests/fixtures/resume-failure/（README 写了每张怎么来的）。
 没有样本的情况（对话文件损坏等）不写匹配：认不出就照旧重试、用完次数后交人。
-只看最后 20 个非空行：报错是程序退出前的最后输出，上文里出现的同样文字（例如对话内容里引用了它）不算。
+只看最后 3 个非空行，而且报错必须从行首开始（CLI 自己打出的形状：`Error: …` / `ERROR: …` / `No conversation …`）：
+报错是程序退出前的最后输出；上文里、或行中间出现的同样文字（例如 agent 在说明里引用了它）不算。
+调用方另外先核对这次启动确实以非 0 退出（_lib.sh 的 agent_exit_resume_verdict），这里只看屏幕。
 """
 import re
 import sys
 
-TAIL_LINES = 20
+TAIL_LINES = 3
 
 # (类别, 规则, 原因)。原因是给人看的固定句子，会写进 GitHub 评论：不能带屏幕上的任何原文。
 RULES = {
     "codex": [
         ("provider-gone",
-         re.compile(r'"type":"modelProviderNotConfigured"|uses model provider .{1,80}, which is no longer configured'),
+         re.compile(r'^Error: .*("type":"modelProviderNotConfigured"|uses model provider .{1,80}, which is no longer configured)'),
          "这条对话记着的模型供应商已不在本机 codex 的配置里，codex 拒绝续接这条对话"),
         ("session-missing",
          re.compile(r"^ERROR: No saved session found with ID \S+"),
@@ -42,7 +44,7 @@ def classify(agent, text):
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     for line in lines[-TAIL_LINES:]:
         for kind, rx, reason in rules:
-            if rx.search(line.strip()):
+            if rx.match(line.strip()):
                 return kind, reason
     return None
 
