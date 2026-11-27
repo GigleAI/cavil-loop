@@ -130,7 +130,9 @@ chk "三次派工都成功" "$rc_new/$rc_cmt/$rc_pr" "0/0/0"
 yes_ "新 issue：提示词写在 <状态目录>/prompts/$N-new.md" test -s "$W/state/prompts/$N-new.md"
 yes_ "issue 评论：写在 $N-cmt-0.md" test -s "$W/state/prompts/$N-cmt-0.md"
 yes_ "PR 评论：按工作编号开头，写在 $N-pr-$P.md" test -s "$W/state/prompts/$N-pr-$P.md"
-chk "提示词目录只有这三份" "$(ls "$W/state/prompts" | sort | tr '\n' ' ')" "$N-cmt-0.md $N-new.md $N-pr-$P.md "
+# 外加起会话那一次用的副本 <提示词>.launch.md（claude 带启动标记的那份，GitHub#744）
+chk "提示词目录只有这三份（及起会话用的副本）" "$(ls "$W/state/prompts" | grep -v '\.launch\.md$' | sort | tr '\n' ' ')" "$N-cmt-0.md $N-new.md $N-pr-$P.md "
+chk "…副本都是这三份之一的 <提示词>.launch.md" "$(ls "$W/state/prompts" | grep '\.launch\.md$' | sed 's/\.launch\.md$//' | grep -cvxE "$N-cmt-0.md|$N-new.md|$N-pr-$P.md")" 0
 chk "提示词目录权限是 700" "$(stat -c %a "$W/state/prompts")" 700
 chk "/tmp 下没有改动前那三个文件名（按本次编号）" "$(tmp_hits "$N" "$P")" 0
 yes_ "提示词是真的派工提示词（带着 issue 编号）" grep -q "#$N" "$W/state/prompts/$N-new.md"
@@ -154,10 +156,14 @@ run_in "$REPO_DIR" dispatch-issue-comment.sh "$N" 0
 run_in "$REPO_DIR" dispatch-pr-comment.sh "$P" "feature/issue-$N" 0
 run_in "$REPO_DIR" dispatch-new-issue.sh "$M"
 run_in "$REPO_DIR" dispatch-issue-comment.sh "$M" 0
-chk "清理前：两个条目各有提示词" "$(ls "$W/state/prompts" | wc -l | tr -d ' ')" 5
+# 起了会话的那几次旁边还有一份 <提示词>.launch.md：claude 这次启动用的、带启动标记的副本（GitHub#744）
+chk "清理前：两个条目各有提示词" "$(ls "$W/state/prompts" | grep -vc '\.launch\.md$')" 5
+has_copy="$(ls "$W/state/prompts" | grep -c "^$N-.*\.launch\.md$")"
+chk "清理前：$N 起会话时用的副本也在（下面删掉它才有意义）" "$([ "$has_copy" -gt 0 ] && echo yes)" yes
 run_in "$REPO_DIR" cleanup-issue.sh "$N" --force; rc=$?
 chk "清理成功" "$rc" 0
-chk "清理后只剩 $M 的两份" "$(ls "$W/state/prompts" | sort | tr '\n' ' ')" "$M-cmt-0.md $M-new.md "
+chk "清理后只剩 $M 的两份（及它的副本）" "$(ls "$W/state/prompts" | grep -v '\.launch\.md$' | sort | tr '\n' ' ')" "$M-cmt-0.md $M-new.md "
+chk "清理后 $N 的副本也没了" "$(ls "$W/state/prompts" | grep -c "^$N-")" 0
 no_ "worktree 也删了（清理确实走完）" test -d "$W/wt/issue-$N"
 run_in "$REPO_DIR" cleanup-issue.sh "$M" --force; rc=$?
 chk "第二个条目清理成功、目录空了" "$rc/$(ls "$W/state/prompts" | wc -l | tr -d ' ')" "0/0"

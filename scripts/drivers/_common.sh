@@ -100,7 +100,7 @@
 #   ── 开工证据（可选，GitHub#744）──
 #   agent_session_has_tag <cwd> <session_id> <标记>
 #     返回 0 = 这条会话的记录里，有一条用户输入带着这个标记；1 = 没有（记录还不存在也算）；
-#     2 = 读不了。实现了它，daemon 每次起会话都给提示词附一个一次性标记（agent_session_tag_prompt），
+#     2 = 读不了。实现了它，daemon 每次起会话都用附了一次性标记的提示词副本（agent_launch_prompt_copy），
 #     self-heal 只在本次标记出现后才清零连续失败计数（selfheal_alive）。续接时旧记录一直都在，
 #     所以不能拿「记录存在」当证据。不实现 = 会话活着就清零，和以前一样。
 #

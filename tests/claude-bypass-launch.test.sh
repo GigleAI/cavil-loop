@@ -234,8 +234,9 @@ FLAGS=""; fresh
 EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1 WORKER_SESSION_ID=$ID AGENT_LAUNCH_KIND=new)
 lib eval "agent_launch_command '$WT' issue7 '$PF' >/dev/null; selfheal_launch_record 7 '$WT' '$PF'"
 EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1)
-ptag="$(grep -o 'coding-agent-launch: [0-9a-f-]*' "$PF" | tail -1 | awk '{print $2}')"
-has "  拼命令时给提示词附了标记" "$ptag" "-"
+ptag="$(grep -o 'coding-agent-launch: [0-9a-f-]*' "$PF.launch.md" 2>/dev/null | tail -1 | awk '{print $2}')"
+has "  拼命令时用了附上标记的提示词副本" "$ptag" "-"
+chk "  …原提示词文件没动" "$(cat "$PF")" "任务"
 chk "  启动记录 = 这次的 id 和这个标记" "$(jq -c '[.agent, .id, .tag]' "$ST/selfheal/7.launch" 2>/dev/null)" "[\"claude\",\"$ID\",\"$ptag\"]"
 
 echo "── 5. 真 agent-poll.sh：会话活着、还没开工 → 不清零；开工后 → 清零 ──"
@@ -298,13 +299,13 @@ tmux kill-session -t =bp-issue7 2>/dev/null
 
 echo "── 6. 真 cleanup-issue.sh：临时设置文件和启动记录一并删掉 ──"
 mkdir -p "$POLLS/state/prompts"; chmod 700 "$POLLS/state/prompts"
-for f in 7-new.md 7-new.md.settings.json 7-cmt-5.md.argv.md.settings.json 70-new.md.settings.json; do echo '{}' > "$POLLS/state/prompts/$f"; done
+for f in 7-new.md 7-new.md.launch.md 7-new.md.launch.md.settings.json 7-cmt-5.md.launch.md.argv.md 7-cmt-5.md.settings.json 70-new.md.launch.md.settings.json; do echo '{}' > "$POLLS/state/prompts/$f"; done
 echo '{}' > "$POLLS/state/selfheal/7.launch"; echo '{}' > "$POLLS/state/selfheal/70.launch"
 (cd "$POLLS/project" && tmux_sandbox_env_i HOME="$H" LANG=C.UTF-8 CODING_AGENT_CONFIG="$POLLS/config" \
     FAKE_GH_LISTS=1 FAKE_GH_REPO=example/bp FAKE_GH_DIR="$GD" \
     timeout 60 bash "$REPO_DIR/scripts/cleanup-issue.sh" 7) > /dev/null 2>&1
 chk "条目 7 的临时设置文件删掉了" "$(ls "$POLLS/state/prompts" | grep '^7-' | tr '\n' ' ')" ""
-chk "  …别的条目（70）的留着" "$(ls "$POLLS/state/prompts" | grep '^70-' | tr '\n' ' ')" "70-new.md.settings.json "
+chk "  …别的条目（70）的留着" "$(ls "$POLLS/state/prompts" | grep '^70-' | tr '\n' ' ')" "70-new.md.launch.md.settings.json "
 chk "条目 7 的启动记录删掉了" "$([ -e "$POLLS/state/selfheal/7.launch" ] && echo yes || echo no)" no
 chk "  …别的条目（70）的留着" "$([ -e "$POLLS/state/selfheal/70.launch" ] && echo yes || echo no)" yes
 

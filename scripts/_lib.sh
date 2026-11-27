@@ -1923,7 +1923,7 @@ selfheal_reset() {
 # ── 会话活着 ≠ 本次启动真的开工了（GitHub#744）──
 # 以前「探到活着就 reset」：worker 停在启动确认框上时会话一直活着，每轮都把计数清零；催促把它
 # 关掉、自愈重派、又停在框上——永远是「第 1/3 次」，一条 issue 循环了一整夜。
-# 现在起会话时记下本次启动（会话 id + 提示词里那个一次性标记，见 agent_launch_command），
+# 现在起会话时记下本次启动（会话 id + 提示词副本里那个一次性标记，见 agent_launch_prompt_copy），
 # 只有 driver 在会话记录里查到这个标记（agent_session_has_tag）才清零，并删掉这份启动记录。
 # 查到没有 / 读不了 / 启动记录读不懂 → 不清零（读不到 ≠ 已开工）。没有启动记录（driver 不支持、
 # 续接的是没有 id 的旧会话、本功能之前起的会话、已经核实过的）→ 和以前一样清零。
@@ -1933,7 +1933,9 @@ selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话
     f="$(selfheal_launch_file "$n")"
     rm -f "$f" 2>/dev/null || true
     declare -f agent_session_has_tag >/dev/null || return 0
-    tag="$(agent_session_prompt_tag "$pf")"
+    # 标记在这次启动用的副本里（agent_launch_prompt_copy）；没有副本 = 这次没附标记
+    [ -f "$pf.launch.md" ] || return 0
+    tag="$(agent_session_prompt_tag "$pf.launch.md")"
     [ -n "$tag" ] && [ -n "${WORKER_SESSION_ID:-}" ] || return 0
     mkdir -p "$SELFHEAL_DIR" 2>/dev/null || return 0
     tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
@@ -3349,8 +3351,8 @@ prompt_files_forget() {   # <工作编号>
     local d
     d="$(prompt_dir)"
     [ -d "$d" ] || return 0
-    # *.settings.json：claude 启动时附的 bypass 临时设置（GitHub#744），名字是 <提示词>.settings.json
-    rm -f -- "$d/$1"-new.md "$d/$1"-cmt-*.md "$d/$1"-pr-*.md "$d/$1"-*.settings.json
+    # GitHub#744：*.launch.md*（带启动标记的副本，及从它派生的转交 / 设置文件）、*.settings.json（claude 的 bypass 临时设置）
+    rm -f -- "$d/$1"-new.md "$d/$1"-cmt-*.md "$d/$1"-pr-*.md "$d/$1"-*.launch.md* "$d/$1"-*.settings.json
 }
 
 # ── preview 端口与归属（GigleAI/GigleTutor-Web#1009）──
@@ -12266,16 +12268,30 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
 # 调用方不能起会话，走 dispatch_prompt_refused 转人工，见下面「提示词太长」。
 agent_launch_command() {   # <cwd> <session_name> <prompt_file>
     local pf
-    # driver 能在记录里查「本次启动是否已开工」时（GitHub#744），每次启动给提示词附一个一次性标记；
-    # 要在算转交文件之前附：提示词太长时短指令会照抄最后一个标记
-    if declare -f agent_session_has_tag >/dev/null && [ -f "${3:-}" ]; then
-        agent_session_tag_prompt "$3" >/dev/null
-    fi
-    pf="$(agent_prompt_argv_file "$3")" || return 1
+    pf="$(agent_prompt_argv_file "$(agent_launch_prompt_copy "${3:-}")")" || return 1
     case "${AGENT_LAUNCH_KIND:-new}" in
         new) agent_command_new "$1" "$2" "$pf" ;;
         *)   agent_command_resume "$1" "$2" "$pf" ;;
     esac
+}
+
+# ── 本次启动用的提示词：附上一次性标记的副本（GitHub#744）──
+# driver 能在会话记录里查「本次启动是否已开工」（agent_session_has_tag）时，每次启动交给 agent 的
+# 不是提示词文件本身，而是 <提示词>.launch.md：原文 + 一行本次启动独有的标记。self-heal 凭它判断
+# 「这次真的开工了」（selfheal_alive）。原文件不动：它是渲染结果，别处（和测试）按原样读它。
+# 在算转交文件之前做：提示词太长时，短指令照抄的是副本里的标记。
+# 写不出副本就用原文件启动（日志一行）：self-heal 那时没有启动记录，照旧在会话活着时清零。
+agent_launch_prompt_copy() {   # <prompt_file> → stdout：这次启动实际用的提示词文件
+    local f="${1:-}" copy
+    if ! declare -f agent_session_has_tag >/dev/null || [ ! -f "$f" ]; then printf '%s' "$f"; return 0; fi
+    copy="$f.launch.md"
+    rm -f "$copy" 2>/dev/null || true
+    if cp "$f" "$copy" 2>/dev/null && [ -n "$(agent_session_tag_prompt "$copy")" ]; then
+        printf '%s' "$copy"; return 0
+    fi
+    rm -f "$copy" 2>/dev/null || true
+    log "  ⚠️ 写不出带本次启动标记的提示词副本（${copy}），用原提示词启动；self-heal 这次没法核实是否已开工" 2>/dev/null || true
+    printf '%s' "$f"
 }
 
 # ── 提示词太长：改成让 worker 自己去读文件 ──
