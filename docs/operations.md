@@ -4668,8 +4668,8 @@ full background). The self-heal line in `poll.log` says `认出的原因：…�
 - Recognised today: codex's "this chat uses a model provider that is no longer configured", and codex's and claude's
   "no conversation found with this id". Any other error is retried as before and handed to a person when the retries run out.
 - The conversation is retired only when all of these hold: this launch was a resume, the program exited with a non-zero code,
-  the saved screen belongs to this launch, one of its last lines is one of the errors above (a mention in the middle of a line,
-  or more output after it, does not count), and the conversation registered now is still the one this launch resumed.
+  the saved screen belongs to this launch, its last line is one of the errors above (a mention in the middle of a line, or more
+  output after it, does not count), and the conversation registered now is still the one this launch resumed.
   Retiring = its id is appended to `$STATE_DIR/agent-sessions/<number>.<agent>.<role>.retired` and read back, and only then is
   the current registration removed, exactly as when done by hand; if the list cannot be written or the registration cannot be
   removed, the registration stays as it is and the item is retried.

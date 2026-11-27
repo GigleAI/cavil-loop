@@ -10,14 +10,14 @@ daemon 在 worker 退出时存下最后一屏（scripts/agent-exit-screen.sh）�
 
 规则只按真实截屏写，样本在 tests/fixtures/resume-failure/（README 写了每张怎么来的）。
 没有样本的情况（对话文件损坏等）不写匹配：认不出就照旧重试、用完次数后交人。
-只看最后 3 个非空行，而且报错必须从行首开始（CLI 自己打出的形状：`Error: …` / `ERROR: …` / `No conversation …`）：
-报错是程序退出前的最后输出；上文里、或行中间出现的同样文字（例如 agent 在说明里引用了它）不算。
+只看最后一个非空行，而且报错必须从行首开始（CLI 自己打出的形状：`Error: …` / `ERROR: …` / `No conversation …`）：
+三张真实截屏里，报错都是程序退出前打出的最后一行。上文里、后面还跟着别的输出、或在行中间出现的同样文字
+（例如 agent 在说明里引用了一句旧报错，之后又因别的原因退出）都不算。
 调用方另外先核对这次启动确实以非 0 退出（_lib.sh 的 agent_exit_resume_verdict），这里只看屏幕。
 """
 import re
 import sys
 
-TAIL_LINES = 3
 
 # (类别, 规则, 原因)。原因是给人看的固定句子，会写进 GitHub 评论：不能带屏幕上的任何原文。
 RULES = {
@@ -41,11 +41,12 @@ def classify(agent, text):
     rules = RULES.get(agent)
     if not rules:
         return None
-    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
-    for line in lines[-TAIL_LINES:]:
-        for kind, rx, reason in rules:
-            if rx.match(line.strip()):
-                return kind, reason
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    for kind, rx, reason in rules:
+        if rx.match(lines[-1]):
+            return kind, reason
     return None
 
 

@@ -12,7 +12,7 @@
 #   2. 续接 3 秒后才退出、屏幕上是「找不到这条对话」→ 下一轮自动恢复退役那条 id（进退役名单、登记清空），
 #      日志写原因；再派工开的是新对话（新 id）；会话日志里有那段报错和保存标记，令牌样式的字符串已换掉
 #   3. 不退役的：登记在两轮之间换成了别的 id；最后一屏不是这次启动的（记号对不上）；程序以 0 正常结束、
-#      屏幕最后一行恰好是那句报错——都照旧重试。退役名单写不进 / 登记删不掉 → 登记原样保留（归属不丢）
+#      屏幕最后一行恰好是那句报错；那句报错之后又有别的输出、以 1 退出——都照旧重试。退役名单写不进 / 登记删不掉 → 登记原样保留（归属不丢）
 #   4. 用完次数交人：认出原因时写原因和「已停用旧对话」；认不出时按保存结果写——存好 / 关了会话日志 /
 #      抓屏失败 / 去令牌失败（什么都不留）/ 写入日志失败 / 只有上一次启动的记录（结果不明）；评论里都没有屏幕原文
 #   5. 派工脚本（issue 评论、PR 评论两个入口）续接 2 秒内就退出：日志写认出的原因，照旧降级开新对话
@@ -59,10 +59,12 @@ chk "反例（用量上限、信任框的真实截屏，$negn 次）一个都不
 chk "到达性 · 反例确实读到了" "$([ "$negn" -ge 20 ] && echo yes)" yes
 chk "别的 agent 的规则不串：claude 的规则不认 codex 的报错" \
     "$(python3 "$REPO_DIR/scripts/resume_failure.py" claude < "$FIX/codex-session-missing.txt")" ""
-chk "报错后面还有 3 行别的输出 → 不认" \
-    "$( { cat "$FIX/claude-session-missing.txt"; seq 1 3; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude)" ""
-chk "到达性 · 报错后面只有 2 行 → 仍认" \
-    "$( { cat "$FIX/claude-session-missing.txt"; seq 1 2; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude | cut -f1)" session-missing
+chk "报错后面还有 1 行别的输出 → 不认（只有最后一行算）" \
+    "$( { cat "$FIX/claude-session-missing.txt"; echo 1; } | python3 "$REPO_DIR/scripts/resume_failure.py" claude)" ""
+chk "旧报错 → 已恢复的说明 → 另一条报错 → 不认" \
+    "$( { cat "$FIX/codex-provider-gone.txt"; echo '以上是历史报错示例，当前对话已经正常续接。'; echo 'Error: transport connection closed'; } | python3 "$REPO_DIR/scripts/resume_failure.py" codex)" ""
+chk "到达性 · 报错前面有上文、报错是最后一行 → 仍认" \
+    "$( { seq 1 5; cat "$FIX/codex-provider-gone.txt"; echo; } | python3 "$REPO_DIR/scripts/resume_failure.py" codex | cut -f1)" provider-gone
 chk "引用在行中间（agent 在说明里提到那句报错）→ 不认" \
     "$(printf '%s\n' '文档示例：{"type":"modelProviderNotConfigured"}' '任务完成，以上只是说明里引用的报错。' | python3 "$REPO_DIR/scripts/resume_failure.py" codex)" ""
 chk "引用在行中间（claude 那句）→ 不认" \
@@ -85,6 +87,7 @@ printf '%s\n' "$TMP/__none__" >> "$CTL/hide"
 #           等于「2 秒之后才退出」，不靠固定时长
 #   gone-now 续接时打出同一句，立刻以 1 退出（派工脚本的 2 秒检查看得到）；新开时一直睡
 #   gone0   续接时打出同一句，放行后以 0 退出（正常结束，屏幕最后一行恰好是那句）
+#   history 续接时先打出同一句（引用的旧报错），再打一句说明和另一条报错，放行后以 1 退出
 #   boom    打出一句认不出的报错和一个令牌样式的字符串，放行后以 1 退出
 #   ok-exit 放行后以 0 退出
 mkdir -p "$TMP/agentbin"
@@ -101,6 +104,7 @@ case "\$(cat "$CTL/mode" 2>/dev/null)" in
     gone-now) [ -n "\$res" ] || exec sleep 120; echo "No conversation found with session ID: \$res"; exit 1 ;;
     boom) echo "boom: unexpected failure near $TOKEN"; waitgo; exit 1 ;;
     gone0) echo "No conversation found with session ID: \$res"; waitgo; exit 0 ;;
+    history) echo "No conversation found with session ID: \$res"; echo "以上是历史报错示例，当前对话已经正常续接。"; echo "Error: transport connection closed"; waitgo; exit 1 ;;
     ok-exit) waitgo; exit 0 ;;
 esac
 exec sleep 120
@@ -266,6 +270,16 @@ chk "登记没动" "$(reg)" "$OLD_ID"
 chk "退役名单是空的" "$(retired)" ""
 lacks "日志没有认出的原因" "$(plog)" "认出的原因"
 has "到达性 · 这一轮确实做了自动恢复（退出码 0）" "$(plog)" "不存在（退出码 0：程序自己正常结束了"
+
+echo "【3c2】旧报错之后又有说明和另一条报错、以 1 退出 → 不退役、不说原因"
+setup history
+resume_and_die history
+has "到达性 · 旧报错确实在最后一屏里" "$(cat "$(xdir)/$SESS.screen")" "No conversation found with session ID: $OLD_ID"
+poll_round
+chk "登记没动" "$(reg)" "$OLD_ID"
+chk "退役名单是空的" "$(retired)" ""
+lacks "日志没有认出的原因" "$(plog)" "认出的原因"
+has "到达性 · 这一轮确实做了自动恢复（退出码 1）" "$(plog)" "不存在（退出码 1：程序报错退出）"
 
 echo "【3d】退役名单写不进 → 登记原样保留"
 setup retired-unwritable
