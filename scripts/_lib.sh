@@ -4154,9 +4154,11 @@ closed_reminder_ev_after() {   # <旧事件串> <新事件串> <add|del> <标签
 #           finished 已经是目标状态；write 还要写，CD_NEXT = 下一步（del:<标签> / add:<标签>），一次一个
 #   CD_CMP  状态 | 关闭原因 | 排好序的标签集合 | 最后一次关闭的事件 id——两次判定、写前写后都逐字比较
 #   CD_HEV  关闭 / 重开 / 提醒加摘的事件串（closed_reminder_facts 第四段），整串比较
-#   CD_KEEP 关闭之后挂上、留着的标签，空格分隔：pending/human（GitHub#461）、等待机器人标签（GitHub#736）
+#   CD_KEEP 关闭之后挂上、留着的标签（只给日志看，空格分隔）：pending/human（GitHub#461）、等待机器人标签（GitHub#736）；
+#           判断留不留只看数组 keep，按完整名字逐个比较——标签名里可以有空格，拼成串再找片段会把
+#           「pending/human extra」当成也含 pending/human（PR #737 复审第 1 轮问题 1）
 closed_done_judge() {   # <issue>
-    local issue="$1" info st reason labs facts c rel hst life evs brel bst B L has_done=0 stale=()
+    local issue="$1" info st reason labs facts c rel hst life evs brel bst B L K kept has_done=0 stale=() keep=()
     CD_V=unknown; CD_NEXT=""; CD_CMP=""; CD_HEV=""; CD_KEEP=""; CD_MSG=""
     if ! info=$(run_gh_capture "读取 issue #$issue 状态" \
         gh api "repos/$REPO/issues/$issue" \
@@ -4198,13 +4200,16 @@ closed_done_judge() {   # <issue>
         unset -f _cd_has; return 0
     fi
     CD_CMP="$CD_CMP|$c"; CD_HEV="$evs"
-    if [ -n "$LABEL_PENDING_HUMAN" ] && _cd_has "$LABEL_PENDING_HUMAN" && [ "$rel" = after ]; then CD_KEEP="$LABEL_PENDING_HUMAN"; fi
+    if [ -n "$LABEL_PENDING_HUMAN" ] && _cd_has "$LABEL_PENDING_HUMAN" && [ "$rel" = after ]; then keep+=("$LABEL_PENDING_HUMAN"); fi
     # 合并结果通知挂上的等待机器人标签（GitHub#736）：同一条规则，关闭之后挂上的留到机器人转达完自己摘
-    if [ -n "$B" ] && _cd_has "$B" && [ "${brel:-}" = after ]; then CD_KEEP="${CD_KEEP:+$CD_KEEP }$B"; fi
+    if [ -n "$B" ] && _cd_has "$B" && [ "${brel:-}" = after ]; then keep+=("$B"); fi
+    CD_KEEP="${keep[*]:-}"
     _cd_has "$LABEL_DONE" && has_done=1
     while IFS= read -r L; do
         [ -n "$L" ] || continue
-        case " $CD_KEEP " in *" $L "*) continue ;; esac
+        kept=no
+        for K in ${keep[@]+"${keep[@]}"}; do [ "$K" != "$L" ] || kept=yes; done
+        [ "$kept" = no ] || continue
         _cd_has "$L" && stale+=("$L")
     done < <(closed_done_flow_labels)
     unset -f _cd_has

@@ -434,6 +434,18 @@ HOOK
     tick
     chk "第 2 轮：另一个流程标签摘掉、Done 加上、等待标签留着" "$(labels_of 45)" "Done,$B"
     chk "第 2 轮：出队" "$(queued 45)" "无"
+
+    section "【12h】等待标签的名字里含另一个流程标签（pending/human extra）：按完整名字比，关闭之前的 pending/human 照摘"
+    # PR #737 复审第 1 轮问题 1：保留名单拼成空格分隔的串再找片段，会把关闭前的旧 pending/human 也当成要留的
+    fresh 'LABEL_PENDING_REQUESTER_BOT="pending/human extra"'
+    mkissue 46 "pending/human" closed completed
+    lab_add 46 "pending/human extra"; ev_add 46 labeled "pending/human extra"
+    tick
+    chk "关闭前的 pending/human 摘掉；关闭后的等待标签和 Done 留着" "$(labels_of 46)" "Done,pending/human extra"
+    chk "确实对 pending/human 发了删除" "$(n_calls "^gh api -X DELETE $R/issues/46/labels/pending%2Fhuman$")" 1
+    chk "没有对等待标签发删除" "$(n_calls "^gh api -X DELETE $R/issues/46/labels/pending%2Fhuman%20extra")" 0
+    chk "出队" "$(queued 46)" "无"
+    chk "日志只写保留了等待标签" "$(log_has "issue #46 手动关闭（已完成）→ Done，摘掉 pending/human；保留关闭之后挂上的 pending/human extra")" 1
 }
 
 # 没配等待机器人标签时（功能关着），清扫的写入调用和改动前的脚本逐条一致（GitHub#736）
