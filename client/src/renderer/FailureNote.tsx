@@ -9,7 +9,7 @@ import { api } from './api';
 import { t } from '../shared/i18n';
 import { tNode } from './tNode';
 import { Verbatim } from './Verbatim';
-import { rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
+import { rereadResultText, rereadRunningText, useReread, useSecondTick, type Reread } from './reread';
 
 /**
  * True until `until` (epoch ms), then false — the component re-renders at that moment by itself,
@@ -38,7 +38,8 @@ export function FailureNote({
   testid = 'failure-note',
 }: {
   failure: ReadFailure;
-  state: Pick<AppState, 'signedInAppKind'>;
+  /** GitHub#755: with `sync`, the running line also says where the refresh is */
+  state: Pick<AppState, 'signedInAppKind'> & Partial<Pick<AppState, 'sync'>>;
   /** "重新读取"; absent = the sync starts over */
   onRetry?: () => void;
   /**
@@ -55,6 +56,7 @@ export function FailureNote({
   const running = rr?.state.phase === 'running';
   const lines = rr !== null && !shared;
   const rs = rr?.state;
+  const now = useSecondTick(lines && rs?.phase === 'running');
   const said = describeFailure(failure, Date.now(), state.signedInAppKind ?? 'oauth');
   const button = (a: FailureAction) => {
     switch (a) {
@@ -102,7 +104,7 @@ export function FailureNote({
       {lines && rs?.phase === 'running' && (
         <div className="reread-line running" data-testid="failure-reread-running" role="status">
           <span className="spin" aria-hidden="true" />
-          <span>{rereadRunningText(rs.startedAt)}</span>
+          <span>{rereadRunningText(rs.startedAt, now, state.sync)}</span>
         </div>
       )}
       {lines && rs?.phase === 'done' && rereadResultText(rs) && (

@@ -6,15 +6,19 @@
 // board.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppState } from '../shared/types';
+import type { AppState, SyncState } from '../shared/types';
 import { api } from './api';
-import { t, tKey, translate, zhKey } from '../shared/i18n';
+import { getLang, t, tKey, translate, zhKey } from '../shared/i18n';
+import { REREAD_READ_LIMIT_MS } from '../shared/config';
+import { lasted, stepName } from './syncTimes';
 
 /** what a reread by hand came to, judged from the state after it */
 export type RereadOutcome =
   | { kind: 'ok' }
   /** some sources still failed (their keys, in the order of the sources) */
   | { kind: 'failed'; keys: string[] }
+  /** GitHub#755: the read time ran out before these sources were read (`others`: sources that failed for another reason) */
+  | { kind: 'stopped'; keys: string[]; others: number }
   /** the round could not use GitHub at all */
   | { kind: 'offline' }
   /** the sync itself went wrong, or the app is no longer signed in */
@@ -36,8 +40,10 @@ export function rereadOutcome(state: Pick<AppState, 'phase' | 'sync'>): RereadOu
   // the round's own failure (controller: a round that threw) — not hidden behind "ok"
   if (isRoundError(s.problem)) return { kind: 'error', message: s.problem! };
   if (s.offline) return { kind: 'offline' };
-  const failed = s.sources.filter((x) => !x.ok).map((x) => x.sourceKey);
-  return failed.length ? { kind: 'failed', keys: failed } : { kind: 'ok' };
+  const failed = s.sources.filter((x) => !x.ok);
+  const stopped = failed.filter((x) => x.stopped === true).map((x) => x.sourceKey);
+  if (stopped.length) return { kind: 'stopped', keys: stopped, others: failed.length - stopped.length };
+  return failed.length ? { kind: 'failed', keys: failed.map((x) => x.sourceKey) } : { kind: 'ok' };
 }
 
 export type RereadState =
@@ -51,9 +57,54 @@ export function clockSec(at: number): string {
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':');
 }
 
-/** the line while it runs */
-export function rereadRunningText(startedAt: number): string {
-  return t('{time} 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。', { time: clockSec(startedAt) });
+/** GitHub#755: the read time of a refresh by hand, in whole minutes, as the words say it */
+const limitMin = () => Math.round(REREAD_READ_LIMIT_MS / 60_000);
+
+/**
+ * The line while it runs (GitHub#755: how long it has taken, where the round doing it is, and the
+ * limit). `sync` = the state now; without it (or before the controller said anything) only the
+ * time and the limit are said.
+ */
+export function rereadRunningText(startedAt: number, now: number, sync?: Pick<SyncState, 'manual' | 'progress'> | null): string {
+  const parts = [t('{time} 开始重新读取，已用 {elapsed}。', { time: clockSec(startedAt), elapsed: lasted(now - startedAt) })];
+  const m = sync?.manual ?? null;
+  const step = m?.step ?? null;
+  const reading = m?.claimed === true && (step === 'read' || step === 'activity');
+  if (!m || step === null) {
+    parts.push(t('正在开始。'));
+  } else if (m.claimed && step === 'read') {
+    const p = sync?.progress ?? null;
+    parts.push(p ? t('正在读 GitHub：读完 {done} / {total} 个来源。', { done: p.done, total: p.total }) : t('正在读 GitHub。'));
+  } else if (m.claimed && step === 'activity') {
+    parts.push(t('正在「{step}」。', { step: stepName(step) }));
+  } else if (step === 'renew' || step === 'saveCredential' || step === 'grant') {
+    // before reading: this round (or the round about to take the refresh) is at a step that is never cut
+    parts.push(t('正在「{step}」：这一步不能中途停下，做完马上开始读 GitHub。', { step: stepName(step) }));
+  } else if (m.claimed) {
+    // after reading: what was read is being confirmed / saved — never cut, the result comes right after
+    parts.push(t('正在「{step}」：这一步不能中途停下，做完就给结果。', { step: stepName(step) }));
+  } else {
+    // an earlier round, past its reading, is at a step that is never cut; this refresh starts right after it
+    parts.push(t('正在等上一轮做完「{step}」：这一步不能中途停下，做完马上开始读 GitHub。', { step: stepName(step) }));
+  }
+  parts.push(
+    reading || !m || step === null
+      ? t('读 GitHub 最多 {min} 分钟，到时还没读完的来源这次算读取失败。再点一次会放弃这一轮、重新开始。', { min: limitMin() })
+      : t('这一步不计入读 GitHub 的 {min} 分钟；再点一次也不会打断它。', { min: limitMin() }),
+  );
+  return parts.join(getLang() === 'en' ? ' ' : '');
+}
+
+/** GitHub#755: the time now, again every second while `on` (the running line's "已用") */
+export function useSecondTick(on: boolean, now: () => number = Date.now): number {
+  const [at, setAt] = useState(now);
+  useEffect(() => {
+    if (!on) return;
+    setAt(now());
+    const h = setInterval(() => setAt(now()), 1000);
+    return () => clearInterval(h);
+  }, [on, now]);
+  return on ? at : now();
 }
 
 /** the line after it; null = nothing to say here (all read: the failure it was about is gone) */
@@ -66,6 +117,13 @@ export function rereadResultText(r: { at: number; outcome: RereadOutcome }): str
       return r.outcome.keys.length === 1
         ? t('{time} 重新读取完毕：这个来源仍然读取失败（原因见上）。', { time })
         : t('{time} 重新读取完毕：{n} 个来源仍然读取失败（原因见上）。', { time, n: r.outcome.keys.length });
+    case 'stopped': {
+      const head =
+        r.outcome.keys.length === 1
+          ? t('{time} 重新读取停下：读 GitHub 满 {min} 分钟这个来源还没读完，这次算读取失败（网络太慢或连不上）。之后的自动同步会照常再读。', { time, min: limitMin() })
+          : t('{time} 重新读取停下：读 GitHub 满 {min} 分钟还有 {n} 个来源没读完，这次算读取失败（网络太慢或连不上）。之后的自动同步会照常再读。', { time, min: limitMin(), n: r.outcome.keys.length });
+      return r.outcome.others ? [head, t('另有 {n} 个来源读取失败（原因见上）。', { n: r.outcome.others })].join(getLang() === 'en' ? ' ' : '') : head;
+    }
     case 'offline':
       return t('{time} 重新读取完毕：仍然连不上 GitHub。', { time });
     case 'error':
@@ -104,7 +162,8 @@ export function useReread(now: () => number = Date.now): Reread {
     void (async () => {
       let outcome: RereadOutcome;
       try {
-        await api().restartSync();
+        // GitHub#755: answered once its round's result is in (not after the re-reads that follow it)
+        await api().reread();
         outcome = rereadOutcome((await api().get()).state);
       } catch (e) {
         outcome = { kind: 'error', message: (e as Error)?.message || String(e) };

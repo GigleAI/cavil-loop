@@ -1,5 +1,5 @@
 import type { SourceConfig, SourceSnapshot, SourceStatus } from '../shared/types';
-import { GitHubClient, GitHubError, RateLimitError, failureInput } from './github';
+import { GitHubClient, GitHubError, RateLimitError, failureInput, isStopped } from './github';
 import { t } from '../shared/i18n';
 import { classifyFailure } from '../shared/readFailure';
 import { fetchSource, repoHistoryDue } from './fetchSources';
@@ -225,7 +225,8 @@ export async function syncRound(
         }
         // anything a read of changes cannot handle: the full read below
       } catch (e) {
-        if (!(e instanceof RateLimitError)) deltaTried.set(src.key, true);
+        // GitHub#755: nor one the time limit of a refresh by hand stopped (it says nothing about reading by changes)
+        if (!(e instanceof RateLimitError) && !isStopped(e)) deltaTried.set(src.key, true);
         // the snapshot is untouched and its record still vouches for it: the next round finds the same
         // changes from the same point (a read of changes again — not a full read), until it fails too often
         keepRecords.push(src.key);
@@ -261,6 +262,7 @@ export async function syncRound(
         dataFrom: previous.get(src.key)?.fetchedAt ?? null,
         rateLimited: err instanceof RateLimitError,
         failure: classifyFailure(failureInput(err), orgOf(src), src.kind === 'project'),
+        ...(isStopped(err) ? { stopped: true } : {}),
       });
     }
   });

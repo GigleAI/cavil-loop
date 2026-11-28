@@ -516,6 +516,17 @@ export interface SyncRoundAt {
   lastProgressAt: number;
 }
 
+/**
+ * GitHub#755: a refresh by hand, as the window says it while it runs. `claimed` = the round doing it
+ * is running (from its read of GitHub on); false = it waits for its round — the steps before reading
+ * of the round that will do it, or a round already past reading that is never cut. `step` = the step
+ * of the round running now (null: none runs this moment).
+ */
+export interface SyncManual {
+  claimed: boolean;
+  step: SyncStep | null;
+}
+
 export interface SyncProgress {
   startedAt: number;
   /** sources this round is through with (read, confirmed unchanged or failed) */
@@ -536,6 +547,8 @@ export interface SourceStatus {
   failure?: ReadFailure;
   /** GitHub#374: a failed source's failures in a row and when it is read again (set by the controller) */
   retry?: SourceRetry;
+  /** GitHub#755: the read was stopped by the time limit of a refresh by hand (REREAD_READ_LIMIT_MS), not refused */
+  stopped?: boolean;
 }
 
 /** GitHub#374: what the ⚠ says about a source that keeps failing */
@@ -709,6 +722,8 @@ export interface SyncState {
   progress: SyncProgress | null;
   /** GitHub#733: a round stopped moving (absent / null = none since the last successful check) */
   stall?: SyncStall | null;
+  /** GitHub#755: a refresh by hand not yet answered (absent / null = none) */
+  manual?: SyncManual | null;
   /** GitHub#733: the round running now, as the watch last saw it (absent / null = none, or no watch) */
   roundAt?: SyncRoundAt | null;
   /** GitHub#733: epoch ms of the shell's latest sync beat (absent / null = none yet, or no shell) */

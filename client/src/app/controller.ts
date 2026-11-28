@@ -6,7 +6,7 @@
 // the unit tests drive it against the fake GitHub with the real Rust back end
 // as a child process.
 
-import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type SyncStall, type SyncStep, type TallyDef, type ViewSettings } from '../shared/types';
+import { APP_KINDS, DEFAULT_HAND_BACK, type AppKind, type AppState, type BoardData, type CreateBoard, type CreateJob, type CreateWatch, type HandBackLabels, type Item, type ShortcutKeyResult, type ShortcutKeySpec, type ProjectChoices, type ProjectMeta, type SourceConfig, type SourceSnapshot, type SourceStatus, type SourceTimes, type SyncManual, type SyncStall, type SyncStep, type TallyDef, type ViewSettings } from '../shared/types';
 import { normalizeTallies, TALLIES_SETTING } from '../shared/tallies';
 import { ISSUE_CLOSE_REASONS, type DetailResult, type ItemDetail, type RepoAssignees, type RepoOptions, type WriteAction, type WriteResult } from '../shared/actions';
 import { isValidView, normalizeView, type ViewPatch } from '../shared/viewSettings';
@@ -23,7 +23,7 @@ import { itemKey, parseSource, sourceLabel } from '../shared/sources';
 import { listedNow, moveTab, newestCopy, normalizeTabs, summarize, tabCheckDue, type StoredTab, type TabInfo, type TabSummary } from '../shared/tabs';
 import { countRepos, type BoardRepoCount } from '../data/newIssueBoards';
 import { clientIdKindProblem } from '../shared/appKind';
-import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, SYNC_INTERVAL_MS, WATCH_EVERY_MS, WATCH_FALLBACK_MS, WATCH_GAP_MS, WATCH_QUIET_TICKS } from '../shared/config';
+import { DEFAULT_GITHUB_APP_CLIENT_ID, DEFAULT_OAUTH_CLIENT_ID, FOLLOW_UP_SYNC_MS, REREAD_READ_LIMIT_MS, SYNC_INTERVAL_MS, WATCH_EVERY_MS, WATCH_FALLBACK_MS, WATCH_GAP_MS, WATCH_QUIET_TICKS } from '../shared/config';
 import { Endpoints, GitHubClient, READ_RETRY_DELAYS_MS, ReadGate, backoffStep, sayFailure } from '../data/github';
 import { mergeSnapshots } from '../data/merge';
 import { syncRound, type ViewerTag } from '../data/sync';
@@ -401,6 +401,61 @@ interface SyncRun {
   /** true only while the round reads GitHub, the one stretch a restart may cut */
   reading: boolean;
   drop(): void;
+  /** GitHub#755: the refresh by hand this round does (taken when it starts reading GitHub); null = none */
+  hand: Hand | null;
+}
+
+/**
+ * GitHub#755: the read time of one refresh by hand. It runs only while its round reads GitHub
+ * (`resume` … `pause`): the steps in between — confirming the account, saving what was read — are
+ * never cut and never counted, and a read that starts again goes on with what is left (an auth
+ * retry of the round included), never with a fresh limit. Used up = `signal` aborts.
+ */
+class ReadBudget {
+  private readonly abort = new AbortController();
+  readonly signal = this.abort.signal;
+  private left: number;
+  private since: number | null = null;
+  private timer: unknown = null;
+  private closed = false;
+  constructor(
+    limitMs: number,
+    private readonly timers: SyncTimers,
+    private readonly now: () => number,
+  ) {
+    this.left = limitMs;
+  }
+  resume(): void {
+    if (this.closed || this.signal.aborted || this.since !== null) return;
+    this.since = this.now();
+    this.timer = this.timers.setTimeout(() => {
+      this.timer = null;
+      this.since = null;
+      this.left = 0;
+      this.abort.abort();
+    }, Math.max(0, this.left));
+  }
+  pause(): void {
+    if (this.since === null) return;
+    this.left = Math.max(0, this.left - (this.now() - this.since));
+    this.since = null;
+    if (this.timer !== null) this.timers.clearTimeout(this.timer);
+    this.timer = null;
+  }
+  /** its refresh is answered: it never runs again */
+  close(): void {
+    this.pause();
+    this.closed = true;
+  }
+}
+
+/** GitHub#755: one refresh by hand — its read time, and the answer `restartSync` waits for */
+interface Hand {
+  budget: ReadBudget;
+  done: Promise<void>;
+  /** the refresh is answered (its round's result is in, or it will never be): idempotent */
+  settle(): void;
+  settled: boolean;
 }
 
 /** GitHub#448: how long the picker reuses a repository's complete list of open items */
@@ -476,6 +531,8 @@ export class Controller {
   private lastProgressAt: number | null = null;
   /** the step the round running now is at */
   private step: SyncStep = 'renew';
+  /** GitHub#755: a refresh by hand no round has taken yet (the next round to read GitHub takes it) */
+  private handNext: Hand | null = null;
   /** when a timed round was last asked for (the shell's beat, the window's timer, or the watch itself) */
   private lastTimedAskAt: number | null = null;
   /**
@@ -2063,8 +2120,24 @@ export class Controller {
    * The timer and every other automatic caller keep queueing (`syncNow`): automatic
    * rounds never cut each other short. GitHub#261: the round started by hand reads every
    * source in full (the change check's "nothing changed" is not taken for it).
+   * GitHub#755: the round started by hand reads GitHub for at most REREAD_READ_LIMIT_MS (only while
+   * reading: the steps that are never cut do not count); what it has not read by then fails this time.
+   * Resolves when syncing goes idle, as before; `reread` answers sooner.
    */
   restartSync(): Promise<void> {
+    return this.startByHand().loop;
+  }
+
+  /**
+   * GitHub#755: the same refresh by hand, answered once its round's result is in (`sync.sources`) —
+   * not after the re-reads that follow it, nor after rounds queued behind it — or once it is clear it
+   * will never be (dropped by a newer refresh, signed out, syncing over). What "重新读取" / "重新同步" wait for.
+   */
+  reread(): Promise<void> {
+    return this.startByHand().hand.done;
+  }
+
+  private startByHand(): { hand: Hand; loop: Promise<void> } {
     // GitHub#261: by hand = read every source in full now, whatever the change check would say
     this.fullReadNext = true;
     // GitHub#374: and now — not after a rate limit's reset time (if GitHub still says no, the new gate closes again).
@@ -2072,8 +2145,52 @@ export class Controller {
     this.readGate = new ReadGate(this.now);
     // GitHub#397: and every open tab no source lists, also an ended one checked a moment ago
     this.tabsForce = true;
+    // GitHub#755: this refresh replaces one no round has taken yet (that one is answered now: a newer one took its place)
+    const hand = this.newHand();
+    const replaced = this.handNext;
+    this.handNext = hand;
+    replaced?.settle();
     if (this.round?.reading) this.round.drop();
-    return this.syncNow();
+    this.publishManual();
+    const loop = this.syncNow();
+    // syncing went idle without any round taking it (not signed in, or the round ended before reading): answered too
+    loop.then(hand.settle, hand.settle);
+    return { hand, loop };
+  }
+
+  /** GitHub#755: a refresh by hand not taken yet */
+  private newHand(): Hand {
+    let resolve!: () => void;
+    const done = new Promise<void>((r) => (resolve = r));
+    const budget = new ReadBudget(REREAD_READ_LIMIT_MS, this.timers, this.now);
+    const hand: Hand = {
+      budget,
+      done,
+      settled: false,
+      settle: () => {
+        if (hand.settled) return;
+        hand.settled = true;
+        budget.close();
+        if (this.handNext === hand) this.handNext = null;
+        resolve();
+        this.publishManual();
+      },
+    };
+    return hand;
+  }
+
+  /**
+   * GitHub#755: what the window says about a refresh by hand not yet answered — taken by the round
+   * running now, or waiting for a round to take it — and the step of the round running now.
+   */
+  private publishManual(): void {
+    const running = this.round;
+    // a refresh already answered is not said any more (its round goes on with re-reads, or was dropped)
+    const claimed = running?.hand && !running.hand.settled ? running.hand : null;
+    const manual: SyncManual | null = claimed ? { claimed: true, step: this.step } : this.handNext ? { claimed: false, step: running ? this.step : null } : null;
+    const cur = this.state.sync.manual ?? null;
+    if (cur === manual || (cur && manual && cur.claimed === manual.claimed && cur.step === manual.step)) return;
+    this.set({ sync: { ...this.state.sync, manual } });
   }
 
   /** One round, given up on (without waiting for it) when it is dropped. */
@@ -2090,26 +2207,37 @@ export class Controller {
     const run: SyncRun = {
       signal: abort.signal,
       reading: false,
+      hand: null,
       drop: () => {
         abort.abort();
         this.resync = true;
+        // GitHub#755: the refresh by hand it was doing is answered (a newer click goes on; the watch never gets here
+        // with one — the read limit is shorter than its quiet wakes)
+        run.hand?.settle();
         dropped();
       },
     };
     this.round = run;
+    this.publishManual();
     // the dropped round goes on alone until its next check; whatever it ends in is nobody's business
     const done = this.runRound(run).catch((e) => {
       if (!abort.signal.aborted) throw e;
     });
     return Promise.race([done, gone]).finally(() => {
       if (this.round === run) this.round = null;
+      // GitHub#755: the round is over (or given up on): its refresh by hand is answered, whatever it came to
+      run.hand?.settle();
+      this.publishManual();
     });
   }
 
   private async runRound(run: SyncRun, retried = false): Promise<void> {
     // GitHub#733: the step this round is at, for the watch (a dropped round no longer moves it)
     const at = (step: SyncStep) => {
-      if (this.round === run) this.step = step;
+      if (this.round !== run) return;
+      this.step = step;
+      // GitHub#755: a refresh by hand says where it is
+      this.publishManual();
     };
     if (!this.signedIn) return;
     at('renew');
@@ -2157,6 +2285,13 @@ export class Controller {
     // refresh by hand: no record is offered, so every source is read in full (and new tags are taken)
     const byHand = this.fullReadNext;
     this.fullReadNext = false;
+    // GitHub#755: the refresh by hand waiting for a round is this one's (an auth retry keeps the one it took)
+    if (!run.hand && this.handNext) {
+      run.hand = this.handNext;
+      this.handNext = null;
+      this.publishManual();
+    }
+    const budget = run.hand?.budget ?? null;
     // GitHub#374: a source that keeps failing waits its turn (1, 2, 4, 8, 10 min); by hand, nobody waits.
     // The ones left out keep their status (failure and next try) as it is.
     const startedAt = this.now();
@@ -2176,12 +2311,15 @@ export class Controller {
       retryDelaysMs: this.deps.readRetryDelaysMs ?? READ_RETRY_DELAYS_MS,
       queue: this.sendQueue,
       ...(this.deps.readRetrySleep ? { sleep: this.deps.readRetrySleep } : {}),
+      ...(budget ? { deadline: budget.signal } : {}),
     };
     // GitHub#733: every answer this client gets (sources, notifications, comments) is this round's progress
     const client = this.client(session, run.signal, reads, this.roundBackend(run));
     const forceFull = new Set(
       [...this.deltaFails].filter(([key, f]) => f.epoch === (epochAtStart.get(key) ?? 0) && f.count >= DELTA_FAILS_MAX).map(([key]) => key),
     );
+    // GitHub#755: the read time of a refresh by hand runs while the sources are read
+    budget?.resume();
     const round = await syncRound(
       client,
       sources,
@@ -2205,6 +2343,7 @@ export class Controller {
       },
     );
     run.reading = false;
+    budget?.pause();
     // Every source this round did not confirm unchanged needed a full read (it changed, the check could
     // not tell, 10 minutes were up, or the refresh was by hand). Its old record goes now, before anything
     // can fail: until a new one lands with the read, the next round reads it in full again — a read that
@@ -2259,7 +2398,10 @@ export class Controller {
     this.applyImports(accepted);
     // GitHub#713: GitHub's own inbox, judged against the sources as they stand now
     at('activity');
+    // GitHub#755: and while the notifications are read (with what is left of it; used up = no read, nothing changes)
+    budget?.resume();
     const activity = await this.activityRound(client, session, run.signal, round.viewer ?? this.state.viewer);
+    budget?.pause();
     if (run.signal.aborted || session !== this.session) return over();
     // Only what was read completely this round (and still belongs here) is compared.
     this.observePending(accepted, round.viewer ?? this.state.viewer, activity);
@@ -2292,6 +2434,9 @@ export class Controller {
         sources: [...status, ...untouched],
       },
     });
+    // GitHub#755: the result of a refresh by hand is in — it does not wait for the re-reads below
+    // (an auth failure is answered by the retry below, or when the round ends)
+    if (!round.authFailed) run.hand?.settle();
     // GitHub#279: the round reached GitHub (read, or confirmed unchanged): re-read what an earlier re-read missed
     if (!round.offline && !round.authFailed && status.some((st) => st.ok)) {
       at('catchUp');

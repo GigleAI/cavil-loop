@@ -513,7 +513,8 @@ describe.each<Entry>(['window', 'shell'])('a stretch of syncing that ran over a 
     const releaseSecond = holdNextRead();
     void c.restartSync();
     await waitFor(() => rounds() === 2, 'the round by hand, at once');
-    expect(clock.pending()).toBe(0);
+    // no alarm: the one timer is the read limit of the refresh by hand (GitHub#755), gone once it is answered
+    expect(clock.pending()).toBe(1);
     clock.to(130);
     await c.restartSync();
     expect(rounds()).toBe(3);
