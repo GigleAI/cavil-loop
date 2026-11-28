@@ -146,6 +146,15 @@ dispatch_all() {
             sub-issue) cmd=(dispatch-new-issue.sh "$N_SUB") ;;
             issue-comment) cmd=(dispatch-issue-comment.sh "$N_CMT" 0) ;;
             pr-comment) cmd=(dispatch-pr-comment.sh "$N_PR" "feature/issue-$N_PR" 0) ;;
+        esac
+        # WORKER_AUTOPILOT=1：worker 四个入口按托管条目派工（【5】用；授权编号就是各自的条目）
+        case "${WORKER_AUTOPILOT:-}:$name" in
+            1:new-issue) extra=(DISPATCH_AUTOPILOT=1 "DISPATCH_AUTOPILOT_ISSUE=$N_NEW") ;;
+            1:sub-issue) extra=(DISPATCH_AUTOPILOT=1 "DISPATCH_AUTOPILOT_ISSUE=$N_SUB") ;;
+            1:issue-comment) extra=(DISPATCH_AUTOPILOT=1 "DISPATCH_AUTOPILOT_ISSUE=$N_CMT") ;;
+            1:pr-comment) extra=(DISPATCH_AUTOPILOT=1 "DISPATCH_AUTOPILOT_ISSUE=$N_PR" "DISPATCH_AUTOPILOT_PR=$N_PR") ;;
+        esac
+        case "$name" in
             review) cmd=(dispatch-issue-comment.sh "$N_CMT" 0); extra=(DISPATCH_PROMPT_KIND=review) ;;
             review-autopilot) cmd=(dispatch-issue-comment.sh "$N_CMT" 0)
                 extra=(DISPATCH_PROMPT_KIND=review DISPATCH_AUTOPILOT=1 "DISPATCH_AUTOPILOT_ISSUE=$N_CMT") ;;
@@ -317,14 +326,31 @@ check "旧跨轮写法「第 1 轮 #3」会被认成链接（测得出两种写�
 # 开头（同一句三份副本，这里逐份对拍）；复审独立、不改代码，不带它；整份替换了模板的项目用自己的开头
 echo "── 【5】worker 提示词第一行（真实派工脚本拼出的成品）──"
 OWNER_LINE='You are the owner and long-term maintainer of this codebase, and its design is up to you.'
-for O in "$TMP/out-present" "$TMP/out-guarded"; do
-    probs=""
+AP_HEAD='# 托管规则（本条是托管条目）'; RL_HEAD='# 往返记录（本项目开启了'; BL_HEAD='# 等前置规则（本项目开启了等前置标签'
+# 两组配置，各经真实派工写出 worker 四份：off = 托管、往返记录、等前置全关；on = 三项全开、worker 按托管条目派工
+P=$(make_project owner-off none)
+sed -i -e '/^LABEL_AUTOPILOT=/d' -e '/^ENABLE_ROUND_LOG=/d' "$P/config"
+printf 'LABEL_AUTOPILOT=""\nENABLE_ROUND_LOG=false\n' >> "$P/config"
+dispatch_all "$P" "$TMP/out-owner-off"
+P=$(make_project owner-on remote)
+sed -i -e '/^LABEL_PENDING_BLOCKED=/d' -e '/^ENABLE_ROUND_LOG=/d' "$P/config"
+printf 'LABEL_PENDING_BLOCKED="pending/blocked"\nENABLE_ROUND_LOG=true\n' >> "$P/config"
+WORKER_AUTOPILOT=1 dispatch_all "$P" "$TMP/out-owner-on"
+for O in "$TMP/out-owner-off" "$TMP/out-owner-on"; do
+    probs=""; tag=${O##*/out-}
     for w in "${WORKERS[@]}"; do
         f="$O/$w.md"
         [ -s "$f" ] || { probs+="$w 派工没写出提示词; "; continue; }
         [ "$(sed -n 1p "$f")" = "$OWNER_LINE" ] || probs+="$w 第一行是「$(sed -n 1p "$f")」; "
         [ -z "$(sed -n 2p "$f")" ] || probs+="$w 第二行不是空行; "
         [ "$(grep -cxF -- "$OWNER_LINE" "$f")" = 1 ] || probs+="$w 这句出现了不止一次; "
+        # 到达性：这组配置确实是它声称的样子
+        for h in "$AP_HEAD" "$RL_HEAD" "$BL_HEAD"; do
+            case "$tag" in
+                owner-on) has "$f" "$h" || probs+="$w 没有「$h」; " ;;
+                owner-off) has "$f" "$h" && probs+="$w 不该有「$h」; " ;;
+            esac
+        done
     done
     # 第三行起就是原来的开头（这句只是加在前面，没有顶掉模板原有内容）
     case "$(sed -n 3p "$O/new-issue.md")" in '仓库：example/rc') ;; *) probs+="new-issue 第三行不是原来的开头; " ;; esac
@@ -333,8 +359,7 @@ for O in "$TMP/out-present" "$TMP/out-guarded"; do
         [ -s "$O/$f.md" ] || { probs+="$f 派工没写出提示词; "; continue; }
         has "$O/$f.md" "$OWNER_LINE" && probs+="$f 带了身份句; "
     done
-    tag=${O##*/out-}
-    [ -z "$probs" ] && ok "$tag：worker ×4（含子项）第一行是身份句、第二行空、只出现一次；复审 ×2 不带" || bad "$tag：身份句" "$probs"
+    [ -z "$probs" ] && ok "$tag：worker ×4（含子项）第一行是身份句、第二行空、只出现一次，托管 / 往返记录 / 等前置三段按配置在或不在；复审 ×2 不带" || bad "$tag：身份句" "$probs"
 done
 probs=""
 for w in "${WORKERS[@]}"; do has "$TMP/out-replace/$w.md" "$OWNER_LINE" && probs+="$w 带了身份句; "; done
