@@ -143,6 +143,19 @@ test('GitHub#747: a column moves by dragging its heading, and keeps its place af
   await drag('updated', l.x + 5, { esc: true });
   expect(await heads(page)).toEqual(before);
 
+  // PR #749 review round 1, problem 3: the system takes the pointer away mid-drag — the drag ends, a later button-up saves nothing
+  const u2 = await box('updated');
+  await page.mouse.move(u2.x + 20, u2.y + u2.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(l.x + 5, u2.y + u2.height / 2, { steps: 8 });
+  await expect(page.getByTestId('col-drop-line')).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 })));
+  await expect(page.getByTestId('col-drop-line')).toHaveCount(0);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  expect(await heads(page)).toEqual(before);
+  expect((await savedColumns(page)).filter((c) => c !== 'title')).toEqual(before.slice(1));
+
   // "updated" dropped on the left half of the first column after the title: it goes right after the title
   const first = before[1]!;
   const f = await box(first);
@@ -184,6 +197,23 @@ test('GitHub#747: every cell editor is drawn in full on a faded row, and a press
     // inside the table's visible area (the last column opens leftwards)
     const [p, s] = [(await pop(page).boundingBox())!, (await page.locator('.table-scroll').boundingBox())!];
     expect(p.x + p.width).toBeLessThanOrEqual(s.x + s.width + 1);
+
+    // PR #749 review round 1, problem 2: a press in the edited cell's own blank space, outside the picker / list, puts it away too
+    const [tdBox, popBox] = [(await cell(page, 349, c).boundingBox())!, (await pop(page).boundingBox())!];
+    const outsidePop = (x: number, y: number) => x < popBox.x || x > popBox.x + popBox.width || y < popBox.y || y > popBox.y + popBox.height;
+    const spot = [
+      [tdBox.x + 2, tdBox.y + 2],
+      [tdBox.x + tdBox.width - 2, tdBox.y + 2],
+      [tdBox.x + 2, tdBox.y + tdBox.height - 2],
+      [tdBox.x + tdBox.width - 2, tdBox.y + tdBox.height - 2],
+    ].find(([x, y]) => outsidePop(x, y));
+    expect(spot, `a point of the ${c} cell outside its editor`).toBeTruthy();
+    await page.mouse.click(spot![0], spot![1]);
+    await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
+    await page.waitForTimeout(200);
+    await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
+    await cell(page, 349, c).click();
+    await expect(pop(page)).toBeVisible();
 
     // a press on another row's title: the editor goes away, the item does not open
     await title346.click();
@@ -241,6 +271,29 @@ test('GitHub#747: the iteration list — arrows only move, Enter writes once, a 
   await list.locator(`option[value="${other}"]`).click();
   await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
   await expect.poll(() => writes().slice(w1)).toEqual(['CavilSetIteration']);
+  // PR #749 review round 1, problem 1: ↓ then a click on the option now marked — written once, the list goes away
+  await cell(page, 349, 'iteration').click();
+  await expect(list).toBeVisible();
+  const w15 = writes().length;
+  const was = await list.inputValue();
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => list.inputValue()).not.toBe(was);
+  const nowMarked = await list.inputValue();
+  expect(writes().slice(w15)).toEqual([]);
+  await list.locator(`option[value="${nowMarked}"]`).click();
+  await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
+  await expect.poll(() => writes().slice(w15)).toEqual(['CavilSetIteration']);
+  await page.waitForTimeout(300);
+  expect(writes().slice(w15)).toEqual(['CavilSetIteration']);
+  // a click on the value it already has: no write, the list goes away
+  await cell(page, 349, 'iteration').click();
+  await expect(list).toBeVisible();
+  const w16 = writes().length;
+  await list.locator(`option[value="${await list.inputValue()}"]`).click();
+  await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
+  await page.waitForTimeout(300);
+  expect(writes().slice(w16)).toEqual([]);
+
   // Esc puts it away without a write
   await cell(page, 349, 'iteration').click();
   await expect(list).toBeVisible();

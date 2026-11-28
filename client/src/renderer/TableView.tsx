@@ -336,6 +336,9 @@ type CellList = {
   commit: (v: string) => void;
 };
 
+/** the part of an open cell editor that floats out of the cell: the label / assignee picker, the lists */
+const EDITOR_POPS = '.picker, .cell-lists';
+
 /** keys a list box would act on by itself (type-ahead, paging): each would be a write, so they do nothing here */
 const LIST_KEYS_KEPT = new Set(['PageUp', 'PageDown', 'Home', 'End']);
 
@@ -352,6 +355,13 @@ function CellLists({ lists, close }: { lists: CellList[]; close: () => void }) {
   const refs = useRef<(HTMLSelectElement | null)[]>([]);
   const [marked, setMarked] = useState<Record<string, string>>({});
   const valueOf = (l: CellList) => marked[l.key] ?? l.value;
+  // one pick per open list, however it came (a change, a click on the marked option, Enter): never written twice
+  const picked = useRef(false);
+  const pick = (l: CellList, v: string) => {
+    if (picked.current || l.disabled) return;
+    picked.current = true;
+    l.commit(v);
+  };
   useLayoutEffect(() => {
     // as many rows as it has (options and section headings), up to 10, never 1 (that is the pop-up menu again)
     for (const sel of refs.current) if (sel) sel.size = Math.max(2, Math.min(10, sel.options.length + sel.querySelectorAll('optgroup').length));
@@ -377,7 +387,7 @@ function CellLists({ lists, close }: { lists: CellList[]; close: () => void }) {
     pickerDown: () => move(1),
     pickerToggle: () => {
       const l = lists[focused()];
-      if (l && !l.disabled) l.commit(valueOf(l));
+      if (l) pick(l, valueOf(l));
     },
     pickerClose: close,
   });
@@ -398,14 +408,15 @@ function CellLists({ lists, close }: { lists: CellList[]; close: () => void }) {
             title={l.title}
             {...(l.boardTitle !== undefined ? verbatimParts('github', [l.boardTitle]) : {})}
             value={valueOf(l)}
-            onChange={(e) => l.commit(e.target.value)}
+            onChange={(e) => pick(l, e.target.value)}
             onKeyDown={(e) => {
               if ((e.key.length === 1 && !e.metaKey && !e.ctrlKey) || LIST_KEYS_KEPT.has(e.key)) e.preventDefault();
             }}
             onMouseUp={(e) => {
-              // a click on the value it already has: nothing to write, the list goes away
+              // a click on an option picks it, also the one already marked (no change event then): the marked one
+              // after ↑↓ is written, the item's own value just puts the list away (commit writes only a different value)
               const o = e.target as HTMLElement;
-              if (o.tagName === 'OPTION' && (o as HTMLOptionElement).value === l.value) close();
+              if (o.tagName === 'OPTION' && !(o as HTMLOptionElement).disabled) pick(l, (o as HTMLOptionElement).value);
             }}
           >
             {l.options}
@@ -555,8 +566,11 @@ export function TableView({
       e.stopImmediatePropagation();
     };
     const down = (e: Event) => {
-      const box = editingRef.current ? document.querySelector(`[${CELL_EDITOR}]`) : null;
-      if (!box) return;
+      const cellBox = editingRef.current ? document.querySelector(`[${CELL_EDITOR}]`) : null;
+      if (!cellBox) return;
+      // inside = the picker / lists that float out of the cell; the cell itself only while nothing floats yet
+      // ("读取标签…", an error, "不在看板上"): blank space of the cell around a picker or list is outside
+      const box = cellBox.querySelector(`${EDITOR_POPS}`) ?? cellBox;
       if (e.target instanceof Node && box.contains(e.target)) return;
       swallowing = true;
       until = 0;
@@ -628,7 +642,7 @@ export function TableView({
 
   useLayoutEffect(() => {
     if (!editing) return setFlip(false);
-    const pop = document.querySelector<HTMLElement>(`[${CELL_EDITOR}] .picker, [${CELL_EDITOR}] .cell-lists`);
+    const pop = document.querySelector(`[${CELL_EDITOR}]`)?.querySelector<HTMLElement>(EDITOR_POPS);
     const scroller = pop?.closest('.table-scroll');
     if (!pop || !scroller) return;
     if (!flip && pop.getBoundingClientRect().right > scroller.getBoundingClientRect().right) setFlip(true);
@@ -667,6 +681,9 @@ export function TableView({
   };
   // ---- moving a column by its heading (GitHub#747): pressed and moved past MOVE_SLOP, the heading follows the
   // pointer, a line shows where it goes; let go = saved in the view settings. The title column stays first.
+  /** ends a column drag still going without saving (the table going away) */
+  const colDragEnd = useRef<(() => void) | null>(null);
+  useEffect(() => () => colDragEnd.current?.(), []);
   const [colDrag, setColDrag] = useState<{ col: TableColumn; x: number; top: number; slot: number; line: number | null; bottom: number } | null>(null);
   const startMove = (col: TableColumn) => (e: React.PointerEvent<HTMLTableCellElement>) => {
     if (col === 'title' || e.button !== 0) return;
@@ -696,8 +713,16 @@ export function TableView({
     const stop = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
       window.removeEventListener('keydown', esc, true);
+      if (colDragEnd.current === cancel) colDragEnd.current = null;
       setColDrag(null);
+    };
+    // the system took the pointer away, the window lost focus, or the table goes: the drag ends, nothing is saved
+    const cancel = () => {
+      on = false;
+      stop();
     };
     const up = () => {
       stop();
@@ -709,11 +734,14 @@ export function TableView({
       if (ev.key !== 'Escape') return;
       ev.preventDefault();
       ev.stopPropagation();
-      on = false;
-      stop();
+      cancel();
     };
+    colDragEnd.current?.();
+    colDragEnd.current = cancel;
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
     window.addEventListener('keydown', esc, true);
   };
   const head = (c: TableColumn) => (
