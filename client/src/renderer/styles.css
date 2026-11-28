@@ -397,6 +397,13 @@ table.items .fold-run-group.drop-over { outline: 2px dashed var(--accent); outli
 .slice-row .repo-web { position: absolute; right: 4px; top: 50%; margin-top: -11px; opacity: 0; }
 .slice-row:hover .repo-web, .slice-row:focus-within .repo-web { opacity: 1; }
 .slice .count { background: transparent; }
+/* GitHub#752: 「收件箱」 / 「最近完成」 above the repositories; the inbox's count is red while it holds something */
+.slice .count.hot { background: var(--state-closed-bg); color: #ffffff; }
+.slices-sep { border: none; border-top: 1px solid var(--border-muted); margin: 6px 8px; }
+.list-line { padding: 8px 12px; border-bottom: 1px solid var(--border-muted); }
+.list-line select { font-size: 12px; }
+.list-line .days-input { width: 56px; font-size: 12px; }
+.list-line .list-bad { color: var(--err-fg); }
 .table-scroll { flex: 1; min-width: 0; overflow: auto; background: var(--surface); border: 1px solid var(--border-muted); border-radius: 12px; }
 table.items { border-collapse: collapse; width: 100%; }
 table.items th { position: sticky; top: 0; z-index: 1; background: var(--surface); text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border-muted); padding: 8px 12px; white-space: nowrap; }

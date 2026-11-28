@@ -27,6 +27,9 @@ import { describeFailure, failureOf, hhmm } from '../shared/readFailure';
 import { CARRIED_TITLE, TableView } from './TableView';
 import { pinnedLabels } from '../shared/pickOrder';
 import { handBackFor } from '../shared/repoLabels';
+import { doneList, inboxList, specialSlice } from '../data/inbox';
+import { DEFAULT_PENDING_LABEL } from '../data/pending';
+import type { TableLists } from './TableView';
 import { buildTable, repoSources } from '../data/table';
 import { GraphView, type GraphSourceInfo } from './GraphView';
 import { buildGraph } from '../data/graph';
@@ -605,10 +608,42 @@ export function BoardView({
   // GitHub#368: built once here, so the view bar's counts and the table come from the same result
   // GitHub#587: the repository sources shown on the board keep their place in the table when nothing of theirs is shown
   const tableRepos = useMemo(() => repoSources(state.sources, view.selected, sync.times), [state.sources, view.selected, sync.times]);
+  // GitHub#752: the table's 「收件箱」 and 「最近完成」 — from what the search and the parked switch leave of every item
+  // (open and closed: 「显示已关闭」 is not theirs), narrowed by the 「只看我的」 panel's conditions whatever its switch
+  const special = view.layout === 'table' ? specialSlice(view.table.slice) : null;
+  const listBase = useMemo(() => {
+    if (view.layout !== 'table') return [];
+    const hit = searchList(data.items, parsed, { viewer: state.viewer, today, projects: data.projects }, litEntry);
+    return parked.size ? hit.filter((it) => !parked.has(it.key)) : hit;
+  }, [view.layout, data.items, parsed, state.viewer, today, data.projects, litEntry, parked]);
+  const inbox = useMemo(
+    () => inboxList(listBase, state.inboxThreads, state.mineFilter, state.viewer, (repo) => handBackFor({ handBack, repoLabels }, repo).human.trim() || DEFAULT_PENDING_LABEL),
+    [listBase, state.inboxThreads, state.mineFilter, state.viewer, handBack, repoLabels],
+  );
+  const done = useMemo(() => doneList(listBase, state.doneDays, now, state.mineFilter, state.viewer), [listBase, state.doneDays, now, state.mineFilter, state.viewer]);
+  const lists: TableLists = {
+    inbox: inbox.length,
+    done: done.rows.length,
+    unknown: done.unknown,
+    days: state.doneDays,
+    viewerKnown: Boolean(state.viewer),
+    inboxNote: !state.githubActivity
+      ? t('设置里关掉了「也提醒 GitHub 上和我有关的新动态」')
+      : state.signedInAppKind === 'github-app'
+        ? t('用 GitHub App 方式登录时读不了 GitHub 通知')
+        : state.githubActivityProblem
+          ? t('GitHub 拒绝读取通知（{why}）', { why: state.githubActivityProblem })
+          : !state.inboxRead
+            ? t('还没读到 GitHub 通知')
+            : null,
+  };
   const table = useMemo(
-    () => (view.layout === 'table' ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, carrying) : null),
+    () =>
+      view.layout === 'table'
+        ? buildTable(items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, carrying, special ? { kind: special, rows: special === 'inbox' ? inbox : done.rows } : null)
+        : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, lang, carrying],
+    [view.layout, items, data.projects, view.table, today, view.prsUnderIssues, state.repoOrder, related, tableRepos, lang, carrying, special, inbox, done],
   );
   const selected = new Set(view.selected ?? state.sources.map((s) => s.key));
   const titles = new Map(data.projects.map((p) => [p.key, p.title]));
@@ -1124,7 +1159,7 @@ export function BoardView({
       )}
       {/* GitHub#689: 「只看我的」 is in effect and nothing passes — say so (in every layout), or an empty list
           reads as data gone; the switch is kept across restarts, so this can be the first thing seen */}
-      {mineOn && items.length === 0 && data.items.length > 0 && !guide && (
+      {mineOn && items.length === 0 && data.items.length > 0 && !guide && !special && (
         <div className="banner info" data-testid="mine-empty">
           {/* GitHub#746: with other accounts picked the switch is about more than the signed-in account */}
           {mineOthers
@@ -1183,6 +1218,7 @@ export function BoardView({
           pinnedLabels={pinned}
           openKey={floatKey}
           viewer={state.phase === 'ready' ? state.viewer : null}
+          lists={lists}
         />
       ) : (
       <div className={`board${board.lanes ? ' with-lanes' : ''}`} ref={boardRef} style={laneMax ? ({ '--lane-col-max': `${laneMax}px` } as CSSProperties) : undefined}>

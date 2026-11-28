@@ -220,6 +220,8 @@ export interface CavilApi {
   /** GitHub#713 */
   setGithubActivity(on: boolean): Promise<void>;
   setGithubActivityMarkRead(on: boolean): Promise<void>;
+  /** GitHub#752: 「最近完成」's days (1–365); anything else is refused */
+  setDoneDays(days: number): Promise<void>;
   /** GitHub#471: the interface language ('auto' = follow the system); takes effect at once */
   setUiLanguage(setting: LangSetting): Promise<void>;
   /** GitHub#516: light / dark ('system' = follow the system); takes effect at once */
