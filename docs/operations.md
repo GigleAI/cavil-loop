@@ -2611,6 +2611,15 @@ confirmation / `观察中` watching) is its state, and `Seen N×` lists the dist
   output. The self-review and cross-review templates check every hard rule one by one.
 - While a project's lessons.md is in an old, uncounted format the run is skipped before the model
   call, without counting an attempt, and retried hourly until the project migrates it.
+- Backslashes in existing entries are protected (a *spelling* is a run of visible ASCII without
+  blanks or backticks that holds a backslash, such as `\^L` or `C:\tmp`). A line that comes back
+  with only its backslashes doubled (2, 4, 32 for 1) is put back as it was, and the report ends with
+  a section the program writes saying how many lines (plus one `retrospective.log` line). Any other
+  change to an existing entry's spellings voids the output — the program cannot tell "deleted one,
+  kept the other" from "deleted the other, doubled this one" — so to change one, edit the file by
+  hand. A new entry may use a spelling only as often as this PR's discussion has it, whole (half of a
+  quoted path does not count). Text already doubled before this check stays as it is; fix it once
+  by hand on the base branch, and the next run takes that as the baseline.
 
 </details>
 

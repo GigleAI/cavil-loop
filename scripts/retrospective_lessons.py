@@ -106,6 +106,17 @@ is simply the next baseline):
   `validate` checks the result against the same plan. The line is the program's:
   the model never sees it, and a model output carrying it is rejected. Entries
   already in 硬规则 / 待确认 are never measured.
+* Backslash spellings (GitHub#750): a model reading the file as a JSON string can copy
+  `\\` as two real characters and double every backslash on each run. A *spelling* is a
+  maximal run of visible ASCII but backtick (`SPELLING`) holding at least one backslash.
+  `unfold` (run by the runner before `place`) puts back an entry line that equals a
+  line of the same entry in the previous version once its even backslash runs are
+  halved, repeatedly; then `validate` requires an existing entry's spellings, field by
+  field in order, to be exactly the previous version's, and a new entry's spellings to
+  occur no more often than in this run's evidence texts (`evidence_texts`, cut by the
+  same `spellings`). The program cannot tell "dropped A, kept B" from "dropped B,
+  doubled A", so any change to an existing entry's spellings is rejected; a human edits
+  the file instead.
 
 Optional fourth section `## 目录经验` (GitHub#152): pitfalls that only bite in one
 part of the code. Whether a run may write it is decided outside this module
@@ -157,7 +168,9 @@ DIR_HEADING = f'## {DIRS}'
 # test wrapper can prove each test case really depends on the check it names.
 CHECKS = ('count', 'dup_pr', 'dup_id', 'preamble', 'next_id', 'keep_ids', 'locked',
           'seen_prefix', 'seen_pr', 'seen_url', 'new_entry', 'dup_rule', 'section', 'length',
-          'dir_section', 'dir_required', 'dir_valid', 'dir_frozen', 'held',
+          'dir_section', 'dir_required', 'dir_valid', 'dir_frozen', 'held', 'backslash',
+          # Applied by the runner before `place` (not a rejection, a repair):
+          'unfold',
           # Checked by post-merge-retrospective.py around the project command:
           'cmd_files', 'cmd_head')
 
@@ -476,8 +489,106 @@ def evidence_urls(evidence):
     return urls
 
 
+# ── Backslash spellings (GitHub#750) ─────────────────────────────────────────
+
+# Visible ASCII but backtick: Chinese text, blanks and backticks all cut a spelling.
+SPELLING = re.compile(r'[\x21-\x5f\x61-\x7e]+')
+BACKSLASHES = re.compile(r'\\+')
+
+
+def spellings(text):
+    """Every spelling (see SPELLING) in `text` that holds a backslash, in order. The one cut
+    used for both the lessons and the evidence, so the two sides always count alike."""
+    return [m.group() for m in SPELLING.finditer(text or '') if '\\' in m.group()]
+
+
+def entry_spellings(entry):
+    """An entry's spellings, field by field in file order (规则, 适用, 为什么, 这样做是对的)."""
+    return [s for attr in FIELDS.values() for s in spellings(getattr(entry, attr))]
+
+
+def evidence_texts(evidence):
+    """Every text this run collected: the bodies behind exactly the items `evidence_urls` lists."""
+    texts = [evidence['pr'].get('body')]
+    for issue in evidence.get('issues', []):
+        texts.append(issue.get('body'))
+        texts += [c.get('body') for c in issue.get('conversation', [])]
+    for key in ('conversation', 'reviews', 'inline_comments'):
+        texts += [c.get('body') for c in evidence.get(key, [])]
+    return [t for t in texts if t]
+
+
+def _folds(line):
+    """`line` with every even backslash run halved, again and again until no run is even."""
+    while True:
+        folded = BACKSLASHES.sub(lambda m: m.group()[:len(m.group()) // 2]
+                                 if len(m.group()) % 2 == 0 else m.group(), line)
+        if folded == line:
+            return
+        yield folded
+        line = folded
+
+
+def unfold(old_text, new_text):
+    """(text, restored): `new_text` with every entry line that is not in the previous
+    version's same entry, but folds (see `_folds`) into one of its lines, put back as that
+    line. restored = [(id, lines put back)]. Entries are paired by id and positions come
+    from `parse` (never a search), so a line elsewhere in the file is never borrowed. A
+    text that does not parse comes back unchanged for `validate` to reject."""
+    try:
+        old, new = parse(old_text), parse(new_text)
+    except LessonsError:
+        return new_text, []
+    old_lines, lines = old_text.split('\n'), new_text.split('\n')
+    old_ids, restored = old.by_id(), []
+    for e in new.entries:
+        before = old_ids.get(e.id)
+        if before is None:
+            continue
+        known = set(old_lines[before.at:before.end])
+        count = 0
+        for k in range(e.at, e.end):
+            if lines[k] in known:
+                continue
+            match = next((f for f in _folds(lines[k]) if f in known), None)
+            if match is not None:
+                lines[k], count = match, count + 1
+        if count:
+            restored.append((e.id, count))
+    return ('\n'.join(lines) if restored else new_text), restored
+
+
+def _check_spellings(old, new, added, evidence):
+    """[backslash] errors: existing entries keep their spellings exactly; a new entry uses
+    each spelling no more often than the evidence texts carry it."""
+    errors, old_ids, new_ids = [], old.by_id(), new.by_id()
+    for i, before in old_ids.items():
+        after = new_ids.get(i)
+        if after is None:
+            continue
+        was, now = entry_spellings(before), entry_spellings(after)
+        if was != now:
+            errors.append(f'[backslash] L{i}: 已有经验里的反斜杠写法必须原样保留'
+                          f'（上一版 {was}，这一版 {now}）')
+    if not added:
+        return errors
+    budget = {}
+    for text in evidence:
+        for s in spellings(text):
+            budget[s] = budget.get(s, 0) + 1
+    for i in added:
+        used = {}
+        for s in entry_spellings(new_ids[i]):
+            used[s] = used.get(s, 0) + 1
+        over = sorted(s for s, n in used.items() if n > budget.get(s, 0))
+        if over:
+            errors.append(f'[backslash] L{i}: 新经验里的反斜杠写法 {over} 比本次讨论原文里出现得多'
+                          '（照抄讨论里的写法，不要自己加反斜杠）')
+    return errors
+
+
 def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None, directories=None,
-             max_chars=RULE_MAX_CHARS_DEFAULT):
+             max_chars=RULE_MAX_CHARS_DEFAULT, evidence_texts=()):
     """Return a list of human-readable violations; empty means the rewrite is acceptable.
 
     `new_text` is what will be written — after `place` — so entries a promotion
@@ -487,7 +598,10 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None, dir
     `repo_root` is the merged checkout new 目录经验 directories must exist in.
     `directories=False`: this run may not write 目录经验 — the section (heading
     included) must be byte-identical to the baseline's. Every other check applies
-    either way; True / None add nothing."""
+    either way; True / None add nothing.
+
+    `evidence_texts`: this run's discussion texts (`evidence_texts(evidence)`), the only
+    allowance for backslash spellings in a new entry."""
     if mode not in ('auto', 'confirm'):
         raise ValueError(f'unknown promotion mode {mode!r}')
     target = '硬规则' if mode == 'auto' else '待确认'
@@ -559,6 +673,8 @@ def validate(old_text, new_text, *, pr, evidence_urls, mode, repo_root=None, dir
         errors += _check_directories(f'L{i}', entry.section, entry.seen, repo_root)
         if _on('section') and entry.section not in (WATCH, DIRS):
             errors.append(f'[section] L{i}: a new entry starts in {WATCH} (or {DIRS})')
+    if _on('backslash'):
+        errors += _check_spellings(old, new, added, evidence_texts)
     return errors
 
 
@@ -710,9 +826,22 @@ def has_held_line(text):
 
 
 def summary_markdown(summary):
-    """The fixed paragraph the runner appends to the report; '' when nothing concerns the limit."""
-    if not any(summary[k] for k in ('held', 'still', 'late', 'dropped')):
-        return ''
+    """The fixed paragraphs the runner appends to the report; '' when nothing concerns the
+    limit and no line was put back (`summary['unfolded']`, from `unfold`)."""
+    limit_part = _limit_markdown(summary) if any(summary.get(k) for k in ('held', 'still', 'late', 'dropped')) else ''
+    restored = summary.get('unfolded') or []
+    if not restored:
+        return limit_part
+    out = ['## 程序附注：换回被重复转义的行', '',
+           '本段由复盘程序追加，不是模型写的。模型交回的经验里，下面这些行只是比上一版多了成倍的反斜杠'
+           '（每段连续反斜杠多次对半折叠后与上一版同一条的某一行完全相同），程序已换回上一版的原文：', '']
+    out += [f'- L{i}：{n} 行' for i, n in restored]
+    out += ['', f'共换回 {sum(n for _, n in restored)} 行。']
+    unfold_part = '\n'.join(out) + '\n'
+    return limit_part + '\n' + unfold_part if limit_part else unfold_part
+
+
+def _limit_markdown(summary):
     target, limit = summary['target'], summary['max']
     limit_text = f'{limit} 字' if limit else '不限'
     out = ['## 程序附注：升档字数上限', '',
@@ -737,11 +866,17 @@ def summary_markdown(summary):
 
 
 def summary_log(summary):
-    """One log line for the same facts; '' when nothing concerns the limit."""
+    """One log line for the same facts; '' when nothing concerns the limit and nothing was put back."""
     parts = []
     for key, word in (('held', 'held back'), ('still', 'still held'), ('late', 'promoted late')):
-        if summary[key]:
+        if summary.get(key):
             parts.append(word + ' ' + ' '.join(f'L{i}({c})' for i, c in summary[key]))
-    if summary['dropped']:
+    if summary.get('dropped'):
         parts.append('dropped from the held line ' + ' '.join(f'L{i}({w})' for i, w in summary['dropped']))
-    return f'rule length limit {summary["max"]}: ' + '; '.join(parts) if parts else ''
+    line = f'rule length limit {summary["max"]}: ' + '; '.join(parts) if parts else ''
+    restored = summary.get('unfolded') or []
+    if restored:
+        unfolded = ('put back doubled backslashes ' + ' '.join(f'L{i}({n})' for i, n in restored)
+                    + f' = {sum(n for _, n in restored)} lines')
+        line = line + '; ' + unfolded if line else unfolded
+    return line
