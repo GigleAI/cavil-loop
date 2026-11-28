@@ -32,7 +32,7 @@ The user gives you a host project path (e.g. `~/github/myproject`). Steps:
    bash "${CLAUDE_PLUGIN_ROOT:-$HOME/.agents/skills/cavil-loop}/setup.sh" <host-project-path>
    ```
    `$CLAUDE_PLUGIN_ROOT` is the skill-root env Claude Code injects; if absent, fall back to the canonical `~/.agents/skills/cavil-loop`.
-4. `setup.sh` prints next-step guidance when done — relay it to the user verbatim.
+4. `setup.sh` prints next-step guidance when done — relay it to the user verbatim. Its "worker 令牌检查" section says whether the worker has a GitHub token (a configured `GH_TOKEN`, or the account `gh auth login` signed in on this machine); a warning there means no work will be dispatched until the line it names is added to the file it names — tell the user.
 
 ### status
 

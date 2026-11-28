@@ -25,8 +25,8 @@ const ME = 'user-6';
 /** an open issue opened by user-1, assigned to ME below */
 const ASSIGNED = 135;
 
-/** the recorded pages, with issue #ASSIGNED assigned to ME */
-function pages() {
+/** the recorded pages, with issue #ASSIGNED assigned to ME (and, GitHub#746, `extra` issues assigned to the given accounts) */
+function pages(extra: Record<number, string> = {}) {
   const data = loadCavilProjectPages();
   let done = 0;
   const walk = (v: any): void => {
@@ -35,6 +35,9 @@ function pages() {
     if (v.content && typeof v.content === 'object' && v.content.number === ASSIGNED && v.content.assignees) {
       v.content.assignees = { ...v.content.assignees, nodes: [{ login: ME }] };
       done++;
+    }
+    if (v.content && typeof v.content === 'object' && extra[v.content.number] && v.content.assignees) {
+      v.content.assignees = { ...v.content.assignees, nodes: [{ login: extra[v.content.number] }] };
     }
     Object.values(v).forEach(walk);
   };
@@ -67,7 +70,7 @@ const toMe = (i: Item) => i.assignees.some((a) => lc(a) === ME);
 const items = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).data.items as Item[]);
 const mineState = (page: Page) => page.evaluate(async () => (await (window as any).cavil.get()).state.mineFilter);
 /** what the back end has stored (its own read) */
-const stored = async (app: RunningApp) => (((await app.backend.call('init')) as { settings: Record<string, any> }).settings.mineFilter ?? null) as Record<string, boolean> | null;
+const stored = async (app: RunningApp) => (((await app.backend.call('init')) as { settings: Record<string, any> }).settings.mineFilter ?? null) as Record<string, unknown> | null;
 const rowKeys = (page: Page) => page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => rs.map((r) => r.getAttribute('data-key')!).sort());
 const cardKeys = (page: Page) => page.$$eval('[data-testid="card"]:not([data-carried])', (cs) => [...new Set(cs.map((c) => c.getAttribute('data-key')!))].sort());
 const layout = (page: Page, l: string) => page.locator(`[data-testid="layout"] button[data-value="${l}"]`).click();
@@ -138,7 +141,7 @@ test('GitHub#689: 「只看我的」 narrows every layout and the view-bar numbe
   await page.getByTestId('mine-assignee').uncheck();
   await expect.poll(() => rowKeys(page)).toEqual(keys(mineAuthor));
   await expect(page.getByTestId('mine-author')).toBeDisabled();
-  await expect.poll(() => mineState(page)).toEqual({ on: true, author: true, assignee: false });
+  await expect.poll(() => mineState(page)).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] });
   await page.getByTestId('mine-assignee').check();
   await expect.poll(() => rowKeys(page)).toEqual(keys(mineAny));
 
@@ -171,7 +174,7 @@ test('GitHub#689: 「只看我的」 narrows every layout and the view-bar numbe
   await expect(page.getByTestId('search')).toHaveValue('');
 
   // ---- a restart keeps it ----
-  await expect.poll(() => stored(app)).toEqual({ on: true, author: true, assignee: true });
+  await expect.poll(() => stored(app)).toEqual({ on: true, author: true, assignee: true, authors: [], assignees: [] });
   await app.close();
   app = await launchApp(env);
   page = app.page;
@@ -220,7 +223,7 @@ test('GitHub#689 (PR #698 review round 1): an account with nothing of its own �
   await expect(button(page)).toHaveAttribute('data-on', 'no');
   await expect.poll(() => rowKeys(page)).toEqual(keys(open_));
   await expect(page.getByTestId('mine-empty')).toHaveCount(0);
-  await expect.poll(() => mineState(page)).toEqual({ on: false, author: true, assignee: true });
+  await expect.poll(() => mineState(page)).toEqual({ on: false, author: true, assignee: true, authors: [], assignees: [] });
   await app.close();
 });
 
@@ -466,5 +469,134 @@ test('GitHub#728: a tap on 「只看我的」 opens the panel and lifting the fi
   await expect(pop()).toBeVisible();
   await page.mouse.move(off.x, off.y, { steps: 4 });
   await expect(pop()).toHaveCount(0);
+  await app.close();
+});
+
+// GitHub#746: other accounts picked as 提出者 / 负责人 — searched in the panel, chosen with the keyboard and the
+// mouse, each one more condition, any one matching. The recording's open items: #135 and #144 opened by user-1
+// (#135 assigned to ME above), the rest opened by ME; here #142 (opened by ME) is also assigned to user-2, so
+// 负责人 user-2 brings an item that no other condition brings. Expected rows are written out from the window's
+// own items with the rule spelled out here (author / assignee, any case), never with the app's functions.
+test('GitHub#746: pick other 提出者 / 负责人 by search — only theirs once both boxes are off, the union with mine while a box stays, kept across a restart', async () => {
+  const OTHER = 'user-1';
+  const HELPER = 'user-2';
+  const HELPED = 142;
+  await env.fake.close();
+  env.fake = await startFakeGitHub({ viewer: ME, projects: new Map([['org/gigleai/11', pages({ [HELPED]: HELPER })]]) });
+  let app = await launchApp(env);
+  let page = app.page;
+  await ready(page);
+  const all = await items(page);
+  const open_ = all.filter((i) => i.state === 'open');
+  const by = (l: string) => (i: Item) => lc(i.author) === l;
+  const to = (l: string) => (i: Item) => i.assignees.some((a) => lc(a) === l);
+  const rows = (pred: (i: Item) => boolean) => keys(open_.filter(pred));
+  // not vacuous: each condition picks something the others do not
+  expect(open_.filter(by(OTHER)).map((i) => i.number).sort()).toEqual([135, 144]);
+  expect(open_.filter(to(HELPER)).map((i) => i.number)).toEqual([HELPED]);
+  expect(open_.filter((i) => !by(OTHER)(i) && !to(HELPER)(i)).length).toBeGreaterThan(0);
+
+  await open(page);
+  await page.getByTestId('mine-on').check();
+  await expect(button(page)).toHaveText('只看我的');
+
+  // ---- the 提出者 search: everyone who opened an item, me left out, most items first; Enter picks ----
+  await page.getByTestId('mine-author-search').fill('user-');
+  const offered = page.getByTestId('mine-author-list').getByTestId('mine-candidate');
+  await expect(offered.first()).toHaveAttribute('data-login', OTHER);
+  const logins = await offered.evaluateAll((ls) => ls.map((l) => l.getAttribute('data-login')));
+  const authors = [...new Set(all.map((i) => i.author).filter((a): a is string => !!a && lc(a) !== ME))];
+  expect([...logins].sort()).toEqual(authors.sort());
+  await page.getByTestId('mine-author-search').fill(OTHER);
+  await page.getByTestId('mine-author-search').press('Enter');
+  await expect(page.getByTestId('mine-people-author').getByTestId('mine-chip')).toHaveAttribute('data-login', OTHER);
+  await expect(page.getByTestId('mine-author-search')).toHaveValue(''); // picked: the search starts over
+  await expect(button(page)).toHaveText('只看 2 人'); // user-1 and me (both boxes still ticked)
+  // both boxes kept: mine and user-1's together
+  await expect.poll(() => rowKeys(page)).toEqual(rows((i) => by(ME)(i) || to(ME)(i) || by(OTHER)(i)));
+
+  // ---- both boxes off: only user-1's; the last condition cannot be taken off ----
+  await page.getByTestId('mine-author').uncheck();
+  await page.getByTestId('mine-assignee').uncheck();
+  await expect.poll(() => rowKeys(page)).toEqual(rows(by(OTHER)));
+  await expect(button(page)).toHaveText('只看 1 人');
+  await expect(page.getByTestId('mine-chip-remove')).toBeDisabled();
+  await expect.poll(() => mineState(page)).toEqual({ on: true, author: false, assignee: false, authors: [OTHER], assignees: [] });
+
+  // ---- a 负责人 picked with the mouse: its item joins ----
+  await page.getByTestId('mine-assignee-search').fill(HELPER.slice(0, 5));
+  await page.getByTestId('mine-assignee-list').locator(`[data-testid="mine-candidate"][data-login="${HELPER}"]`).click();
+  await expect.poll(() => rowKeys(page)).toEqual(rows((i) => by(OTHER)(i) || to(HELPER)(i)));
+  await expect(button(page)).toHaveText('只看 2 人');
+  await page.getByTestId('mine-assignee-search').fill('user-');
+  await shot(page, 'mine-746-people');
+
+  // ---- user-1 taken off, 指派给我 back: user-2's item and the one assigned to me, nothing else ----
+  await page.getByTestId('mine-people-author').getByTestId('mine-chip-remove').click();
+  await page.getByTestId('mine-assignee').check();
+  await expect.poll(() => rowKeys(page)).toEqual(rows((i) => to(HELPER)(i) || to(ME)(i)));
+  expect((await rowKeys(page)).length).toBe(2);
+  await expect(button(page)).toHaveText('只看 2 人');
+  await expect(button(page)).toHaveAttribute('data-on', 'yes');
+
+  // ---- Esc: the first puts the list away, the second closes the panel ----
+  await page.getByTestId('mine-assignee-search').fill('');
+  await page.getByTestId('mine-assignee-search').focus();
+  await expect(page.getByTestId('mine-assignee-list')).toBeVisible();
+  await page.getByTestId('mine-assignee-search').press('Escape');
+  await expect(page.getByTestId('mine-assignee-list')).toHaveCount(0);
+  await expect(page.getByTestId('mine-filter-pop')).toBeVisible();
+  await page.getByTestId('mine-assignee-search').press('Escape');
+  await expect(page.getByTestId('mine-filter-pop')).toHaveCount(0);
+
+  // ---- a restart keeps it ----
+  const want = { on: true, author: false, assignee: true, authors: [], assignees: [HELPER] };
+  await expect.poll(() => stored(app)).toEqual(want);
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => rowKeys(page)).toEqual(rows((i) => to(HELPER)(i) || to(ME)(i)));
+  await expect(button(page)).toHaveText('只看 2 人');
+
+  // ---- typing in a search box: the mouse leaving does not close the panel; a press elsewhere does ----
+  const center = async (testid: string) => {
+    const b = (await page.getByTestId(testid).boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  await open(page);
+  await page.getByTestId('mine-author-search').click();
+  await page.keyboard.type('user');
+  const off = await center('layout');
+  await page.mouse.move(off.x, off.y, { steps: 4 });
+  await page.waitForTimeout(600);
+  await expect(page.getByTestId('mine-filter-pop')).toBeVisible();
+  await page.mouse.click(off.x, off.y + 200);
+  await expect(page.getByTestId('mine-filter-pop')).toHaveCount(0);
+
+  // ---- taking user-2 off leaves only the box: the button reads 「只看我的」 again ----
+  await open(page);
+  await page.getByTestId('mine-people-assignee').getByTestId('mine-chip-remove').click();
+  await expect(button(page)).toHaveText('只看我的');
+  await expect.poll(() => rowKeys(page)).toEqual(rows(to(ME)));
+
+  // ---- someone with no open item, both boxes off: the note says the panel's conditions are why; one click turns it off ----
+  const quiet = 'user-3';
+  expect(open_.filter((i) => by(quiet)(i) || to(quiet)(i))).toEqual([]);
+  expect(all.filter(by(quiet)).length).toBeGreaterThan(0); // offered: it opened a closed item
+  await page.getByTestId('mine-author-search').fill(quiet);
+  await page.getByTestId('mine-author-search').press('Enter');
+  await expect(page.getByTestId('mine-people-author').getByTestId('mine-chip')).toHaveAttribute('data-login', quiet);
+  await page.getByTestId('mine-author-search').press('Escape'); // the list lies over the box below: put it away first
+  await expect(page.getByTestId('mine-filter-pop')).toBeVisible();
+  await page.getByTestId('mine-assignee').uncheck();
+  await expect.poll(() => rowKeys(page)).toEqual([]);
+  await expect(page.getByTestId('mine-empty')).toContainText('已开「只看」：没有符合面板里所选条件');
+  await expect(page.getByTestId('mine-empty-off')).toHaveText('关掉「只看」');
+  await page.getByTestId('mine-assignee').press('Escape'); // the panel lies over the note: close it first
+  await expect(page.getByTestId('mine-filter-pop')).toHaveCount(0);
+  await page.getByTestId('mine-empty-off').click();
+  await expect(button(page)).toHaveAttribute('data-on', 'no');
+  await expect.poll(() => rowKeys(page)).toEqual(keys(open_));
   await app.close();
 });

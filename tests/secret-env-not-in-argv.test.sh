@@ -58,6 +58,20 @@ exec 8>&2
 source "$REPO_DIR/scripts/_lib.sh"
 exec 2>&8 8>&-
 set +e
+# 假 gh：只回答「auth token」（GitHub#739：GH_TOKEN 两把都没配时借用本机保存的登录）。照真 gh 的先后：
+# GH_TOKEN → GITHUB_TOKEN → 保存的登录（FAKE_GH_LOGIN 有值 = 已保存）。放在 PATH 最前面（_lib.sh 会在
+# 前面补上 ~/.local/bin 等，所以 source 之后再放），本机真的 gh 登录态进不来。
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "${1:-} ${2:-}" = "auth token" ] || exit 1
+t="${GH_TOKEN:-${GITHUB_TOKEN:-${FAKE_GH_LOGIN:-}}}"
+[ -n "$t" ] || exit 1
+printf '%s\n' "$t"
+GH
+chmod +x "$SANDBOX/bin/gh"
+PATH="$SANDBOX/bin:$PATH"
+LOGIN_TOKEN="ghp_LOGINLOGINLOGINLOGINLOGINLOGIN2222"
 
 cleanup() {
     # 显式 -S：就算 TMUX_TMPDIR 没生效，也绝不会去关本机的默认 server（上面跑着 worker）。
@@ -130,9 +144,15 @@ chk "tmux server / pane / 子进程的 cmdline 都不含 token" "$hit" "0"
 # **exec 掉**（真实 CMD 里那条就是 claude 本身），pane 进程于是变成 claude / sleep，
 # 连路径都不在 argv 里了——比断言的还干净，但时机不稳定，不适合拿来做断言。
 
-echo "【5】require_secret_env：变量缺失时拒绝派工"
-( unset GH_TOKEN; require_secret_env >/dev/null 2>&1 )
-chk "GH_TOKEN 缺失 → 返回非 0" "$?" "1"
+echo "【5】require_secret_env：变量缺失（本机 gh 也没登录）时拒绝派工，原因进 poll.log 和 stdout"
+: > "$LOG_FILE"
+out5=$( unset GH_TOKEN; require_secret_env 2>/dev/null ); rc5=$?
+chk "GH_TOKEN 缺失 → 返回非 0" "$rc5" "1"
+# stdout 这一行就是连续失败转人工时留言里的「最后一次的错误」（GitHub#739：以前是空的，留言只有占位符）
+chk "stdout 一行原因，写明拒绝派工和变量名" "$(printf '%s\n' "$out5" | grep -c '^拒绝派工：.*GH_TOKEN')" "1"
+chk "stdout 不带本机路径"   "$(printf '%s' "$out5" | grep -c "$SANDBOX")" "0"
+chk "poll.log 有拒绝派工这一行" "$(grep -c '❌ 拒绝派工：.*GH_TOKEN' "$LOG_FILE")" "1"
+chk "poll.log 不含任何 token" "$(grep -c 'ghp_' "$LOG_FILE")" "0"
 require_secret_env >/dev/null 2>&1
 chk "GH_TOKEN 存在 → 返回 0"   "$?" "0"
 
@@ -188,6 +208,36 @@ secret_env_file GH_TOKEN >/dev/null
 chk "交接文件回落成 GH_TOKEN 的值" "$(cat "$sf" 2>/dev/null)" "$FAKE_TOKEN"
 ( unset GH_TOKEN; unset WRITE_GH_TOKEN; require_secret_env >/dev/null 2>&1 )
 chk "两把都缺席 → 拒绝派工"       "$?" "1"
+
+echo "【10】两把都缺席、本机 gh 已登录 → 借用登录的令牌（GitHub#739，维护者选的 B）"
+rm -f "$sf"; : > "$LOG_FILE"
+(
+    unset GH_TOKEN WRITE_GH_TOKEN
+    export FAKE_GH_LOGIN="$LOGIN_TOKEN"
+    require_secret_env >/dev/null 2>&1; echo "rc=$?"
+    tmux_env_args | tr '\0' '\n' > "$SANDBOX/args10"
+) > "$SANDBOX/out10"
+chk "放行派工"                       "$(cat "$SANDBOX/out10")" "rc=0"
+chk "交接文件里是本机登录的令牌"     "$(cat "$sf" 2>/dev/null)" "$LOGIN_TOKEN"
+chk "argv 不含它，只有路径"          "$(grep -c "$LOGIN_TOKEN" "$SANDBOX/args10"):$(grep -c '^GH_TOKEN_FILE=' "$SANDBOX/args10")" "0:1"
+chk "poll.log 记一行借用了本机登录"  "$(grep -c '借用本机 gh 登录' "$LOG_FILE")" "1"
+chk "poll.log 不含令牌值"            "$(grep -c 'ghp_' "$LOG_FILE")" "0"
+# 配了 GH_TOKEN 时绝不借用：本机登录只是兜底，不顶替人亲手配的那把
+rm -f "$sf"; : > "$LOG_FILE"
+( export FAKE_GH_LOGIN="$LOGIN_TOKEN"; require_secret_env >/dev/null 2>&1 )
+chk "配了 GH_TOKEN → 用配的那把"     "$(cat "$sf" 2>/dev/null)" "$FAKE_TOKEN"
+chk "配了 GH_TOKEN → 不记借用"       "$(grep -c '借用' "$LOG_FILE")" "0"
+# 没保存登录、环境里只有 GITHUB_TOKEN：那不是「本机登录」，不借用、照样拒绝（复审第 1 轮问题 2：以前只
+# 去掉 GH_TOKEN，gh 把 GITHUB_TOKEN 当成令牌返回，环境里的这一把被当成本机登录交给了 worker）
+rm -f "$sf"
+( unset GH_TOKEN WRITE_GH_TOKEN FAKE_GH_LOGIN; export GITHUB_TOKEN=ghp_ENVONLYENVONLYENVONLYENVONLY3333
+  require_secret_env >/dev/null 2>&1 )
+chk "只有 GITHUB_TOKEN、没保存登录 → 拒绝派工、不落文件" "$?:$([ -e "$sf" ] && echo file || echo nofile)" "1:nofile"
+# 保存了登录、环境里同时有 GITHUB_TOKEN：交给 worker 的是保存的那把
+rm -f "$sf"
+( unset GH_TOKEN WRITE_GH_TOKEN; export FAKE_GH_LOGIN="$LOGIN_TOKEN" GITHUB_TOKEN=ghp_ENVONLYENVONLYENVONLYENVONLY3333
+  require_secret_env >/dev/null 2>&1 )
+chk "保存了登录 + 环境里有 GITHUB_TOKEN → 用保存的那把" "$(cat "$sf" 2>/dev/null)" "$LOGIN_TOKEN"
 
 echo
 echo "通过 $pass / 失败 $fail"

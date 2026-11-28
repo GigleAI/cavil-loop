@@ -45,7 +45,7 @@ if [ -d "$WORKTREE_DIR" ]; then
     log "  worktree 目录已存在：${WORKTREE_DIR}（跳过创建）"
 else
     # 分支被别的 worktree 签出时，`git worktree add`（不带 --force）本来就会失败，
-    # 但错误只写在 stderr 上，而 _lib.sh 顶部的永久 `2>/dev/null` 会把它整个吞掉——
+    # 但错误只写在 stderr 上（只去 journal，不进 poll.log）——
     # 于是 poll.log 里只剩一句「派工失败」。先显式判一次，把占用者路径写进日志。
     #
     # 占用者是主 checkout 时给 `switch`、附加 worktree 时给 `worktree remove`，路径一律是

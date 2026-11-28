@@ -653,33 +653,44 @@ describe('sync and cache', () => {
 
   it('GitHub#689: 「只看我的」 survives a restart and a Project import, kept once for the window; the last box cannot be unticked; a broken saved value reads field by field', async () => {
     const first = await loggedIn();
-    expect(first.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true });
+    expect(first.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true, authors: [], assignees: [] });
     first.c.setMineFilter({ on: true });
     first.c.setMineFilter({ assignee: false });
     first.c.setMineFilter({ author: false }); // would untick the last box: refused as a whole
     first.c.setMineFilter({ on: 'yes' } as any); // not a boolean: ignored
-    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false });
+    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] });
     first.c.setView({ layout: 'table' }); // another layout: the one switch is untouched
-    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false });
+    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] });
     first.c.addSource(`${PROJECT_URL}/views/1`);
     await first.c.start();
     await first.c.syncNow();
     expect(first.c.getState().view.imported).toMatchObject({ viewNumber: 1 }); // the import ran…
-    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false }); // …and left it alone
+    expect(first.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] }); // …and left it alone
     first.c.stopTimer();
 
     const second = await make({ credentials: first.credentials });
-    expect(second.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false });
+    expect(second.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] });
     second.c.setMineFilter({ on: false, assignee: true });
     const third = await make({ credentials: first.credentials });
-    expect(third.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true });
+    expect(third.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true, authors: [], assignees: [] });
 
     const broken = await make({ seed: { mineFilter: { on: true, author: 'no', assignee: false } } });
-    expect(broken.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false });
+    expect(broken.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: false, authors: [], assignees: [] });
     const none = await make({ seed: { mineFilter: { on: true, author: false, assignee: false } } });
-    expect(none.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: true });
+    expect(none.c.getState().mineFilter).toEqual({ on: true, author: true, assignee: true, authors: [], assignees: [] });
     const notAnObject = await make({ seed: { mineFilter: [true] } });
-    expect(notAnObject.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true });
+    expect(notAnObject.c.getState().mineFilter).toEqual({ on: false, author: true, assignee: true, authors: [], assignees: [] });
+
+    // GitHub#746: picked accounts are kept and survive a restart; they count as conditions, so both boxes may go
+    const people = await loggedIn();
+    people.c.setMineFilter({ on: true, authors: ['alice', 'ALICE', 'bad login', 7], assignees: ['dave'] });
+    people.c.setMineFilter({ author: false, assignee: false });
+    expect(people.c.getState().mineFilter).toEqual({ on: true, author: false, assignee: false, authors: ['alice'], assignees: ['dave'] });
+    people.c.setMineFilter({ authors: [] });
+    people.c.setMineFilter({ assignees: [] }); // would leave nothing: refused
+    expect(people.c.getState().mineFilter).toEqual({ on: true, author: false, assignee: false, authors: [], assignees: ['dave'] });
+    const peopleAgain = await make({ credentials: people.credentials });
+    expect(peopleAgain.c.getState().mineFilter).toEqual({ on: true, author: false, assignee: false, authors: [], assignees: ['dave'] });
   });
 
   it('GitHub#297: folded board swimlanes survive a restart and a Project import, apart from the table folds; a broken saved value reads as nothing folded', async () => {

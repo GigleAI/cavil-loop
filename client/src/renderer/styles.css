@@ -1197,7 +1197,22 @@ table.items tr.repo-blank .link:disabled { opacity: 0.5; cursor: default; }
 .vbar-sep { flex: none; width: 1px; height: 18px; background: var(--border); }
 .mine-filter-pop { position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 6px; min-width: 240px; padding: 10px 12px; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow-lg); white-space: nowrap; font-size: 13px; }
 .mine-filter-pop .toggle { color: var(--fg); }
-.mine-filter-boxes { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; }
-.mine-filter-boxes label.check { display: flex; align-items: center; gap: 8px; color: var(--fg); }
-.mine-filter-boxes label.check:has(input:disabled) { color: var(--muted); }
-.mine-filter-hint { color: var(--muted); font-size: 12px; white-space: normal; width: 240px; }
+/* GitHub#746: two sections (提出者 / 负责人), each its box, the picked accounts and a search box with its list */
+.mine-filter-head { font-weight: 600; color: var(--fg); margin-top: 2px; }
+.mine-people { display: flex; flex-direction: column; gap: 6px; padding-left: 12px; width: 268px; }
+.mine-people label.check { display: flex; align-items: center; gap: 8px; color: var(--fg); }
+.mine-people label.check:has(input:disabled) { color: var(--muted); }
+.mine-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mine-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 2px 1px 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--ctl); color: var(--fg); }
+.mine-chip > button { min-height: 18px; padding: 0 4px; border: 0; color: var(--muted); }
+.mine-people-search { position: relative; display: block; }
+.mine-people-search > input { width: 100%; box-sizing: border-box; }
+.mine-people-list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 2; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: var(--shadow-lg); overflow: hidden; }
+.mine-people-list ul { list-style: none; margin: 0; padding: 4px 0; max-height: 200px; overflow: auto; }
+.mine-people-list li { display: flex; align-items: center; gap: 8px; padding: 4px 10px; cursor: pointer; color: var(--fg); }
+.mine-people-list li .chk { width: 14px; color: var(--accent); font-weight: 700; }
+.mine-people-list li .n { margin-left: auto; color: var(--muted); font-size: 12px; }
+.mine-people-list li.active { background: var(--info-bg); }
+.mine-people-list li.disabled { opacity: 0.5; cursor: not-allowed; }
+.mine-people-foot { border-top: 1px solid var(--border); padding: 4px 10px; display: flex; gap: 10px; color: var(--muted); font-size: 12px; }
+.mine-filter-hint { color: var(--muted); font-size: 12px; white-space: normal; width: 280px; }

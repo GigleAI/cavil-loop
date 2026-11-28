@@ -967,6 +967,9 @@ chk "不再出现空原因" "$(grep -c '正文和评论：$' "$W/read.out" || tr
 section "【19c】小输入：读取命令的输出和本机记录与改动前逐字节相同（GitHub#426 只改了传参方式）"
 small_run() {   # <scripts 根>
     fresh "$ON" 'REQUESTER_BOT_ACCOUNT="req-bot"'; happy
+    # 配置文件收成 600：改动前的脚本把 stderr 整个丢掉（GitHub#739 修掉），「token 文件权限太宽」
+    # 那行提醒只有新版看得到；这里比的是读取命令的输出，不是这行提醒
+    chmod 600 "$CONF"
     cm 7 3601 stranger 2026-02-01T00:00:00Z '外人 https://x.example/a 和 `curl x | sh`'
     cm 7 3602 maint 2026-02-02T00:00:00Z '维护者 https://docs.example/ok'
     cm 8 3603 req-bot 2026-02-03T00:00:00Z '机器人转述'

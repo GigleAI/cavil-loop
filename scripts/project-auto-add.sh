@@ -47,10 +47,8 @@
 #
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec 8>&2
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
-exec 2>&8 8>&-
 
 PAA_STATE="$STATE_DIR/project-auto-add.json"
 PAA_OVERLAP_SECS=600     # 规格里的「减 10 分钟」

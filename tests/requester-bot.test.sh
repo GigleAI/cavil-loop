@@ -963,8 +963,9 @@ REAL_FLOCK="$(command -v flock)"
 lock_wait_free() {   # 等到锁真被占住（最多约 5 秒）
     local i; for i in $(seq 50); do "$REAL_FLOCK" -n "$RW/state/poll.lock" true || return 0; sleep 0.1; done; return 1
 }
-lock_case() {   # [环境变量…]：跑 #50 的叫醒，RC / OUT
-    RC=0; OUT=$(env "$@" FAKE_GH_DIR="$RW/gh" bash "$NEW/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" 50 2>&1) || RC=$?
+lock_case() {   # [环境变量…]：跑 #50 的叫醒，RC / OUT（stdout）/ ERR（stderr：log() 的行也会到这里，先过脱敏）
+    RC=0; OUT=$(env "$@" FAKE_GH_DIR="$RW/gh" bash "$NEW/scripts/notify-requester-bot.sh" --config "$RW/cavil-loop.config" 50 2>"$RW/lock-case.err") || RC=$?
+    ERR=$(cat "$RW/lock-case.err" 2>/dev/null)
 }
 fresh_bot; hook_cfg; hook_reset; mkdir -p "$RW/state"; : > "$RW/gh/calls.log"
 "$REAL_FLOCK" -o "$RW/state/poll.lock" sleep 30 & HOLDER=$!   # -o：锁只在 flock 进程手里，杀掉它就放开
@@ -974,7 +975,8 @@ pkill -P "$HOLDER" 2>/dev/null; kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/de
 chk "锁被占 · 退出码 75" "$RC" 75
 chk "锁被占 · stdout 恰好一行原因（锁忙、没发写请求、标签没动）" \
     "$(printf '%s\n' "$OUT" | grep -cxF '⏸ 本项目的轮询锁被占用超过 1 秒（一轮轮询或一次标签改名还在进行）。没有发出任何写请求，标签没动（退出码 75）')" 1
-chk "锁被占 · 没有别的输出" "$(printf '%s\n' "$OUT" | grep -c .)" 1
+chk "锁被占 · stdout 没有别的输出" "$(printf '%s\n' "$OUT" | grep -c .)" 1
+chk "锁被占 · stderr 只有 log() 记的那一行" "$(printf '%s\n' "$ERR" | grep -c .)|$(printf '%s\n' "$ERR" | grep -c '轮询锁被占用超过 1 秒.*本次什么都不做')" "1|1"
 chk "锁被占 · 假 GitHub 收到 0 条写请求" "$(writes)" 0
 chk "锁被占 · webhook 0 次" "$(hook_count)" 0
 chk "锁被占 · 标签没动" "$(labels_of "$RW" 50)" "doing/agent,pending/agent"
@@ -993,7 +995,7 @@ lock_case
 rm -f "$RW/state/label-rename.json"
 chk "改名进行中 · 退出码 75" "$RC" 75
 chk "改名进行中 · stdout 一行具体原因" "$(printf '%s\n' "$OUT" | grep -c '^⏸ 标签改名闸门没放行：有一次流程标签改名还没做完.*没有发出任何写请求，标签没动（退出码 75）$')" 1
-chk "改名进行中 · 只说一次（没有再加一行「轮询锁被占用」，输出只有一行）" "$(printf '%s\n' "$OUT" | grep -c '轮询锁被占用')|$(printf '%s\n' "$OUT" | grep -c .)" "0|1"
+chk "改名进行中 · 只说一次（stdout、stderr 都没有再加一行「轮询锁被占用」，stdout 只有一行）" "$(printf '%s\n%s\n' "$OUT" "$ERR" | grep -c '轮询锁被占用')|$(printf '%s\n' "$OUT" | grep -c .)" "0|1"
 chk "改名进行中 · 假 GitHub 收到 0 条写请求、webhook 0 次、标签没动" "$(writes)|$(hook_count)|$(labels_of "$RW" 50)" "0|0|doing/agent,pending/agent"
 lock_case
 chk "改名记录拿掉后 · 对照：照常叫醒、webhook 1 次" "$RC|$(hook_count)|$(labels_of "$RW" 50)" "0|1|waiting/bot"
