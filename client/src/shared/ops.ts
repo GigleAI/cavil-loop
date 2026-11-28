@@ -33,14 +33,15 @@ import type { BlockedStepName, Facts, Pick, Ref } from './blocked';
 import { commentProves } from './sends';
 import { t, tKey, zhKey } from './i18n';
 
-export type OpKind = 'closeIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' | 'blocked';
-export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'closePr', 'merge', 'autopilot', 'handBack', 'blocked'];
+export type OpKind = 'closeIssue' | 'reopenIssue' | 'closePr' | 'merge' | 'autopilot' | 'handBack' | 'blocked';
+export const OP_KINDS: readonly OpKind[] = ['closeIssue', 'reopenIssue', 'closePr', 'merge', 'autopilot', 'handBack', 'blocked'];
 export function isOpKind(k: string): k is OpKind {
   return (OP_KINDS as readonly string[]).includes(k);
 }
 
 /** GitHub#434: 'relation' = one native "Blocked by"; 'check' = a read, nothing sent (the registration is the newest one) */
-export type OpStepName = 'close' | 'comment' | 'merge' | 'addLabel' | 'removeLabel' | 'relation' | 'check';
+/** GitHub#753: 'reopen' = a closed issue back to open (after its comment, when there is one) */
+export type OpStepName = 'close' | 'reopen' | 'comment' | 'merge' | 'addLabel' | 'removeLabel' | 'relation' | 'check';
 /** unsent: never went out; pending: sent, no answer yet; ok / refused: GitHub said so; unknown: sent, no clear answer */
 export type OpStepState = 'unsent' | 'pending' | 'ok' | 'refused' | 'unknown';
 
@@ -117,7 +118,7 @@ export interface OpRecord {
   draft: OpDraft;
   /** the newest landed re-read issued after every answer (its issue stamp); null = none yet */
   readAt: number | null;
-  /** close / merge: such a re-read showed the item closed / merged */
+  /** close / merge / reopen: such a re-read showed the item closed / merged / open */
   targetSeen: boolean;
   /** a person unlocked it by hand after checking GitHub */
   unlocked: boolean;
@@ -225,9 +226,18 @@ export function opPhase(r: OpRecord): OpPhase {
   return 'settled';
 }
 
-/** close / merge succeeded: the item must be read back closed / merged */
+/** close / merge / reopen succeeded: the item must be read back closed / merged / open */
 function needsTarget(r: OpRecord): boolean {
-  return r.steps.some((s) => (s.name === 'close' || s.name === 'merge') && s.state === 'ok');
+  return r.steps.some((s) => (s.name === 'close' || s.name === 'merge' || s.name === 'reopen') && s.state === 'ok');
+}
+
+/**
+ * GitHub#753: a reopen whose steps stopped short for sure — a step refused, or one never sent while
+ * nothing is on its way or unknown (its comment refused, or proven only after the sending had stopped).
+ * Its comment comes first, so the main step alone does not say whether the issue was reopened.
+ */
+function reopenShort(r: OpRecord): boolean {
+  return r.kind === 'reopenIssue' && opPhase(r) === 'settled' && r.steps.some((s) => s.state === 'refused' || s.state === 'unsent');
 }
 
 export function opLocked(r: OpRecord): boolean {
@@ -259,7 +269,7 @@ export function readBoundary(r: OpRecord): number | null {
 const main = (r: OpRecord) => r.steps[0];
 
 function what(r: OpRecord): string {
-  return r.kind === 'closeIssue' ? `issue #${r.number}` : r.kind === 'closePr' || r.kind === 'merge' ? `PR #${r.number}` : t('这一条 #{number}', { number: r.number });
+  return r.kind === 'closeIssue' || r.kind === 'reopenIssue' ? `issue #${r.number}` : r.kind === 'closePr' || r.kind === 'merge' ? `PR #${r.number}` : t('这一条 #{number}', { number: r.number });
 }
 
 /** GitHub#359: what the last check of an unknown label step found — never "it did not happen" */
@@ -341,6 +351,8 @@ export function opText(r: OpRecord): string {
                 ? t('，正在发评论…')
                 : t('，附的评论没有发出（关闭的应答丢了，没敢接着发）');
     }
+  } else if (r.kind === 'reopenIssue') {
+    head = reopenText(r, w);
   } else if (r.kind === 'blocked') {
     head = blockedText(r);
   } else if (r.kind === 'merge') {
@@ -392,6 +404,35 @@ export function opText(r: OpRecord): string {
   if (r.replyState === 'sending') head += t('；正在用附的评论原文发回复…');
   if (r.replyState === 'unknown') head += t('；用附的评论原文发的回复不确定有没有发出，请到 GitHub 页面核对');
   return head;
+}
+
+/**
+ * GitHub#753: the notice of a reopen. With a comment the comment goes first: until it went out the
+ * issue is not touched, and the sentence says which of the two stands where.
+ */
+function reopenText(r: OpRecord, w: string): string {
+  const pend = r.running && r.steps.every((s) => s.state === 'unsent') ? r.steps[0] : r.steps.find((s) => s.state === 'pending');
+  const c = r.steps.find((s) => s.name === 'comment');
+  const o = r.steps.find((s) => s.name === 'reopen')!;
+  if (pend) return pend.name === 'comment' ? t('正在重新打开 {what}：先发评论，发出后再重新打开…', { what: w }) : t('正在重新打开 {what}…', { what: w });
+  if (c && c.state !== 'ok') {
+    const why =
+      c.state === 'unknown'
+        ? t('评论发出后没有收到 GitHub 的应答，不确定有没有发出（{reason}）', { reason: c.reason ?? t('没有收到 GitHub 的应答') })
+        : commentText(c);
+    return t('没有重新打开 {what}：{detail}；发出评论之前不重新打开', { what: w, detail: why });
+  }
+  const said = c ? t('评论已发出，') : '';
+  switch (o.state) {
+    case 'ok':
+      return c ? t('{what} 已重新打开，评论已发出', { what: w }) : t('{what} 已重新打开', { what: w });
+    case 'refused':
+      return t('{said}没有重新打开 {what}：{reason}', { said, what: w, reason: o.reason ?? '' });
+    case 'unknown':
+      return t('{said}不确定 {what} 有没有重新打开（{reason}）', { said, what: w, reason: o.reason ?? t('没有收到 GitHub 的应答') });
+    default:
+      return t('{said}还没有重新打开 {what}：{reason}', { said, what: w, reason: o.reason ?? t('没有发出') });
+  }
 }
 
 /** GitHub#434: how one step of "等前置…" reads */
@@ -459,7 +500,7 @@ export function opFacts(r: OpRecord): NoticeFacts {
   return {
     busy: p === 'waiting' || (p === 'unknown' && r.checking === true) || r.finishing === true || (p === 'settling' && !r.stuck && !r.readProblem),
     done: opFullyDone(r),
-    failed: m.state === 'refused' || m.state === 'unsent' || !!r.finishProblem,
+    failed: m.state === 'refused' || m.state === 'unsent' || reopenShort(r) || !!r.finishProblem,
     // GitHub#359: a step whose answer never came is checked again with every sync round — also after a
     // check that could not read ("这次没能查证"): the app keeps at it, so it is yellow, not a dead end
     retrying: !!r.readProblem || (p === 'settling' && r.stuck) || (p === 'unknown' && !r.checking),
@@ -537,7 +578,7 @@ export function opButtons(r: OpRecord): OpButton[] {
   if (p === 'settled') {
     const m = main(r);
     // GitHub#434: a "等前置…" that did not finish is done again from the dialog (read afresh)
-    if (m.state === 'refused' || m.state === 'unsent' || (r.halt?.redo && !r.steps.every((s) => s.state === 'ok')) || (r.kind === 'blocked' && !r.steps.every((s) => s.state === 'ok'))) out.push('retry');
+    if (m.state === 'refused' || m.state === 'unsent' || reopenShort(r) || (r.halt?.redo && !r.steps.every((s) => s.state === 'ok')) || (r.kind === 'blocked' && !r.steps.every((s) => s.state === 'ok'))) out.push('retry');
     else if (finishSteps(r).length && !r.finishing) out.push('finish');
   }
   const left = opDraftLeft(r);
@@ -613,6 +654,9 @@ export function opRedoAction(r: OpRecord): Extract<WriteAction, { kind: Exclude<
       return r.draft.reason ? { kind: 'closeIssue', key: r.key, reason: d.reason ?? r.draft.reason, comment } : t('不知道上次选的关闭原因，请从详情里重新关闭');
     case 'closePr':
       return { kind: 'closePr', key: r.key, comment };
+    case 'reopenIssue':
+      // GitHub#753: a comment that went out is not in the reusable draft — only the reopen is done again
+      return { kind: 'reopenIssue', key: r.key, comment };
     case 'merge':
       return d.method && d.headOid ? { kind: 'merge', key: r.key, method: d.method, headOid: d.headOid } : t('不知道上次选的合并方式，请从详情里重新合并');
     case 'autopilot':
@@ -647,7 +691,7 @@ export function finishSteps(r: OpRecord, labels?: readonly string[]): OpStep[] {
  * A re-read of the item landed (issued at `issuedAt`, reads the board data as it is
  * now). It counts only when issued after every answer (and after the sending of a step
 whose answer never came, see readBoundary): then it settles the wait, and
- * is positive evidence for an unknown close / merge (read back closed / merged) and an
+ * is positive evidence for an unknown close / merge / reopen (read back closed / merged / open) and an
  * unknown label removal (the label is gone). It never turns anything into "did not
  * happen". Returns the same object when nothing changed.
  */
@@ -661,6 +705,7 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
     if (s.state !== 'unknown') return s;
     if (s.name === 'close' && (read.state === 'closed' || read.state === 'merged')) return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时已是关闭状态') });
     if (s.name === 'merge' && read.state === 'merged') return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时已是合并状态') });
+    if (s.name === 'reopen' && read.state === 'open') return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时已是打开状态') });
     // a label missing proves the removal only when the read cannot have left labels out (PR #365 code review round 1)
     if (s.name === 'removeLabel' && read.labels.length < ITEM_LABELS_FIRST && !read.labels.includes(s.label ?? '')) return ((changed = true), { ...s, state: 'ok' as const, reason: t('重读时这个标签已不在') });
     // GitHub#359: the wanted state is there in a read issued after the request — the step is done, whoever did it
@@ -672,7 +717,8 @@ export function opApplyRead(r: OpRecord, read: { issuedAt: number; state: 'open'
     next.readAt = read.issuedAt;
     changed = true;
   }
-  const target = r.kind === 'merge' ? read.state === 'merged' : r.kind === 'closeIssue' || r.kind === 'closePr' ? read.state === 'closed' || read.state === 'merged' : false;
+  const target =
+    r.kind === 'merge' ? read.state === 'merged' : r.kind === 'closeIssue' || r.kind === 'closePr' ? read.state === 'closed' || read.state === 'merged' : r.kind === 'reopenIssue' ? read.state === 'open' : false;
   if (target && !r.targetSeen) {
     next.targetSeen = true;
     changed = true;
