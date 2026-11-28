@@ -731,6 +731,16 @@ export type ShortcutKeyDropped = { id: string; name: string; why: string };
 /** GitHub#487: a key change: saved, or refused with the reason (nothing changed) */
 export type ShortcutKeyResult = { ok: true } | { ok: false; why: string };
 
+/** GitHub#752: one unread thread of GitHub's notification inbox, as the table's 「收件箱」 gets it (one per item: the latest) */
+export interface InboxThread {
+  /** `owner/repo#N`, lower-cased like every item key */
+  key: string;
+  /** GitHub's reason, one of the reasons that remind (data/notifications.ts REASONS) */
+  reason: string;
+  /** ms, GitHub's clock */
+  updatedAt: number;
+}
+
 export interface AppState {
   phase: 'loading' | 'login' | 'ready';
   /** why the user is on the login page (e.g. credential revoked) */
@@ -791,6 +801,15 @@ export interface AppState {
   githubActivityProblem: string | null;
   /** GitHub#713: GitHub refused marking a notification read (its words); null = no refusal heard */
   githubMarkReadProblem: string | null;
+  /**
+   * GitHub#752: the notification part of the table's 「收件箱」 — the unread threads of GitHub's notification inbox
+   * (as last read whole) whose item is in a data source and was not opened in the app since, one per item.
+   */
+  inboxThreads: InboxThread[];
+  /** GitHub#752: the inbox has been read whole (and is being read): false = `inboxThreads` says nothing */
+  inboxRead: boolean;
+  /** GitHub#752: 「最近完成」 lists the last this many days (1–365, kept on this machine; 7 by default) */
+  doneDays: number;
   /** GitHub#471: the interface language as chosen in Settings (kept on this machine); 'zh' when nothing is set */
   uiLanguage: LangSetting;
   /** the language the window shows now ('auto' resolved against the system's preferred languages) */

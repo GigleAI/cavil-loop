@@ -273,5 +273,48 @@
   "PR 正文引用": "named in the PR's description",
   "此 issue 不符合筛选条件；因下面有命中的 PR 而显示": "This issue does not match the filter; it is shown because a PR under it does",
   "随 PR 显示": "Shown with PR",
-  "随 PR 显示 · 不在筛选结果里": "Shown with its PR · not a search match"
+  "随 PR 显示 · 不在筛选结果里": "Shown with its PR · not a search match",
+  "收件箱": "Inbox",
+  "最近完成": "Recently done",
+  "等人处理的条目，和 GitHub 通知里还没读的、和我有关的条目；只列「只看我的」范围内的": "Items waiting for a human, and items with unread GitHub notifications that concern me; only what “Only mine” covers",
+  "收件箱里没有条目": "Nothing in the inbox",
+  "这段时间没有完成的条目": "Nothing done in this period",
+  "GitHub 通知里还没读的动态": "Unread activity in GitHub notifications",
+  "@ 了我": "Mentioned me",
+  "@ 了我的团队": "Mentioned my team",
+  "请我 review": "Review requested",
+  "我开的 · 有新动态": "Opened by me · new activity",
+  "有新回复": "New reply",
+  "还没读到登录账号，暂时列不出和我有关的条目": "The signed-in account is not known yet, so the items that concern me cannot be listed",
+  "收件箱 · 和我有关、要处理的 {n} 条，按更新时间从新到旧": {
+    "one": "Inbox · {n} item that concerns me and needs handling, newest update first",
+    "other": "Inbox · {n} items that concern me and need handling, newest update first"
+  },
+  "GitHub 通知没有列入：{why}": "GitHub notifications not included: {why}",
+  "最近完成 · 和我有关、最近": "Recently done · concerning me, in the last",
+  "最近几天": "Days",
+  "{n} 天": {
+    "one": "{n} day",
+    "other": "{n} days"
+  },
+  "自定义…": "Custom…",
+  "确定": "OK",
+  "请填 {min}–{max} 之间的整数": "Enter a whole number from {min} to {max}",
+  "内更新、已完成的 {n} 条，按更新时间从新到旧": {
+    "one": "· {n} done item, newest update first",
+    "other": "· {n} done items, newest update first"
+  },
+  "后续同步确认原因后更新": "Updated once a later sync confirms the reason",
+  "另有 {n} 条已关闭的 issue 还没确认关闭原因，未列出": {
+    "one": "{n} more closed issue whose close reason is not confirmed yet is not listed",
+    "other": "{n} more closed issues whose close reason is not confirmed yet are not listed"
+  },
+  "设置里关掉了「也提醒 GitHub 上和我有关的新动态」": "“Also remind me of GitHub activity that concerns me” is off in Settings",
+  "用 GitHub App 方式登录时读不了 GitHub 通知": "a sign-in through a GitHub App cannot read GitHub notifications",
+  "GitHub 拒绝读取通知（{why}）": "GitHub refused reading notifications ({why})",
+  "还没读到 GitHub 通知": "GitHub notifications not read yet",
+  "最近 {n} 天内更新、已完成的条目；只列「只看我的」范围内的": {
+    "one": "Done items updated in the last {n} day; only what “Only mine” covers",
+    "other": "Done items updated in the last {n} days; only what “Only mine” covers"
+  }
 }

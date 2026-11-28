@@ -1,11 +1,12 @@
 import { stateTone } from '../shared/stateTone';
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
+import type { GroupBy, Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoAssignees, RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
 import { boardMode, buildTable, columnSlot, foldRuns, foldTally, isOwnGroup, moveColumn, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
+import { DONE_DAYS_CHOICES, DONE_DAYS_MAX, DONE_DAYS_MIN, SLICE_DONE, SLICE_INBOX, validDoneDays, type SpecialSlice } from '../data/inbox';
 import { api } from './api';
 import { Person } from './Avatar';
 import { CELL_EDITOR, MOVE_SLOP, OPENS_ITEM } from './outsideClick';
@@ -176,6 +177,129 @@ const DEFAULT_WIDTH: Partial<Record<TableColumn, number>> = { title: 360, labels
  */
 export function rowRef(item: Item, sectionRepo: string | null): string {
   return sectionRepo !== null && item.repo.toLowerCase() === sectionRepo.toLowerCase() ? `#${item.number}` : `${item.repo} #${item.number}`;
+}
+
+/** GitHub#752: what the left column's 「收件箱」 / 「最近完成」 and the line above their list say */
+export interface TableLists {
+  inbox: number;
+  done: number;
+  /** closed issues in 「最近完成」's range whose close reason is not known yet (left out of it) */
+  unknown: number;
+  days: number;
+  /** the signed-in account is known (unknown: both lists are empty, and the line says why) */
+  viewerKnown: boolean;
+  /** why GitHub's notifications are not in 「收件箱」 now; null = they are */
+  inboxNote: string | null;
+}
+
+/** GitHub#752: a 「收件箱」 row that is there because of a GitHub notification: its reason, in a few words */
+function whyText(why: string): string {
+  switch (why) {
+    case 'mention':
+      return t('@ 了我');
+    case 'team_mention':
+      return t('@ 了我的团队');
+    case 'review_requested':
+      return t('请我 review');
+    case 'assign':
+      return t('指派给我');
+    case 'author':
+      return t('我开的 · 有新动态');
+    default:
+      return t('有新回复');
+  }
+}
+
+/** GitHub#752: the line above a flat list — what it holds, in what order, what it leaves out; 「最近完成」's days are picked here */
+function ListLine({ kind, lists, count }: { kind: SpecialSlice; lists: TableLists; count: number }) {
+  const [custom, setCustom] = useState<string | null>(null);
+  const [bad, setBad] = useState(false);
+  const choices = DONE_DAYS_CHOICES.includes(lists.days) ? DONE_DAYS_CHOICES : [...DONE_DAYS_CHOICES, lists.days].sort((a, b) => a - b);
+  const apply = () => {
+    const n = Number((custom ?? '').trim());
+    if (!validDoneDays(n)) {
+      setBad(true);
+      return;
+    }
+    void Promise.resolve(api().setDoneDays(n)).catch(() => undefined);
+    setCustom(null);
+    setBad(false);
+  };
+  return (
+    <div className="list-line small muted" data-testid="list-line" data-kind={kind}>
+      {!lists.viewerKnown ? (
+        <span data-testid="list-no-viewer">{t('还没读到登录账号，暂时列不出和我有关的条目')}</span>
+      ) : kind === 'inbox' ? (
+        <>
+          <span>{t('收件箱 · 和我有关、要处理的 {n} 条，按更新时间从新到旧', { n: count })}</span>
+          {lists.inboxNote && (
+            <span className="list-note" data-testid="inbox-note">
+              {' · '}
+              {t('GitHub 通知没有列入：{why}', { why: lists.inboxNote })}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <span>{t('最近完成 · 和我有关、最近')}</span>{' '}
+          <select
+            data-testid="done-days"
+            aria-label={t('最近几天')}
+            value={custom !== null ? 'custom' : String(lists.days)}
+            onChange={(e) => {
+              if (e.target.value === 'custom') {
+                setCustom(String(lists.days));
+                setBad(false);
+              } else void Promise.resolve(api().setDoneDays(Number(e.target.value))).catch(() => undefined);
+            }}
+          >
+            {choices.map((d) => (
+              <option key={d} value={String(d)}>
+                {t('{n} 天', { n: d })}
+              </option>
+            ))}
+            <option value="custom">{t('自定义…')}</option>
+          </select>
+          {custom !== null && (
+            <>
+              {' '}
+              <input
+                data-testid="done-days-custom"
+                className="days-input"
+                inputMode="numeric"
+                value={custom}
+                autoFocus
+                onChange={(e) => {
+                  setCustom(e.target.value);
+                  setBad(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') apply();
+                  if (e.key === 'Escape') setCustom(null);
+                }}
+              />{' '}
+              <button className="link" data-testid="done-days-apply" onClick={apply}>
+                {t('确定')}
+              </button>
+              {bad && (
+                <span className="list-bad" data-testid="done-days-bad">
+                  {' '}
+                  {t('请填 {min}–{max} 之间的整数', { min: DONE_DAYS_MIN, max: DONE_DAYS_MAX })}
+                </span>
+              )}
+            </>
+          )}{' '}
+          <span>{t('内更新、已完成的 {n} 条，按更新时间从新到旧', { n: count })}</span>
+          {lists.unknown > 0 && (
+            <span className="list-note" data-testid="done-unknown" title={t('后续同步确认原因后更新')}>
+              {' · '}
+              {t('另有 {n} 条已关闭的 issue 还没确认关闭原因，未列出', { n: lists.unknown })}
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 /** GitHub#275: a grouped row's title starts under its group's title (the guide line runs 10px left of it); inside a repository one step further in */
@@ -476,6 +600,7 @@ export function TableView({
   pinnedLabels,
   openKey = null,
   viewer = null,
+  lists = null,
 }: {
   items: Item[];
   projects: ProjectMeta[];
@@ -506,18 +631,24 @@ export function TableView({
   openKey?: string | null;
   /** GitHub#711: the signed-in account (the assignee picker marks it and keeps it near the top) */
   viewer?: string | null;
+  /** GitHub#752: 「收件箱」 / 「最近完成」 at the top of the left column (their counts and the line above their list); null = not shown */
+  lists?: TableLists | null;
 }) {
   const dark = useDarkMode();
   const tb = view.table;
   const table = built ?? buildTable(items, projects, tb, today, view.prsUnderIssues, repoOrder);
   // GitHub#304: a repository in the slice list drags to another place; the order is the one every repository list uses
   const repoDrag = useRepoDrag(table.slices?.map((s) => s.value) ?? []);
-  const cols = tb.columns.filter((c) => c !== 'title');
+  // GitHub#752: one of the flat lists is shown — no groups, and the repository is always a column (items of every repository mix)
+  const flat = table.flat ?? null;
+  const grouping: GroupBy = flat ? 'none' : tb.groupBy;
+  const saved = tb.columns.filter((c) => c !== 'title');
+  const cols: TableColumn[] = flat && !saved.includes('repo') ? [...saved, 'repo'] : saved;
   const folded = new Set(folds[tb.groupBy] ?? []);
   const toggle = (k: string) => void Promise.resolve(api().setTableFold(tb.groupBy, k, !folded.has(k))).catch(() => undefined);
 
   // ---- dragging a row to another group (GitHub#294): the board's drag, rows for cards, groups for columns ----
-  const canDrag = canWrite && Boolean(onDropPlan) && boardMode(tb.groupBy) !== null;
+  const canDrag = !flat && canWrite && Boolean(onDropPlan) && boardMode(tb.groupBy) !== null;
   const dragging = useRef<{ row: Row; from: Group } | null>(null);
   const [dragRow, setDragRow] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
@@ -816,14 +947,14 @@ export function TableView({
     return (
     <tbody
       key={g.key}
-      className={[inRepo ? 'in-repo' : '', tb.groupBy !== 'none' ? 'grouped' : '', over === g.key ? 'drop-over' : ''].filter(Boolean).join(' ') || undefined}
+      className={[inRepo ? 'in-repo' : '', grouping !== 'none' ? 'grouped' : '', over === g.key ? 'drop-over' : ''].filter(Boolean).join(' ') || undefined}
       data-testid="group"
       data-key={g.key}
       data-title={g.title}
       data-drop-over={over === g.key ? 'yes' : undefined}
       {...dropTarget(g)}
     >
-      {tb.groupBy !== 'none' && (
+      {grouping !== 'none' && (
         // GitHub#229: the whole row folds; the arrow stays a button (Tab reaches it) and its click is this same one
         <tr className="group-head" data-testid="group-head" onClick={() => toggle(g.key)} title={folded.has(g.key) ? t('点一下展开这一组') : t('点一下收起这一组')}>
           <td colSpan={cols.length + 1}>
@@ -868,7 +999,7 @@ export function TableView({
             <td
               className="title-cell"
               data-testid="title-cell"
-              style={{ paddingLeft: (tb.groupBy === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}
+              style={{ paddingLeft: (grouping === 'none' ? 8 : inRepo ? REPO_ROW_BASE : ROW_BASE) + r.depth * 20 }}
               {...{ [OPENS_ITEM]: '' }}
               onClick={() => onOpen(r.item.key)}
             >
@@ -901,6 +1032,12 @@ export function TableView({
               {r.carried && (
                 <span className="carried-tag" data-testid="carried-tag">
                   {t('随 PR 显示')}
+                </span>
+              )}
+              {r.why && (
+                // GitHub#752: in 「收件箱」 because of a GitHub notification, not the pending label
+                <span className="carried-tag inbox-why" data-testid="inbox-why" data-why={r.why} title={t('GitHub 通知里还没读的动态')}>
+                  {whyText(r.why)}
                 </span>
               )}
             </td>
@@ -941,7 +1078,7 @@ export function TableView({
           </tr>
         ))}
       {!folded.has(g.key) && g.rows.length === 0 && g.preset.by === 'repo' && blankLine(g.preset.repo, Boolean(g.unread), false, inRepo ? REPO_ROW_BASE : ROW_BASE)}
-      {tb.groupBy !== 'none' && onNewInGroup && !folded.has(g.key) && g.rows.length > 0 && (
+      {grouping !== 'none' && onNewInGroup && !folded.has(g.key) && g.rows.length > 0 && (
         <tr className="group-add">
           <td colSpan={cols.length + 1}>
             <button className="link" data-testid="group-add" disabled={!canCreate} title={createTitle} onClick={() => onNewInGroup(g)}>
@@ -990,14 +1127,27 @@ export function TableView({
     </tbody>
   );
   const groupList = (groups: Group[], repo: string | null) =>
-    tb.groupBy === 'none'
+    grouping === 'none'
       ? groups.map((g) => groupBody(g, repo))
       : foldRuns(groups, folded).map((run) => (run.kind === 'group' ? groupBody(run.group, repo) : foldedRun(run.key, run.groups, repo !== null)));
 
   return (
     <div className="table-layout" data-testid="table">
-      {table.slices && (
+      {(table.slices || lists) && (
         <nav className="slices" data-testid="slices">
+          {lists && (
+            <>
+              <button className={flat === 'inbox' ? 'slice on' : 'slice'} data-testid="slice-inbox" title={t('等人处理的条目，和 GitHub 通知里还没读的、和我有关的条目；只列「只看我的」范围内的')} onClick={() => api().setView({ table: { slice: SLICE_INBOX } })}>
+                <span className="slice-name">{t('收件箱')}</span> <span className={lists.inbox > 0 ? 'count hot' : 'count'} data-testid="slice-inbox-count">{lists.inbox}</span>
+              </button>
+              <button className={flat === 'done' ? 'slice on' : 'slice'} data-testid="slice-done" title={t('最近 {n} 天内更新、已完成的条目；只列「只看我的」范围内的', { n: lists.days })} onClick={() => api().setView({ table: { slice: SLICE_DONE } })}>
+                <span className="slice-name">{t('最近完成')}</span> <span className="count" data-testid="slice-done-count">{lists.done}</span>
+              </button>
+              {table.slices && <hr className="slices-sep" />}
+            </>
+          )}
+          {table.slices && (
+          <>
           <div className="small muted">{t('仓库')}</div>
           <button className={table.slice === null ? 'slice on' : 'slice'} data-testid="slice" data-value="" onClick={() => api().setView({ table: { slice: null } })}>
             {t('全部')} <span className="count">{items.length}</span>
@@ -1023,9 +1173,12 @@ export function TableView({
               {t('按名称排序')}
             </button>
           )}
+          </>
+          )}
         </nav>
       )}
       <div className="table-scroll">
+        {flat && lists && <ListLine kind={flat} lists={lists} count={table.itemCount} />}
         <table className={`items${sized ? ' sized' : ''}`} style={sized ? { width: ['title' as TableColumn, ...cols].reduce((n, c) => n + widthOf(c, shown), 0) } : undefined}>
           {sized && (
             <colgroup>
@@ -1075,7 +1228,11 @@ export function TableView({
             </div>
           </>
         )}
-        {table.itemCount === 0 && !hasBlank(table) && <div className="center muted" data-testid="table-empty">{t('没有符合条件的条目')}</div>}
+        {table.itemCount === 0 && !hasBlank(table) && (
+          <div className="center muted" data-testid="table-empty">
+            {flat === 'inbox' ? t('收件箱里没有条目') : flat === 'done' ? t('这段时间没有完成的条目') : t('没有符合条件的条目')}
+          </div>
+        )}
       </div>
     </div>
   );

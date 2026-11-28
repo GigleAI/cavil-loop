@@ -103,6 +103,7 @@ export function localApi(c: Controller, backend: Backend): CavilApi {
     setNotifyScope: async (scope) => c.setNotifyScope(scope),
     setGithubActivity: async (on) => c.setGithubActivity(on),
     setGithubActivityMarkRead: async (on) => c.setGithubActivityMarkRead(on),
+    setDoneDays: async (days) => c.setDoneDays(days),
     setUiLanguage: async (setting) => c.setUiLanguage(setting),
     setUiTheme: async (setting) => c.setUiTheme(setting),
     reorderRepos: async (shown, next) => c.reorderRepos(shown, next),

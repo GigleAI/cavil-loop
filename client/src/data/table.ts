@@ -20,6 +20,7 @@ import { itemSorter } from './sort';
 import { repoComparator } from '../shared/repoOrder';
 import { t, tKey, zhKey } from '../shared/i18n';
 import { carryIssues, listHosts, nestPrs, orderUnits, prFollow, PR_ORDER, unitUpdated } from './prNest';
+import { SLICE_DONE, SLICE_INBOX, specialSlice, type Listed, type SpecialSlice } from './inbox';
 
 export const GROUP_NONE_KEY = 'none';
 
@@ -41,6 +42,8 @@ export interface Row {
   /** what dragging this row to another group changes: the same as the board card in that column (GitHub#294) */
   projectKeys: string[];
   projectTitles: string[];
+  /** GitHub#752, 「收件箱」: a row there because of a GitHub notification — its reason; absent otherwise */
+  why?: string;
 }
 
 export interface Group {
@@ -117,6 +120,8 @@ export interface Table {
    * says so in a line of its own (with a "+" unless it was never read). Absent otherwise.
    */
   blankRepo?: { repo: string; unread?: true };
+  /** GitHub#752: the table is one of the two flat lists (one group, no nesting, newest update first); absent otherwise */
+  flat?: SpecialSlice;
 }
 
 interface Seed {
@@ -369,6 +374,11 @@ export function buildTable(
    * with PRs under issues on); false = nothing is brought along (no search).
    */
   carry = false,
+  /**
+   * GitHub#752: 「收件箱」 / 「最近完成」 picked — the list, already filtered and in order (data/inbox.ts). The table is
+   * then that list alone, flat; the repository slices are still counted (the left column keeps them).
+   */
+  special: { kind: SpecialSlice; rows: readonly Listed[] } | null = null,
 ): Table {
   const compareRepo = repoComparator(repoOrder);
   // GitHub#587: the repository sources by their lower-cased name, the one key every repository list uses
@@ -401,12 +411,13 @@ export function buildTable(
     }
     for (const s of blanks(ownRepos(items))) counts.set(s.repo.toLowerCase(), s.read ? { value: s.repo, count: 0 } : { value: s.repo, count: 0, unread: true });
     slices = [...counts.values()].sort((a, b) => compareRepo(a.value, b.value));
-    if (settings.slice) {
+    if (settings.slice && !specialSlice(settings.slice)) {
       slice = settings.slice;
       picked = items.filter((it) => it.repo.toLowerCase() === settings.slice!.toLowerCase());
     }
   }
 
+  if (special) return flatTable(special.kind, special.rows, slices, items.length);
   const sort = itemSorter(settings.sort, projects, [...all]);
   const parents = validParents(all);
   let pull: Pull | null = null;
@@ -499,6 +510,19 @@ export function buildTable(
 }
 
 const repoKey = (repo: string) => `repo:${repo.toLowerCase()}`;
+
+/** GitHub#752: one of the two flat lists as a table: one group, every row at the top level, the list's order kept. */
+function flatTable(kind: SpecialSlice, list: readonly Listed[], slices: Slice[] | null, matchCount: number): Table {
+  const key = `flat:${kind}`;
+  const rows: Row[] = list.map((l) => {
+    const r: Row = { id: `${l.item.key}@${key}`, item: l.item, depth: 0, pulled: false, carried: false, under: null, projectKeys: [], projectTitles: [] };
+    if (l.why !== null && l.why !== 'pending') r.why = l.why;
+    return r;
+  });
+  const title = kind === 'inbox' ? zhKey('收件箱') : zhKey('最近完成');
+  const group: Group = { key, title, subtitle: null, current: false, empty: false, preset: { by: 'none' }, column: null, section: null, rows };
+  return { groups: [group], repos: null, slices, slice: kind === 'inbox' ? SLICE_INBOX : SLICE_DONE, itemCount: rows.length, matchCount, pulledCount: 0, carriedCount: 0, flat: kind };
+}
 
 /** Group `items` by the table's grouping and arrange each group; `prefix` keeps group keys apart across repositories. */
 function groupItems(

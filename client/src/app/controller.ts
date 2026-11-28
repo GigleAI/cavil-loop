@@ -123,6 +123,7 @@ import { readProjectChoices } from '../data/projectChoices';
 import { parseReleaseImage, type ImageResult } from '../shared/images';
 import { proxyFetch, type Backend, type BackendInit, type FreshOut, type FreshResult, type GrantInfo } from '../backend/backend';
 import { PendingTracker, itemAlertText } from '../data/pending';
+import { normalizeDoneDays, validDoneDays, type InboxThread } from '../data/inbox';
 import { ActivityTracker, COMMENT_READS_PER_ROUND, activityText, parseComment, parseThreads, threadWebUrl, type CommentFacts, type Covering, type Thread } from '../data/notifications';
 import type { Alert, Delivery, Desktop, DesktopEvent, UpdateStatus } from './desktop';
 import type { WindowFrame } from '../shared/ipc';
@@ -318,6 +319,12 @@ const SHORTCUT_KEYS = 'shortcutKeys';
 /** GitHub#434: the two settings of "等前置…" */
 const BLOCKED_LABELS = 'blockedLabels';
 
+/** GitHub#752: what was saved under INBOX_OPENED: item key -> a finite time; anything else is dropped */
+function normalizeInboxOpened(raw: unknown): Record<string, number> {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw).filter(([k, v]) => k.includes('#') && typeof v === 'number' && Number.isFinite(v)));
+}
+
 /** the waiting label is the one setting of GitHub#429 (handBack.blocked); this setting keeps the other flow labels */
 function normalizeBlockedLabels(raw: unknown, blocked: string): BlockedLabels {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<BlockedLabels>;
@@ -336,6 +343,14 @@ const GITHUB_ACTIVITY_MARK_READ = 'githubActivityMarkRead';
 const ACTIVITY_PATH = '/notifications?participating=true&per_page=50';
 /** GitHub#713: the gap between two inbox reads when GitHub does not say (it says 60 s, measured 2026-11-26) */
 const ACTIVITY_POLL_SECS = 60;
+/** GitHub#752: 「最近完成」's days, kept on this machine */
+const DONE_DAYS = 'doneDays';
+/**
+ * GitHub#752: the items opened in the app while a GitHub notification of theirs was unread (key -> GitHub's time of
+ * the opening): such a thread leaves 「收件箱」 until it has newer activity. Kept on this machine; an entry goes once
+ * the item has no unread thread left, so the record never grows past the inbox.
+ */
+const INBOX_OPENED = 'inboxOpened';
 const REPO_ORDER = 'repoOrder';
 const NEW_ISSUE_HANDOFF = 'newIssueHandoff';
 /** GitHub#397: the open detail tabs (order, what each last showed) */
@@ -671,6 +686,9 @@ export class Controller {
       githubActivityMarkRead: normalizeGithubActivityMarkRead(this.cache.getSetting<unknown>(GITHUB_ACTIVITY_MARK_READ, false)),
       githubActivityProblem: null,
       githubMarkReadProblem: null,
+      inboxThreads: [],
+      inboxRead: false,
+      doneDays: normalizeDoneDays(this.cache.getSetting<unknown>(DONE_DAYS, null)),
       uiLanguage,
       lang,
       uiTheme,
@@ -696,6 +714,7 @@ export class Controller {
       renameJobs: [],
       renameWatches: [],
     };
+    this.inboxOpened = normalizeInboxOpened(this.cache.getSetting<unknown>(INBOX_OPENED, null));
     for (const s of init.snapshots) {
       if (s.sourceKey === EDITS_KEY) this.loadEdits(s);
       else if (s.sourceKey === OPS_KEY) this.loadOps(s);
@@ -1153,8 +1172,13 @@ export class Controller {
     this.state = { ...this.state, editsNeedingAction: 0, editsResending: [], creates: [], ops: [], sends: [], labelJobs: [] };
     this.pending.reset();
     this.forgetActivity();
+    // GitHub#752: what was opened belongs to that account
+    if (Object.keys(this.inboxOpened).length) {
+      this.inboxOpened = {};
+      this.cache.setSetting(INBOX_OPENED, {});
+    }
     this.unread.clear();
-    this.state = { ...this.state, pendingCount: 0, unreadCount: 0, sync: { ...this.state.sync, sources: [], dataFrom: null } };
+    this.state = { ...this.state, pendingCount: 0, unreadCount: 0, inboxThreads: [], inboxRead: false, sync: { ...this.state.sync, sources: [], dataFrom: null } };
     // what was queued for the shell belonged to that account: none of it goes out any more, and the
     // cleared badge does not wait behind a notification the system is still answering
     this.desktopEra++;
@@ -1184,6 +1208,10 @@ export class Controller {
   private activityEtag: string | null = null;
   private activityNextAt = 0;
   private activityViewer: string | null = null;
+  /** GitHub#752: GitHub's clock minus this machine's, as of the latest inbox read (an opening is recorded on GitHub's clock) */
+  private activitySkew = 0;
+  /** GitHub#752: see INBOX_OPENED */
+  private inboxOpened: Record<string, number> = {};
   /** GitHub#713: threads being marked read now (one request each at a time) */
   private markingRead = new Map<string, Promise<void>>();
   /**
@@ -1262,6 +1290,7 @@ export class Controller {
   }
 
   private itemSeen(key: string): void {
+    this.inboxOpen(key);
     this.markActivityRead(key);
     if (this.unread.delete(key)) {
       this.set({ unreadCount: this.unreadNow() });
@@ -1347,7 +1376,59 @@ export class Controller {
     for (const a of left.values()) this.notify(() => (this.activityStillHolds(a) ? { kind: 'item', key: a.key, url: a.url, title: a.title, body: a.body } : null));
     this.badge();
     this.prefetchAppeared(change.appeared);
-    this.state = { ...this.state, ...this.pendingNow() };
+    this.state = { ...this.state, ...this.pendingNow(), ...this.inboxNow() };
+  }
+
+  // ---- GitHub#752: the notification part of the table's 「收件箱」 ----
+
+  /**
+   * The unread threads of the inbox as last read whole whose item is in a data source and was not opened in the
+   * app since the thread's latest activity, one per item (its latest). Nothing while the inbox is not read (the
+   * setting off, a GitHub App's sign-in, no complete read yet): `inboxRead` false says so. A read that failed
+   * changes nothing here — the last complete read stands.
+   */
+  private inboxNow(): Pick<AppState, 'inboxThreads' | 'inboxRead'> {
+    if (!this.activityOn() || !this.activity.started()) return { inboxThreads: [], inboxRead: false };
+    const holds = this.activitySourcesOf();
+    const by = new Map<string, InboxThread>();
+    for (const th of this.activity.threads()) {
+      if (!th.unread || holds(th.key).length === 0) continue;
+      const opened = this.inboxOpened[th.key];
+      if (opened !== undefined && th.updatedAt <= opened) continue;
+      const cur = by.get(th.key);
+      if (!cur || th.updatedAt > cur.updatedAt) by.set(th.key, { key: th.key, reason: th.reason, updatedAt: th.updatedAt });
+    }
+    return { inboxThreads: [...by.values()].sort((a, b) => b.updatedAt - a.updatedAt || (a.key < b.key ? -1 : 1)), inboxRead: true };
+  }
+
+  /** Hand the list over again when it changed. */
+  private refreshInbox(): void {
+    const next = this.inboxNow();
+    if (next.inboxRead === this.state.inboxRead && JSON.stringify(next.inboxThreads) === JSON.stringify(this.state.inboxThreads)) return;
+    this.set(next);
+  }
+
+  /** The item is looked at in the app: an unread thread of it leaves 「收件箱」 until it has newer activity. */
+  private inboxOpen(key: string): void {
+    if (!this.activityOn() || this.activity.unreadOf(key).length === 0) return;
+    this.inboxOpened = { ...this.inboxOpened, [key]: this.now() + this.activitySkew };
+    this.cache.setSetting(INBOX_OPENED, this.inboxOpened);
+    this.refreshInbox();
+  }
+
+  /** After a complete inbox read: an item with no unread thread left needs no record. */
+  private inboxPrune(): void {
+    const keep = Object.entries(this.inboxOpened).filter(([k]) => this.activity.unreadOf(k).length > 0);
+    if (keep.length === Object.keys(this.inboxOpened).length) return;
+    this.inboxOpened = Object.fromEntries(keep);
+    this.cache.setSetting(INBOX_OPENED, this.inboxOpened);
+  }
+
+  /** GitHub#752: 「最近完成」's days. Anything but a whole number from 1 to 365 is refused (nothing changes). */
+  setDoneDays(days: unknown): void {
+    if (!validDoneDays(days) || days === this.state.doneDays) return;
+    this.cache.setSetting(DONE_DAYS, days);
+    this.set({ doneDays: days });
   }
 
   // ---- GitHub#713: GitHub's own activity concerning the account (the notification inbox) ----
@@ -1427,7 +1508,9 @@ export class Controller {
     this.activityEtag = read.etag;
     this.activityNextAt = this.now() + (read.pollSecs ?? ACTIVITY_POLL_SECS) * 1000;
     if (this.state.githubActivityProblem) this.set({ githubActivityProblem: null });
+    this.activitySkew = read.skew;
     const candidates = this.activity.observe(read.threads, this.activitySourcesOf(read.skew), read.readAt);
+    this.inboxPrune();
     // which source additions each reminder stands on, fixed now — before any wait below: a source
     // removed and added back while a comment is read is another addition, and must not carry it
     const ctxs = candidates.map((c) => this.noticeContext(c.sources));
@@ -1498,6 +1581,7 @@ export class Controller {
           if (session !== this.session) return;
           this.activity.markedRead(th.id);
           if (this.state.githubMarkReadProblem) this.set({ githubMarkReadProblem: null });
+          this.refreshInbox();
         } catch (e) {
           if (session === this.session && e instanceof GitHubError && (e.status === 403 || e.status === 404)) this.set({ githubMarkReadProblem: e.message });
         }
@@ -2440,7 +2524,7 @@ export class Controller {
     if (typeof on !== 'boolean' || on === this.state.githubActivity) return;
     this.cache.setSetting(GITHUB_ACTIVITY, on);
     if (!on) this.forgetActivity();
-    this.set({ githubActivity: on, githubActivityProblem: null, githubMarkReadProblem: null });
+    this.set({ githubActivity: on, githubActivityProblem: null, githubMarkReadProblem: null, ...this.inboxNow() });
   }
 
   /** GitHub#713: opening an item in the app marks its GitHub notification read (off by default). Anything but a boolean is ignored. */
