@@ -135,8 +135,8 @@ def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=Non
 
     `reattach` puts back the 目录经验 section the model was not shown (directories=False).
     Promotions are placed by the program (`lessons_format.place`, GitHub#600) before the
-    check; what the length limit held back or promoted late is appended to the report
-    and, when `summary` is a dict, copied into it for the log."""
+    check; what the length limit held back or promoted late, and the lines `unfold` put
+    back, are appended to the report and, when `summary` is a dict, copied into it for the log."""
     report, lessons = result['report_markdown'], result['lessons_markdown']
     if lessons_format._on('held') and lessons_format.has_held_line(lessons):
         raise ValueError('lessons rejected: [held] the held-over-limit line is written by the program only')
@@ -144,12 +144,19 @@ def accept(old_lessons, result, *, number, source, evidence, mode, repo_root=Non
         lessons = reattach(lessons)
     if len(report.strip()) < 100 or source not in report:
         raise ValueError('report missing content/source')
+    # A line that only came back with its backslashes doubled is put back (GitHub#750);
+    # any other change to a backslash spelling is rejected by validate's [backslash].
+    restored = []
+    if lessons_format._on('unfold'):
+        lessons, restored = lessons_format.unfold(old_lessons, lessons)
     lessons, placed = lessons_format.place(old_lessons, lessons, mode=mode, max_chars=max_chars)
+    placed['unfolded'] = restored
     # The model only writes prose; ids, locked fields, counts and evidence are checked here.
     errors = lessons_format.validate(old_lessons, lessons, pr=number, mode=mode,
                                      evidence_urls=lessons_format.evidence_urls(evidence),
                                      repo_root=repo_root, directories=directories,
-                                     max_chars=max_chars)
+                                     max_chars=max_chars,
+                                     evidence_texts=lessons_format.evidence_texts(evidence))
     if errors:
         raise ValueError('lessons rejected: ' + '; '.join(errors[:12]))
     note = lessons_format.summary_markdown(placed)

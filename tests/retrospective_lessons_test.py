@@ -578,6 +578,26 @@ class ReviewFlowTest(unittest.TestCase):
         self.assertEqual(rl.parse(self.on_origin(self.LESSONS)).by_id()[1].section, '硬规则')
         self.assertIn(SOURCE, self.on_origin('docs/retrospectives/pr-9.md'))
 
+    def test_模型把已有经验的反斜杠翻倍_推上去的是原文_报告记换回(self):
+        old = doc(watch=[entry(1, '判存活', [(1, None), (2, None)], why='写 `\\^L` 匹配换页')])
+        self.publish(old)
+        doubled = old.replace('`\\^L`', '`\\\\^L`')
+        self.assertNotEqual(doubled, old)
+        self.model_output = {'report_markdown': REPORT, 'lessons_markdown': doubled}
+        self.review()
+        self.assertEqual(self.on_origin(self.LESSONS), old)
+        self.assertIn('## 程序附注：换回被重复转义的行', self.on_origin('docs/retrospectives/pr-9.md'))
+
+    def test_模型改字又翻倍_什么都不推(self):
+        old = doc(watch=[entry(1, '判存活', [(1, None), (2, None)], why='写 `\\^L` 匹配换页')])
+        self.publish(old)
+        self.model_output = {'report_markdown': REPORT,
+                             'lessons_markdown': old.replace('写 `\\^L` 匹配换页', '改写 `\\\\^L`')}
+        with self.assertRaisesRegex(ValueError, r'\[backslash\]'):
+            self.review()
+        self.assertEqual(self.on_origin(self.LESSONS), old)
+        self.assertIsNone(self.on_origin('docs/retrospectives/pr-9.md'))
+
     def test_校验不过什么都不推(self):
         self.publish(self.old)
         dup = doc(watch=[entry(1, '判存活', [(1, None), (2, None)]), entry(2, '判存活', [(9, C9)])], next_id=3)
@@ -1255,6 +1275,199 @@ class RuleLimitRunnerTest(Case):
         self.assertNotIn('${', text)
         self.assertEqual(runner.render_instruction(template, 'auto', max_chars=0),
                          runner.render_instruction(template.replace('${RULE_LIMIT}', ''), 'auto'))
+
+
+# ── Backslash spellings (GitHub#750) ──────────────────────────────────────────
+
+def bs_entry(n, why=None, example=None, seen=((1, None),), rule='判存活', applies='异步回调'):
+    lines = [f'### L{n}', f'- 规则：{rule}', f'- 适用：{applies}']
+    if why is not None:
+        lines.append(f'- 为什么：{why}')
+    if example is not None:
+        lines.append(f'- 这样做是对的：{example}')
+    items = ' · '.join(f'#{p} {u}' if u else f'#{p}' for p, u in seen)
+    lines.append(f'- Seen {len(seen)}×: {items}')
+    return '\n'.join(lines) + '\n'
+
+
+def bs(k):
+    return '\\' * k
+
+
+class BackslashBase(Case):
+    def evidence(self, *bodies):
+        return {'pr': {'html_url': SOURCE, 'body': bodies[0] if bodies else None}, 'issues': [],
+                'reviews': [], 'inline_comments': [],
+                'conversation': [{'html_url': C9, 'body': None}]
+                + [{'html_url': C9, 'body': b} for b in bodies[1:]]}
+
+    def accept(self, old, lessons, *bodies, summary=None, **kw):
+        return runner.accept(old, {'report_markdown': REPORT, 'lessons_markdown': lessons},
+                             number=9, source=SOURCE, evidence=self.evidence(*bodies), mode='auto',
+                             summary=summary, **kw)
+
+    def rejected(self, old, lessons, *bodies):
+        with self.assertRaisesRegex(ValueError, r'\[backslash\]'):
+            self.accept(old, lessons, *bodies)
+
+
+class BackslashUnfoldTest(BackslashBase):
+    def test_整句照抄翻倍_2_4_32个都换回原文1个_报告记换回行数(self):
+        old = doc(watch=[bs_entry(1, why='按键解析出错', example=f'用 `{bs(1)}^L` 匹配换页')])
+        for k in (2, 4, 32):
+            new = old.replace(f'`{bs(1)}^L`', f'`{bs(k)}^L`')
+            self.assertNotEqual(new, old)
+            summary = {}
+            report, lessons = self.accept(old, new, summary=summary)
+            self.assertEqual(lessons, old, k)
+            self.assertIn('## 程序附注：换回被重复转义的行', report)
+            self.assertIn('- L1：1 行', report)
+            self.assertIn('共换回 1 行。', report)
+            self.assertEqual(summary['unfolded'], [(1, 1)])
+            self.assertIn('put back doubled backslashes L1(1) = 1 lines', rl.summary_log(summary))
+
+    def test_两个反斜杠的路径翻成4个_折一次就换回(self):
+        old = doc(watch=[bs_entry(1, example=f'路径 C:{bs(2)}tmp 原样')])
+        new = old.replace(f'C:{bs(2)}tmp', f'C:{bs(4)}tmp')
+        self.assertEqual(self.accept(old, new)[1], old)
+
+    def test_同一行里一段2个一段1个_都翻倍后整行换回(self):
+        old = doc(watch=[bs_entry(1, example=f'C:{bs(2)}tmp 与 {bs(1)}^L')])
+        new = old.replace(f'C:{bs(2)}tmp 与 {bs(1)}^L', f'C:{bs(4)}tmp 与 {bs(2)}^L')
+        self.assertEqual(self.accept(old, new)[1], old)
+
+    def test_目录经验段的条目同样换回(self):
+        import tempfile
+        import shutil
+        root = Path(tempfile.mkdtemp(prefix='retro-bs-'))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        item = bs_entry(1, example=f'`{bs(1)}d+`', seen=((1, None),))
+        old = doc(dirs=[item])
+        new = old.replace(f'`{bs(1)}d+`', f'`{bs(8)}d+`')
+        self.assertEqual(self.accept(old, new, repo_root=root, directories=False)[1], old)
+
+    def test_不跨条目借行_别处另有4个反斜杠也不换回(self):
+        # L2 的那一行折叠后正好等于 L1 翻倍后的样子；按编号配对，L1 不会借 L2 的行。
+        old = doc(watch=[bs_entry(1, example=f'写 {bs(1)}^L'),
+                         bs_entry(2, example=f'写 {bs(4)}^L', rule='列去向')])
+        new = old.replace(f'### L1\n- 规则：判存活\n- 适用：异步回调\n- 这样做是对的：写 {bs(1)}^L',
+                          f'### L1\n- 规则：判存活\n- 适用：异步回调\n- 这样做是对的：改写 {bs(2)}^L')
+        self.assertNotEqual(new, old)
+        self.rejected(old, new)
+        self.assertEqual(rl.unfold(old, new), (new, []))
+
+    def test_原样保留只改周围文字_不换回不拒收(self):
+        old = doc(watch=[bs_entry(1, why='旧原因', example=f'路径 C:{bs(2)}tmp 原样')])
+        new = old.replace('旧原因', '改写后的原因').replace('路径 C:', '换个说法：C:')
+        summary = {}
+        report, lessons = self.accept(old, new, summary=summary)
+        self.assertEqual((report, lessons), (REPORT, new))
+        self.assertEqual(summary['unfolded'], [])
+        self.assertEqual(rl.summary_log(summary), '')
+
+    def test_没有反斜杠的正常输出_报告与经验逐字节不变(self):
+        old = doc(watch=[bs_entry(1, why='旧原因', example='普通举例', seen=((1, None), (2, None)))])
+        new = doc(hard=[bs_entry(1, why='新原因', example='普通举例', seen=((1, None), (2, None), (9, C9)))])
+        summary = {}
+        self.assertEqual(self.accept(old, new, summary=summary), (REPORT, new))
+        self.assertEqual(rl.summary_markdown(summary), '')
+        self.assertEqual(rl.unfold(old, new), (new, []))
+
+    def test_解析不了的输出原样交给校验(self):
+        old = doc(watch=[bs_entry(1, example=f'{bs(1)}^L')])
+        self.assertEqual(rl.unfold(old, 'broken'), ('broken', []))
+
+
+class BackslashCheckTest(BackslashBase):
+    def test_改字并翻倍被拒_文件不写入(self):
+        old = doc(watch=[bs_entry(1, example=f'用 `{bs(1)}^L` 匹配换页')])
+        new = old.replace(f'用 `{bs(1)}^L` 匹配换页', f'改用 `{bs(2)}^L` 匹配')
+        self.rejected(old, new)
+
+    def test_同条删掉4个反斜杠的路径_改写并把示例1变2被拒(self):
+        old = doc(watch=[bs_entry(1, why=f'路径 C:{bs(4)}tmp 出错', example=f'写 {bs(1)}^L')])
+        new = doc(watch=[bs_entry(1, why='改写后的原因', example=f'改写 {bs(2)}^L')])
+        self.rejected(old, new)
+
+    def test_删掉写法甲_改写并把写法乙1变2被拒_只数不排序也拦不住(self):
+        old = doc(watch=[bs_entry(1, why=f'甲 {bs(2)}L', example=f'乙 {bs(1)}L')])
+        new = doc(watch=[bs_entry(1, why='改写', example=f'乙改写 {bs(2)}L')])
+        self.rejected(old, new)
+
+    def test_讨论里贴过翻倍版本也不能抵扣(self):
+        old = doc(watch=[bs_entry(1, example=f'写 {bs(1)}^L')])
+        new = doc(watch=[bs_entry(1, example=f'改写 {bs(2)}^L')])
+        self.rejected(old, new, f'讨论里贴的 {bs(2)}^L', f'评论 {bs(2)}^L')
+
+    def test_同一栏一段2个一段1个_把1个那段翻成2个被拒(self):
+        old = doc(watch=[bs_entry(1, example=f'{bs(2)}a 与 {bs(1)}b')])
+        new = old.replace(f'{bs(2)}a 与 {bs(1)}b', f'{bs(2)}a 与 {bs(2)}b')
+        self.rejected(old, new)
+
+    def test_删掉或改写已有路径被拒(self):
+        old = doc(watch=[bs_entry(1, example=f'路径 C:{bs(2)}tmp 原样')])
+        self.rejected(old, old.replace(f'路径 C:{bs(2)}tmp 原样', '不再写路径'))
+        self.rejected(old, old.replace(f'C:{bs(2)}tmp', f'C:{bs(2)}temp'))
+
+    def test_写法按栏顺序比对_两栏对调也被拒(self):
+        old = doc(watch=[bs_entry(1, why=f'{bs(1)}a', example=f'{bs(1)}b')])
+        swapped = doc(watch=[bs_entry(1, why=f'{bs(1)}b', example=f'{bs(1)}a')])
+        self.rejected(old, swapped)
+
+    def test_新经验照抄讨论里的完整写法通过(self):
+        old = doc(watch=[bs_entry(1)])
+        new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', example=f'用 `{bs(1)}x` 转义',
+                                               seen=((9, C9),))])
+        report, lessons = self.accept(old, new, f'正文里写了 `{bs(1)}x`')
+        self.assertEqual(lessons, new)
+
+    def test_讨论只有1个_新经验写成2个被拒(self):
+        old = doc(watch=[bs_entry(1)])
+        new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', example=f'用 `{bs(2)}x` 转义',
+                                               seen=((9, C9),))])
+        self.rejected(old, new, f'正文里写了 `{bs(1)}x`')
+
+    def test_新经验出现次数多于讨论被拒(self):
+        old = doc(watch=[bs_entry(1)])
+        new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', why=f'{bs(1)}x 一次',
+                                               example=f'{bs(1)}x 两次', seen=((9, C9),))])
+        self.rejected(old, new, f'只贴过一次 {bs(1)}x')
+        self.accept(old, new, f'第一次 {bs(1)}x', f'第二次 {bs(1)}x')
+
+    def test_截取讨论里一段路径的半段不算出现过(self):
+        old = doc(watch=[bs_entry(1)])
+        for evidence, written in ((f'C:{bs(1)}tmp{bs(1)}foo', f'C:{bs(1)}tmp'),
+                                  (f'{bs(1)}xyz', f'{bs(1)}x')):
+            new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', example=f'写 {written} 即可',
+                                                   seen=((9, C9),))])
+            self.rejected(old, new, f'证据 {evidence} 结束')
+
+    def test_讨论原文取自PR_issue_评论_review_行内评论全部正文(self):
+        evidence = {'pr': {'html_url': SOURCE, 'body': 'pr'},
+                    'issues': [{'html_url': 'i', 'body': 'issue',
+                                'conversation': [{'html_url': 'ic', 'body': 'issue-comment'}]}],
+                    'conversation': [{'html_url': C9, 'body': 'comment'}],
+                    'reviews': [{'html_url': 'r', 'body': 'review'}, {'body': None}],
+                    'inline_comments': [{'html_url': 'l', 'body': 'inline'}]}
+        self.assertEqual(rl.evidence_texts(evidence),
+                         ['pr', 'issue', 'issue-comment', 'comment', 'review', 'inline'])
+
+    def test_经验与证据两端取写法是同一个函数_同一份输入取出相同列表(self):
+        text = f'中文 `{bs(1)}^L` C:{bs(2)}tmp{bs(1)}a,b 空格 x{bs(3)}y 全角：{bs(1)}n）'
+        want = [f'{bs(1)}^L', f'C:{bs(2)}tmp{bs(1)}a,b', f'x{bs(3)}y', f'{bs(1)}n']
+        self.assertEqual(rl.spellings(text), want)
+        parsed = rl.parse(doc(watch=[bs_entry(1, example=text)])).by_id()[1]
+        self.assertEqual(rl.entry_spellings(parsed), want)
+        old = doc(watch=[bs_entry(1)])
+        new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', example=text, seen=((9, C9),))])
+        self.assertEqual(self.accept(old, new, text)[1], new)
+
+    def test_validate不给讨论原文时新经验不许带反斜杠(self):
+        old = doc(watch=[bs_entry(1)])
+        new = doc(watch=[bs_entry(1), bs_entry(2, rule='新规则', example=f'{bs(1)}x', seen=((9, C9),))])
+        self.rejects(old, new, 'backslash')
+        self.assertEqual(rl.validate(old, new, pr=9, evidence_urls=EVIDENCE, mode='auto',
+                                     evidence_texts=[f'{bs(1)}x']), [])
 
 if __name__ == '__main__':
     unittest.main(verbosity=1 if os.environ.get('QUIET') else 2)
