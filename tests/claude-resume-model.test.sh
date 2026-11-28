@@ -16,6 +16,9 @@
 set -uo pipefail
 # shellcheck source=lib/report.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/report.sh"
+# 在 worker 会话里跑时，继承来的 CODING_AGENT_RELEASE_ROOT 会让 _lib.sh 去读本机已部署的旧版 driver，
+# 测的就不是这份检出（GitHub#753 复审实测：bypass 临时设置那项因此假红）
+unset CODING_AGENT_RELEASE_ROOT CODING_AGENT_RELEASE_LEASE_FD
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(dirname "$TEST_DIR")}"

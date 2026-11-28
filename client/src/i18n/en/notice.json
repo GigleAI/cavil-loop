@@ -262,5 +262,17 @@
   "{repo} 里还没有标签{labels}：可以在对话框里重新按「建标签」": "{repo} still has no labels {labels}: press the create button in the dialog again",
   "登录用的 GitHub App 可能没被允许在这个仓库建标签。": "The GitHub App you signed in with may not be allowed to create labels in this repository.",
   "只读一次仓库现在的标签，不会再建": "Only reads the repository's labels once; creates nothing",
-  "打开仓库的标签页": "Open the repository's labels page"
+  "打开仓库的标签页": "Open the repository's labels page",
+  "正在重新打开 {what}：先发评论，发出后再重新打开…": "Reopening {what}: sending the comment first, reopening once it went out…",
+  "正在重新打开 {what}…": "Reopening {what}…",
+  "评论发出后没有收到 GitHub 的应答，不确定有没有发出（{reason}）": "no answer from GitHub after sending the comment, not sure it went out ({reason})",
+  "没有重新打开 {what}：{detail}；发出评论之前不重新打开": "{what} not reopened: {detail}; it is not reopened before the comment went out",
+  "评论已发出，": "comment posted, ",
+  "{what} 已重新打开，评论已发出": "{what} reopened, comment posted",
+  "{what} 已重新打开": "{what} reopened",
+  "{said}没有重新打开 {what}：{reason}": "{said}{what} not reopened: {reason}",
+  "{said}不确定 {what} 有没有重新打开（{reason}）": "{said}not sure whether {what} was reopened ({reason})",
+  "{said}还没有重新打开 {what}：{reason}": "{said}{what} not reopened yet: {reason}",
+  "重读时已是打开状态": "open when read again",
+  "重新打开": "Reopen again"
 }

@@ -15,6 +15,7 @@ import { itemPageUrl, WebButton } from './NoticeButtons';
 /** GitHub#490: 「重试」 says what it does again; the redo goes out at once (no dialog). Chinese keys, shown through tKey() */
 const REDO_LABEL: Record<OpRecord['kind'], string> = {
   closeIssue: zhKey('重新关闭'),
+  reopenIssue: zhKey('重新打开'),
   closePr: zhKey('重新关闭'),
   merge: zhKey('重新合并'),
   autopilot: zhKey('重新托管'),

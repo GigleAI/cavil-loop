@@ -321,6 +321,12 @@ export async function closeStep(client: GitHubClient, it: Item, reason: IssueClo
   }
 }
 
+/** GitHub#753: an issue back to open; GitHub records the reason ("reopened") itself. */
+export async function reopenStep(client: GitHubClient, it: Item): Promise<void> {
+  if (it.kind !== 'issue') throw new ActionRefused(t('这一条不是 issue'));
+  await client.rest('PATCH', `${repoPath(it.repo)}/issues/${it.number}`, { state: 'open' });
+}
+
 export async function commentStep(client: GitHubClient, it: Item, body: string): Promise<void> {
   await client.rest('POST', `${repoPath(it.repo)}/issues/${it.number}/comments`, { body });
 }
@@ -686,7 +692,8 @@ export async function performAction(client: GitHubClient, action: WriteAction, c
     case 'merge':
     case 'closePr':
     case 'closeIssue':
-      // GitHub#250: these run step by step in the controller (closeStep / commentStep / mergeStep / labels), never here
+    case 'reopenIssue':
+      // GitHub#250: these run step by step in the controller (closeStep / reopenStep / commentStep / mergeStep / labels), never here
       throw new ActionRefused(t('这类操作走后台的逐步执行，不在这里发送'));
     case 'toggleTask':
     case 'editEntry':

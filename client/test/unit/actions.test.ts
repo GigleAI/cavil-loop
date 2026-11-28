@@ -22,6 +22,7 @@ import { buildBoard } from '../../src/data/board';
 import { applyFreshItem } from '../../src/data/itemRefresh';
 import { DEFAULT_TABLE } from '../../src/shared/viewSettings';
 import { stateTone } from '../../src/shared/stateTone';
+import { opActions, opRedoAction } from '../../src/shared/ops';
 
 const PROJECT_URL = 'https://github.com/orgs/GigleAI/projects/11';
 const PROJECT_KEY = 'project:org/gigleai/11';
@@ -52,7 +53,8 @@ const nextNumber = () =>
     ...fake.state.projects.get('org/gigleai/11')!.flatMap((p) => p.items.nodes.map((n: any) => n.content?.number ?? 0)),
   );
 
-async function ready(opts: { project?: boolean; repo?: boolean; intercept?: (cmd: string, args: any) => unknown } = {}) {
+/** `opCheckDelaysMs`: the checks after a lost answer (GitHub#359) — [] = only the one made at once, so a test can wait them out */
+async function ready(opts: { project?: boolean; repo?: boolean; intercept?: (cmd: string, args: any) => unknown; opCheckDelaysMs?: number[] } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -67,7 +69,7 @@ async function ready(opts: { project?: boolean; repo?: boolean; intercept?: (cmd
   const backend: Backend = opts.intercept
     ? { call: async (cmd, args) => (opts.intercept!(cmd, args) as any) ?? harness.call(cmd, args) }
     : harness;
-  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '' });
+  const c = await createController({ backend, endpoints, now: () => clock.t, defaultClientId: '', ...(opts.opCheckDelaysMs ? { opCheckDelaysMs: opts.opCheckDelaysMs } : {}) });
   controllers.push(c);
   for (const n of [137, 138, 139]) pinLabels(n, ['pending/human']);
   if (opts.project !== false) c.addSource(PROJECT_URL);
@@ -484,6 +486,187 @@ describe('closing an issue (GitHub#180)', () => {
     await c.syncNow();
     expect((await c.act({ kind: 'closeIssue', key: K(ISSUE), reason: 'completed', comment: '' })).ok).toBe(true);
     expect(itemOf(c, ISSUE).state).toBe('closed');
+  });
+});
+
+describe('reopening an issue (GitHub#753)', () => {
+  const ISSUE = 138;
+  /** #n closed on GitHub (all its copies) as completed, its labels left as pinned */
+  function closeIssueOnGitHub(n: number): number {
+    for (const p of fake.state.projects.get('org/gigleai/11')!)
+      for (const node of p.items.nodes) if (node.content?.number === n) Object.assign(node.content, { state: 'CLOSED', stateReason: 'COMPLETED' });
+    for (const r of fake.state.repos.get('gigleai/cavil-loop')!) if (r.number === n) Object.assign(r, { state: 'closed', state_reason: 'completed' });
+    return n;
+  }
+  const reply = (status: number, message: string) => ({ status, headers: [['content-type', 'application/json']], body: JSON.stringify({ message }) });
+  const isComment = (args: any) => args?.method === 'POST' && /\/issues\/\d+\/comments$/.test(String(args?.url));
+  const isPatch = (args: any) => args?.method === 'PATCH' && new RegExp(`/issues/${ISSUE}$`).test(String(args?.url));
+  beforeEach(() => void closeIssueOnGitHub(ISSUE));
+  /** every request / re-read / check a record started has finished */
+  const idle = async (c: Controller) => {
+    for (const j of [...((c as any).opJobs as Map<string, Promise<void>>).values()]) await j;
+  };
+  const redo = async (c: Controller, id: string) => {
+    const s = c.opRedo(id);
+    expect(s).toMatchObject({ ok: true });
+    await idle(c);
+    // the old record handed its draft over and is gone; the new one carries the result
+    expect(c.getState().ops.find((o) => o.id === id)).toBeUndefined();
+    return c.getState().ops.find((o) => o.id === s.id)!;
+  };
+
+  it('no comment: one PATCH to open, nothing else; board, detail and cache follow; labels untouched', async () => {
+    const { c } = await ready();
+    expect(itemOf(c, ISSUE)).toMatchObject({ kind: 'issue', state: 'closed' });
+    const labels = labelsOf(c, ISSUE);
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '  ' });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`, { state: 'open' }]]);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+    expect(labelsOf(c, ISSUE)).toEqual(labels);
+    for (const x of cachedItem(ISSUE)) expect(x.state).toBe('open');
+    const d = await c.loadDetail(K(ISSUE));
+    expect(d.ok && d.detail.state).toBe('open');
+    // the notice is the green one that puts itself away
+    const rec = c.getState().ops.find((o) => o.kind === 'reopenIssue')!;
+    expect(rec.steps.map((s) => [s.name, s.state])).toEqual([['reopen', 'ok']]);
+    expect(rec.targetSeen).toBe(true);
+  });
+
+  it('with a comment: the comment goes out first, the reopen only after it', async () => {
+    const { c } = await ready();
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '还没修好' });
+    expect(r).toMatchObject({ ok: true, warning: null });
+    expect(fake.writes().map((w) => [w.method, w.path, w.body])).toEqual([
+      ['POST', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}/comments`, { body: '还没修好' }],
+      ['PATCH', `/api/repos/GigleAI/cavil-loop/issues/${ISSUE}`, { state: 'open' }],
+    ]);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('the comment refused: the reopen is never sent; 「重新打开」 does both again', async () => {
+    let refuse = true;
+    let commentTries = 0;
+    const { c } = await ready({
+      intercept: (cmd, args) => {
+        if (cmd !== 'request' || !isComment(args)) return undefined;
+        commentTries++;
+        return refuse ? reply(422, 'Validation Failed') : undefined;
+      },
+    });
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '还没修好' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('没有重新打开 issue #138');
+    // the comment request did reach GitHub (answered 422); no PATCH ever went out
+    expect(commentTries).toBe(1);
+    expect(fake.writes()).toEqual([]);
+    expect(itemOf(c, ISSUE).state).toBe('closed');
+    const rec = c.getState().ops.find((o) => o.kind === 'reopenIssue')!;
+    expect(opActions(rec)).toMatchObject({ retry: 'redo', fallback: 'handleWeb', close: true, toBox: true, copy: '还没修好' });
+    expect(opRedoAction(rec)).toEqual({ kind: 'reopenIssue', key: K(ISSUE), comment: '还没修好' });
+    refuse = false;
+    expect((await redo(c, rec.id)).steps.map((x) => [x.name, x.state])).toEqual([['comment', 'ok'], ['reopen', 'ok']]);
+    expect(commentTries).toBe(2);
+    expect(fake.writes().map((w) => [w.method, w.body])).toEqual([
+      ['POST', { body: '还没修好' }],
+      ['PATCH', { state: 'open' }],
+    ]);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('the comment went out, the reopen refused: 「重新打开」 sends only the reopen, never the comment again', async () => {
+    let refuse = true;
+    const { c } = await ready({ intercept: (cmd, args) => (cmd === 'request' && isPatch(args) && refuse ? reply(403, 'Resource not accessible by integration') : undefined) });
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '还没修好' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('评论已发出，没有重新打开 issue #138');
+    expect(fake.writes().map((w) => w.method)).toEqual(['POST']);
+    const rec = c.getState().ops.find((o) => o.kind === 'reopenIssue')!;
+    expect(opActions(rec)).toMatchObject({ retry: 'redo', fallback: 'handleWeb', close: true, copy: null });
+    expect(opRedoAction(rec)).toEqual({ kind: 'reopenIssue', key: K(ISSUE), comment: '' });
+    refuse = false;
+    expect((await redo(c, rec.id)).steps.map((x) => [x.name, x.state])).toEqual([['reopen', 'ok']]);
+    expect(fake.writes().map((w) => [w.method, w.body])).toEqual([
+      ['POST', { body: '还没修好' }],
+      ['PATCH', { state: 'open' }],
+    ]);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('the comment without an answer: not reopened; proven from the comments later, the reopen still waits for a person', async () => {
+    let drop = true;
+    const { c } = await ready({
+      intercept: (cmd, args) => {
+        if (cmd === 'request' && isComment(args) && drop) {
+          drop = false;
+          return { error: 'network', message: 'socket hang up' };
+        }
+        return undefined;
+      },
+      opCheckDelaysMs: [],
+    });
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '还没修好' });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('没有重新打开 issue #138');
+    expect(fake.writes()).toEqual([]);
+    await idle(c);
+    let rec = c.getState().ops.find((o) => o.kind === 'reopenIssue')!;
+    expect(rec.steps.map((s) => [s.name, s.state])).toEqual([['comment', 'unknown'], ['reopen', 'unsent']]);
+    expect(opActions(rec)).toMatchObject({ retry: 'recheck', fallback: 'checkWeb', close: false });
+    // the comment did land after all (here: posted by the same account after the operation started)
+    expect((await c.act({ kind: 'comment', key: K(ISSUE), body: '还没修好' })).ok).toBe(true);
+    expect((await c.opRecheck(rec.id)).ok).toBe(true);
+    rec = c.getState().ops.find((o) => o.id === rec.id)!;
+    expect(rec.steps.map((s) => [s.name, s.state])).toEqual([['comment', 'ok'], ['reopen', 'unsent']]);
+    expect(itemOf(c, ISSUE).state).toBe('closed');
+    expect(opActions(rec)).toMatchObject({ retry: 'redo' });
+    expect(opRedoAction(rec)).toEqual({ kind: 'reopenIssue', key: K(ISSUE), comment: '' });
+    // 「重新打开」 now sends only the reopen: the comment is not posted a second time
+    expect((await redo(c, rec.id)).steps.map((x) => [x.name, x.state])).toEqual([['reopen', 'ok']]);
+    expect(fake.writes().map((w) => [w.method, w.body])).toEqual([
+      ['POST', { body: '还没修好' }],
+      ['PATCH', { state: 'open' }],
+    ]);
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('the reopen without an answer: a read issued after it showing the issue open proves it', async () => {
+    let drop = true;
+    const { c } = await ready({
+      intercept: (cmd, args) => {
+        if (cmd === 'request' && isPatch(args) && drop) {
+          drop = false;
+          return { error: 'network', message: 'socket hang up' };
+        }
+        return undefined;
+      },
+      opCheckDelaysMs: [],
+    });
+    const r = await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '' });
+    // the request never reached the fake: GitHub still shows it closed, the record stays "not sure"
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('不确定 issue #138 有没有重新打开');
+    await idle(c);
+    let rec = c.getState().ops.find((o) => o.kind === 'reopenIssue')!;
+    expect(rec.steps[0].state).toBe('unknown');
+    expect(opActions(rec)).toMatchObject({ retry: 'recheck', fallback: 'checkWeb', close: false });
+    // it lands late (someone opens it on GitHub): the next read proves it
+    openIssue(ISSUE);
+    expect((await c.opRecheck(rec.id)).ok).toBe(true);
+    rec = c.getState().ops.find((o) => o.id === rec.id)!;
+    expect(rec.steps[0]).toMatchObject({ state: 'ok', reason: '重读时已是打开状态' });
+    expect(itemOf(c, ISSUE).state).toBe('open');
+  });
+
+  it('refused before sending: a PR — nothing sent; the issue itself does go through', async () => {
+    const n = openPr();
+    const { c } = await ready();
+    const before = fake.digest();
+    expect(await c.act({ kind: 'reopenIssue', key: K(n), comment: 'x' })).toMatchObject({ ok: false, error: '这一条不是 issue' });
+    expect(fake.writes()).toEqual([]);
+    expect(fake.digest()).toBe(before);
+    expect((await c.act({ kind: 'reopenIssue', key: K(ISSUE), comment: '' })).ok).toBe(true);
+    expect(fake.writes()).toHaveLength(1);
   });
 });
 

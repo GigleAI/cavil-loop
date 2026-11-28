@@ -294,5 +294,11 @@
   "正在设为负责人 · {status}": "Being assigned · {status}",
   "候选是 {repo} 可指派的账号；一次加上或去掉一个（{key}）": "Choose from the accounts assignable in {repo}; one is added or removed at a time ({key})",
   "改负责人": "Assignees",
-  "+ 指派": "+ Assign"
+  "+ 指派": "+ Assign",
+  "重新打开 issue…": "Reopen issue…",
+  "在 GitHub 上重新打开这个 issue（先确认，可附一句评论；标签不动）": "Reopen this issue on GitHub (confirm first, optionally with a comment; labels stay as they are)",
+  "重新打开 issue #{number}？": "Reopen issue #{number}?",
+  "确认重新打开": "Confirm reopen",
+  "在 GitHub 上把它改回「开」，标签不动。附了评论就先发评论，评论发出后再重新打开。": "Sets it back to open on GitHub; labels stay as they are. With a comment, the comment goes out first and the issue is reopened once it did.",
+  "可选：附一句评论（先发出，再重新打开）": "Optional: add a comment (sent first, then the issue is reopened)"
 }

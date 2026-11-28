@@ -30,7 +30,7 @@ import { syncRound, type ViewerTag } from '../data/sync';
 import { SendQueue } from '../data/sendQueue';
 import { FULL_READ_EVERY_MS, type SourceCheck } from '../data/changeCheck';
 import { writesEnabled } from '../data/board';
-import { ActionRefused, CreateUnanswered, addLabel, closeStep, commentStep, createBoard, explainError, joinCreatedIssue, listAssignees, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
+import { ActionRefused, CreateUnanswered, addLabel, closeStep, reopenStep, commentStep, createBoard, explainError, joinCreatedIssue, listAssignees, listRepoOptions, mergeStep, performAction, prepareSend, readItemRecords, readItemSnapshot, readSendEvidence, refusedForSure, relatedIssues, removeLabel, setCreatedField, createRepoLabel, readRepoInfo } from '../data/actions';
 import { WATCH_LOOKS_MS, WATCH_VERIFY_MS, WATCH_VERIFY_TRIES, autoAddSurelyOff, judgeWatch, readCreatedBoards, watchActive, watchedValue, watchProblem, type BoardSighting } from '../data/autoJoin';
 import {
   OP_AUTO_MS,
@@ -4713,6 +4713,14 @@ export class Controller {
         steps = comment.trim() ? [step('close'), step('comment')] : [step('close')];
         break;
       }
+      case 'reopenIssue': {
+        // GitHub#753: the comment first, the reopen only once it went out (the steps stop at the first not done)
+        if (item.kind !== 'issue') return refuse(t('这一条不是 issue'));
+        const comment = typeof action.comment === 'string' ? action.comment : '';
+        draft = comment.trim() ? { comment } : {};
+        steps = comment.trim() ? [step('comment'), step('reopen')] : [step('reopen')];
+        break;
+      }
       case 'closePr': {
         if (item.kind !== 'pr') return refuse(t('这一条不是 PR'));
         const comment = typeof action.comment === 'string' ? action.comment : '';
@@ -5733,6 +5741,7 @@ export class Controller {
     const n = r.steps[i].name;
     if (n === 'merge') return 'merge';
     if (n === 'close') return r.kind === 'closePr' ? 'closePr' : 'closeIssue';
+    if (n === 'reopen') return 'reopenIssue';
     if (n === 'comment') return 'comment';
     return n === 'addLabel' ? 'addLabel' : 'removeLabel';
   }
@@ -5742,6 +5751,8 @@ export class Controller {
     switch (s.name) {
       case 'close':
         return closeStep(client, item, r.draft.reason);
+      case 'reopen':
+        return reopenStep(client, item);
       case 'comment':
         return commentStep(client, item, r.draft.comment ?? '');
       case 'merge':
@@ -6226,7 +6237,8 @@ export class Controller {
     this.opFirst.delete(id);
     const r = this.ops.get(s.id);
     if (!r) return { ok: false, error: t('这次操作已经不在了'), warning: null };
-    const m = r.steps[0];
+    // GitHub#753: a reopen's comment goes first — whether it was reopened is its reopen step
+    const m = r.kind === 'reopenIssue' ? (r.steps.find((x) => x.name === 'reopen') ?? r.steps[0]) : r.steps[0];
     if (m.state !== 'ok') return { ok: false, error: opText(r), warning: null };
     return { ok: true, error: null, warning: r.steps.every((x) => x.state === 'ok') && !r.readProblem ? null : opText(r) };
   }

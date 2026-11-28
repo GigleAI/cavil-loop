@@ -516,7 +516,7 @@ export function DetailPanel({
   const [pasted, setPasted] = useState<{ where: 'reply' | 'edit'; copied: boolean | null } | null>(null);
   /** the method picked by hand in this opening; null = none yet */
   const [picked, setPicked] = useState<MergeMethod | null>(null);
-  const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | 'autopilot' | null>(null);
+  const [ask, setAsk] = useState<'merge' | 'close' | 'closeIssue' | 'reopenIssue' | 'autopilot' | null>(null);
   /** GitHub#434: the "等前置…" dialog is open */
   const [blockedOpen, setBlockedOpen] = useState(false);
   /** GitHub#231: "不再提示" in the 托管 dialog, unticked every time it opens */
@@ -781,6 +781,9 @@ export function DetailPanel({
       if (d.reason) setCloseReason(d.reason);
       setCloseComment(d.comment ?? '');
       setAsk('closeIssue');
+    } else if (r.kind === 'reopenIssue') {
+      setCloseComment(d.comment ?? '');
+      setAsk('reopenIssue');
     } else if (r.kind === 'closePr') {
       setCloseComment(d.comment ?? '');
       setAsk('close');
@@ -1437,7 +1440,7 @@ export function DetailPanel({
     if (intent.what === 'retry') retryOp(r);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intent, item]);
-  const openAsk = (k: 'merge' | 'close' | 'closeIssue' | 'autopilot') => {
+  const openAsk = (k: 'merge' | 'close' | 'closeIssue' | 'reopenIssue' | 'autopilot') => {
     setRetryFrom(null);
     setDialogNote(null);
     setAsk(k);
@@ -1503,6 +1506,8 @@ export function DetailPanel({
   const prOpen = item.kind === 'pr' && detail?.state === 'open';
   // only once the detail read says it is open: the board's copy may be a round behind
   const issueOpen = item.kind === 'issue' && detail?.state === 'open';
+  // GitHub#753: the same read says closed — the same place offers to reopen it (never for a PR)
+  const issueClosed = item.kind === 'issue' && detail?.state === 'closed';
   // GitHub#205: a conflict is said loudly, and the merge button is off (GitHub refuses the merge anyway)
   const conflict = Boolean(pr && prOpen && (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY'));
   const conflictWhy = t('有冲突，GitHub 不能合并：先在分支上解决冲突（或在网页上点「Resolve conflicts」）');
@@ -1513,6 +1518,7 @@ export function DetailPanel({
   // GitHub#413: one condition per button, read by the button and by its key alike
   const opBlocked = !canWrite || busy || Boolean(lock);
   const pressCloseIssue = () => openAsk('closeIssue');
+  const pressReopenIssue = () => openAsk('reopenIssue');
   const pressHandBack = () => void handOff('handBack', false);
   // GitHub#451: the reply box's text goes out first — the buttons and the 托管 dialog say so
   const boxComment = reply.trim() ? reply : '';
@@ -2137,6 +2143,16 @@ export function DetailPanel({
               <kbd>{keyText('closeIssue')}</kbd>
             </button>
           )}
+          {issueClosed && (
+            <button
+              data-testid="reopen-issue"
+              disabled={opBlocked}
+              title={offlineWhy ?? lockWhy ?? t('在 GitHub 上重新打开这个 issue（先确认，可附一句评论；标签不动）')}
+              onClick={pressReopenIssue}
+            >
+              {t('重新打开 issue…')}
+            </button>
+          )}
           <div className="spacer" />
           {/* GitHub#433: every button with a key carries it itself, the same way */}
           <button data-testid="reply-preview-toggle" disabled={previewBlocked} title={t('预览（{key}）', { key: keyText('preview') })} onClick={() => void togglePreview()}>
@@ -2405,6 +2421,26 @@ export function DetailPanel({
             ))}
           </div>
           <textarea data-testid="close-comment" placeholder={t('可选：附一句评论（关闭成功后发出）')} value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
+        </ConfirmDialog>
+      )}
+      {ask === 'reopenIssue' && (
+        <ConfirmDialog
+          title={t('重新打开 issue #{number}？', { number: item.number })}
+          confirmLabel={t('确认重新打开')}
+          busy={busy}
+          onCancel={cancelAsk}
+          onConfirm={async () => {
+            // GitHub#753: like a close — the comment now lives in the operation, the dialog closes at once
+            if (!(await startOp({ kind: 'reopenIssue', key: item.key, comment: closeComment }, true))) return;
+            setCloseComment('');
+            setAsk(null);
+          }}
+        >
+          <ResultBanner note={dialogNote} testid="dialog-result" />
+          <div className="muted small" data-testid="reopen-note">
+            {t('在 GitHub 上把它改回「开」，标签不动。附了评论就先发评论，评论发出后再重新打开。')}
+          </div>
+          <textarea data-testid="reopen-comment" placeholder={t('可选：附一句评论（先发出，再重新打开）')} value={closeComment} onChange={(e) => setCloseComment(e.target.value)} />
         </ConfirmDialog>
       )}
     </>,

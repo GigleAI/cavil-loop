@@ -43,6 +43,11 @@ export type WriteAction =
   /** close an issue with GitHub's close reason; the comment (optional) is sent only once the close went through */
   | { kind: 'closeIssue'; key: string; reason: IssueCloseReason; comment: string }
   /**
+   * GitHub#753: reopen a closed issue; labels are left as they are. The comment (optional) goes out
+   * first and the issue is reopened only once it did — the daemon may pick an open issue up at once
+   */
+  | { kind: 'reopenIssue'; key: string; comment: string }
+  /**
    * `projects`: the Project sources (keys) the new issue joins, ticked one by one in the dialog (GitHub#205).
    * `plan` (GitHub#214, the "+" of a table group): exactly what the dialog showed it would
    * set — never re-derived when writing, only checked again; absent = the plain new issue.

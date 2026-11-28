@@ -3,7 +3,7 @@
 // case per row of the table in the issue. The controller runs these for real in notice-actions-controller.test.ts.
 
 import { describe, expect, it } from 'vitest';
-import { opActions, opRedoAction, type OpRecord, type OpStep, type OpStepState } from '../../src/shared/ops';
+import { opActions, opApplyRead, opFacts, opFullyDone, opRedoAction, opText, type OpRecord, type OpStep, type OpStepState } from '../../src/shared/ops';
 import { sendActions, type SendAction, type SendRecord } from '../../src/shared/sends';
 import { createActions } from '../../src/shared/noticeTone';
 import type { CreateJob } from '../../src/shared/types';
@@ -17,7 +17,7 @@ const step = (name: OpStep['name'], state: OpStepState, extra: Partial<OpStep> =
   ...extra,
 });
 function rec(kind: OpRecord['kind'], steps: OpStep[], extra: Partial<OpRecord> = {}): OpRecord {
-  const draft = kind === 'closeIssue' ? { reason: 'not_planned' as const, comment: '做完了' } : kind === 'closePr' ? { comment: '不合了' } : kind === 'merge' ? { method: 'squash' as const, headOid: 'a'.repeat(40) } : {};
+  const draft = kind === 'closeIssue' ? { reason: 'not_planned' as const, comment: '做完了' } : kind === 'reopenIssue' ? { comment: '还没修好' } : kind === 'closePr' ? { comment: '不合了' } : kind === 'merge' ? { method: 'squash' as const, headOid: 'a'.repeat(40) } : {};
   return { id: 'op-1', key: 'o/r#5', repo: 'o/r', number: 5, kind, startedAt: 1, steps, draft, readAt: 30, targetSeen: true, unlocked: false, draftDropped: false, dismissed: false, stuck: false, checkProblem: null, ...extra };
 }
 const hand = (kind: 'autopilot' | 'handBack', states: OpStepState[], extra: Partial<OpStep>[] = [], r: Partial<OpRecord> = {}) => {
@@ -53,6 +53,13 @@ describe('an operation: one retry, one way out, ×', () => {
     ['succeeded but never read back for long: check on GitHub (two steps)', rec('closeIssue', [step('close', 'ok'), step('comment', 'ok')], { readAt: null, targetSeen: false, stuck: true }), { retry: null, fallback: 'checkWeb', close: false }],
     ['main step done, label steps surely not: 「补做」 + handle on GitHub', hand('handBack', ['ok', 'refused']), { retry: 'finish', fallback: 'handleWeb', close: true }],
     ['closed, the attached comment surely not sent: 「再发评论」', rec('closeIssue', [step('close', 'ok'), step('comment', 'refused')]), { retry: 'sendComment', fallback: 'handleWeb', close: true, toBox: true }],
+    // GitHub#753: a reopen sends its comment first; the reopen step decides whether the issue is open again
+    ['reopen: comment refused → redo (both again), handle on GitHub, ×; × gives the comment back', rec('reopenIssue', [step('comment', 'refused'), step('reopen', 'unsent')]), { retry: 'redo', fallback: 'handleWeb', close: true, toBox: true, copy: '还没修好' }],
+    ['reopen: comment sent, reopen refused → redo (the reopen only), nothing to copy', rec('reopenIssue', [step('comment', 'ok'), step('reopen', 'refused')]), { retry: 'redo', fallback: 'handleWeb', close: true, toBox: false, copy: null }],
+    ['reopen: comment proven after the sending stopped, reopen never sent → redo', rec('reopenIssue', [step('comment', 'ok'), step('reopen', 'unsent')]), { retry: 'redo', fallback: 'handleWeb', close: true }],
+    ['reopen: comment without an answer → recheck only, no ×', rec('reopenIssue', [step('comment', 'unknown'), step('reopen', 'unsent')]), { retry: 'recheck', fallback: 'checkWeb', close: false }],
+    ['reopen: the reopen without an answer → recheck only, no ×', rec('reopenIssue', [step('reopen', 'unknown')]), { retry: 'recheck', fallback: 'checkWeb', close: false }],
+    ['reopen: fully done → × only', rec('reopenIssue', [step('comment', 'ok'), step('reopen', 'ok')]), { retry: null, fallback: null, close: true }],
     [
       '"等前置…" not finished: its dialog again + handle on GitHub',
       rec('blocked', [step('addLabel', 'ok', { blocked: 'pause', label: 'pending/human' }), step('comment', 'refused', { blocked: 'comment' })]),
@@ -77,6 +84,47 @@ describe('an operation: one retry, one way out, ×', () => {
     expect(opRedoAction(rec('closeIssue', [step('close', 'unknown'), step('comment', 'unsent')]))).toEqual(expect.any(String));
     expect(opRedoAction(rec('merge', [step('merge', 'ok')]))).toEqual(expect.any(String));
     expect(opRedoAction(rec('blocked', [step('comment', 'refused', { blocked: 'comment' })]))).toEqual(expect.any(String));
+    // GitHub#753: a reopen again carries its comment only while that comment did not go out
+    expect(opRedoAction(rec('reopenIssue', [step('comment', 'refused'), step('reopen', 'unsent')]))).toEqual({ kind: 'reopenIssue', key: 'o/r#5', comment: '还没修好' });
+    expect(opRedoAction(rec('reopenIssue', [step('comment', 'ok'), step('reopen', 'refused')]))).toEqual({ kind: 'reopenIssue', key: 'o/r#5', comment: '' });
+    expect(opRedoAction(rec('reopenIssue', [step('comment', 'unknown'), step('reopen', 'unsent')]))).toEqual(expect.any(String));
+    expect(opRedoAction(rec('reopenIssue', [step('reopen', 'ok')]))).toEqual(expect.any(String));
+  });
+});
+
+describe('a reopen (GitHub#753): what the notice says, and what proves it', () => {
+  const R = (steps: OpStep[], extra: Partial<OpRecord> = {}) => rec('reopenIssue', steps, extra);
+  it('says which of the comment and the reopen stands where', () => {
+    expect(opText(R([step('comment', 'unsent'), step('reopen', 'unsent')], { running: true, readAt: null }))).toBe('正在重新打开 issue #5：先发评论，发出后再重新打开…');
+    expect(opText(R([step('comment', 'ok'), step('reopen', 'pending')], { readAt: null }))).toBe('正在重新打开 issue #5…');
+    expect(opText(R([step('comment', 'refused'), step('reopen', 'unsent')]))).toBe('没有重新打开 issue #5：评论没有发出去：GitHub 不接受；发出评论之前不重新打开');
+    expect(opText(R([step('comment', 'unknown'), step('reopen', 'unsent')]))).toContain('没有重新打开 issue #5：评论发出后没有收到 GitHub 的应答，不确定有没有发出（连接中断）');
+    expect(opText(R([step('comment', 'ok'), step('reopen', 'refused')]))).toBe('评论已发出，没有重新打开 issue #5：GitHub 不接受');
+    expect(opText(R([step('reopen', 'unknown')]))).toContain('不确定 issue #5 有没有重新打开（连接中断）');
+    expect(opText(R([step('comment', 'ok'), step('reopen', 'ok')]))).toBe('issue #5 已重新打开，评论已发出');
+    expect(opText(R([step('reopen', 'ok')]))).toBe('issue #5 已重新打开');
+  });
+  it('a stop short is a failure (red), whichever of the two stopped it; done is done', () => {
+    expect(opFacts(R([step('comment', 'ok'), step('reopen', 'refused')])).failed).toBe(true);
+    expect(opFacts(R([step('comment', 'refused'), step('reopen', 'unsent')])).failed).toBe(true);
+    expect(opFacts(R([step('comment', 'unknown'), step('reopen', 'unsent')])).failed).toBe(false);
+    // no comment: the draft is empty, as the controller makes it
+    expect(opFullyDone(R([step('reopen', 'ok')], { draft: {} }))).toBe(true);
+    expect(opFullyDone(R([step('comment', 'ok'), step('reopen', 'ok')]))).toBe(true);
+    // succeeded, but not read back open yet: not done
+    expect(opFullyDone(R([step('reopen', 'ok')], { draft: {}, targetSeen: false }))).toBe(false);
+  });
+  it('an unknown reopen is proven only by a read issued after it that shows the issue open', () => {
+    const r = R([step('reopen', 'unknown')], { readAt: null, targetSeen: false });
+    // issued before the request's answer: proves nothing
+    expect(opApplyRead(r, { issuedAt: 15, state: 'open', labels: [] })).toBe(r);
+    // issued after, still closed: still not sure (never "did not happen")
+    expect(opApplyRead(r, { issuedAt: 25, state: 'closed', labels: [] }).steps[0].state).toBe('unknown');
+    const ok = opApplyRead(r, { issuedAt: 25, state: 'open', labels: [] });
+    expect(ok.steps[0]).toMatchObject({ state: 'ok', reason: '重读时已是打开状态' });
+    expect(ok.targetSeen).toBe(true);
+    // a close is not proven by an open read, nor a reopen by a closed one
+    expect(opApplyRead(rec('closeIssue', [step('close', 'unknown')], { readAt: null }), { issuedAt: 25, state: 'open', labels: [] }).steps[0].state).toBe('unknown');
   });
 });
 
