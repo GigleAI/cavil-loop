@@ -1919,7 +1919,8 @@ test('sync trouble: "重新读取" / "重新同步" spin while the reread runs, 
   await expect(retry).toBeEnabled();
   await expect(resync).toHaveText('正在重新同步…');
   await expect(resync).toBeEnabled();
-  await expect(running).toContainText(/^\d\d:\d\d:\d\d 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。$/);
+  // GitHub#755: the time taken, where the round is (reading GitHub, 0 of 1 sources through) and the read limit
+  await expect(running).toContainText(/^\d\d:\d\d:\d\d 开始重新读取，已用 \d+ 秒。正在读 GitHub：读完 0 \/ 1 个来源。读 GitHub 最多 2 分钟，到时还没读完的来源这次算读取失败。再点一次会放弃这一轮、重新开始。$/);
   await expect.poll(reads).toBeGreaterThan(n);
   await shot(page, '455-reread-running');
 

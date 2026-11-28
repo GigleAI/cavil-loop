@@ -91,6 +91,8 @@ export interface CavilApi {
   syncNow(): Promise<void>;
   /** refresh by hand (GitHub#217): a round reading GitHub is dropped and a new one starts at once */
   restartSync(): Promise<void>;
+  /** GitHub#755: the same, answered once that round's result is in (what "重新读取" / "重新同步" wait for) */
+  reread(): Promise<void>;
   /** open a web address (http / https, any site — GitHub#539) in the system browser; any other kind is refused */
   openExternal(url: string): Promise<void>;
   /** GitHub#590: a web link clicked inside a detail frame ('frame' = the discussion, 'preview' = the reply preview); the same rule as openExternal */

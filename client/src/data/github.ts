@@ -4,6 +4,7 @@
 
 import type { FailureInput } from '../shared/readFailure';
 import { getLang, nestSaid, t, tKey, translate, zhKey, type Params, type Said, type VerbatimSource } from '../shared/i18n';
+import { REREAD_READ_LIMIT_MS } from '../shared/config';
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -32,6 +33,8 @@ export interface GitHubErrorMeta {
   scopes?: string | null;
   /** the read was given up on (a dropped round), not refused */
   cancelled?: boolean;
+  /** GitHub#755: the read was stopped by the time limit of a refresh by hand — a failure of this round, not a refusal */
+  stopped?: boolean;
   /** GitHub#559: the codes of a validation answer's `errors` (e.g. `already_exists`) */
   codes?: string[];
 }
@@ -308,6 +311,58 @@ export interface ReadOptions {
   sleep?: (ms: number) => Promise<void>;
   /** GitHub#545 / #558: every request of the sync through one queue (one at a time) */
   queue?: RequestQueue;
+  /**
+   * GitHub#755: aborted = the read time of a refresh by hand is used up — no further request goes out
+   * and an answer not in yet is no longer waited for; each read fails with `stoppedError()`
+   */
+  deadline?: AbortSignal;
+}
+
+/** GitHub#755: a read the time limit of a refresh by hand stopped (classified as a network failure: GitHub did not answer in time) */
+export function stoppedError(): GitHubError {
+  const e = new GitHubError('network', t('重新读取时读 GitHub 满 {min} 分钟没读完，已停下', { min: Math.round(REREAD_READ_LIMIT_MS / 60_000) }));
+  e.meta.stopped = true;
+  return e;
+}
+
+/** GitHub#755: was `e` a read the time limit of a refresh by hand stopped? */
+export function isStopped(e: unknown): boolean {
+  return e instanceof GitHubError && e.meta.stopped === true;
+}
+
+/** `p`, or as soon as `signal` aborts (whichever comes first; `p` itself goes on, unwatched) */
+function untilAborted(p: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const off = () => resolve();
+    signal.addEventListener('abort', off, { once: true });
+    p.then(
+      () => {
+        signal.removeEventListener('abort', off);
+        resolve();
+      },
+      () => {
+        signal.removeEventListener('abort', off);
+        resolve();
+      },
+    );
+  });
+}
+
+/** aborted as soon as any of `signals` is (or already); undefined when none is given */
+function eitherSignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
+  const given = signals.filter((x): x is AbortSignal => x !== undefined);
+  if (given.length <= 1) return given[0];
+  const c = new AbortController();
+  for (const x of given) {
+    if (x.aborted) {
+      c.abort();
+      break;
+    }
+    x.addEventListener('abort', () => c.abort(), { once: true });
+  }
+  return c.signal;
 }
 
 export const READ_RETRY_DELAYS_MS = [1000, 3000];
@@ -342,6 +397,23 @@ export class GitHubClient {
     private readonly reads?: ReadOptions,
   ) {}
 
+  /** GitHub#755: the queue stops waiting for an answer when the round is given up on or its read time is up (made once, on first use) */
+  private unwaitedSignal: AbortSignal | undefined | null = null;
+  private get unwaited(): AbortSignal | undefined {
+    if (this.unwaitedSignal === null) this.unwaitedSignal = eitherSignal(this.cancelled, this.reads?.deadline);
+    return this.unwaitedSignal;
+  }
+
+  /** the round was given up on (a dropped round), or its read time is up: the error to throw instead of sending */
+  private ended(): GitHubError | null {
+    if (this.cancelled?.aborted) {
+      const given = new GitHubError('network', t('已放弃这一轮同步'));
+      given.meta.cancelled = true;
+      return given;
+    }
+    return this.reads?.deadline?.aborted ? stoppedError() : null;
+  }
+
   /**
    * GitHub#374: one read, asked again after each of `retryDelaysMs` while the answer is a
    * temporary failure (only for the sync's client; everything else is one try, as before).
@@ -352,8 +424,12 @@ export class GitHubClient {
       try {
         return await read();
       } catch (e) {
-        if (i >= delays.length || !isTransient(e) || this.cancelled?.aborted) throw e;
-        await (this.reads?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delays[i]);
+        if (i >= delays.length || !isTransient(e) || this.cancelled?.aborted || this.reads?.deadline?.aborted) throw e;
+        // GitHub#755: the wait is part of reading — the read time of a refresh by hand running out ends it at once.
+        // A round given up on is not hurried: nothing it reads lands anywhere, the new round does not wait for it
+        // (and its next request is refused without being sent).
+        await untilAborted((this.reads?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delays[i]), this.reads?.deadline);
+        if (this.reads?.deadline?.aborted && !this.cancelled?.aborted) throw stoppedError();
       }
     }
   }
@@ -367,11 +443,8 @@ export class GitHubClient {
   }
 
   private async send(url: string, init: RequestInit, notModifiedOk = false): Promise<Response> {
-    if (this.cancelled?.aborted) {
-      const given = new GitHubError('network', t('已放弃这一轮同步'));
-      given.meta.cancelled = true;
-      throw given;
-    }
+    const ended = this.ended();
+    if (ended) throw ended;
     this.reads?.gate.check();
     let res: Response;
     // GitHub#545: a refusal (a rate limit above all) is read while the request still holds its turn in
@@ -421,18 +494,17 @@ export class GitHubClient {
         ? await queue.send(
             go,
             () => {
-              // the gate may have closed (and the round been given up on) while this request waited its turn
-              if (this.cancelled?.aborted) {
-                const given = new GitHubError('network', t('已放弃这一轮同步'));
-                given.meta.cancelled = true;
-                throw given;
-              }
+              // the gate may have closed (and the round been given up on, or its read time run out) while this request waited its turn
+              const late = this.ended();
+              if (late) throw late;
               this.reads?.gate.check();
             },
-            this.cancelled,
+            this.unwaited,
           )
         : await go();
     } catch (e) {
+      // GitHub#755: the queue stopped waiting because the read time is up (not because the round was dropped)
+      if (e instanceof GitHubError && e.meta.cancelled && !this.cancelled?.aborted && this.reads?.deadline?.aborted) throw stoppedError();
       if (e instanceof GitHubError) throw e;
       throw outsideError('network', zhKey('无法连接 GitHub：{why}'), { why: { text: (e as Error).message, from: 'system' } });
     }

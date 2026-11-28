@@ -21,7 +21,7 @@ import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './war
 import { useLayer, useShortcuts } from './keyboard';
 import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
 import { FailureNote } from './FailureNote';
-import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, type Reread } from './reread';
+import { REREAD_OK_TEXT, rereadResultText, rereadRunningText, useReread, useSecondTick, type Reread } from './reread';
 import { emptyGuideOf } from '../shared/emptyGuide';
 import { describeFailure, failureOf, hhmm } from '../shared/readFailure';
 import { CARRIED_TITLE, TableView } from './TableView';
@@ -319,7 +319,7 @@ function WarnBar({ kind, warn, children }: { kind: WarnKind; warn: BoardWarnings
 /** GitHub#455: how long "已重新读取，所有来源都读到了" stays next to refresh */
 const REREAD_OK_MS = 5000;
 
-function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => ReactNode; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind']; reread: Reread }) {
+function SyncTroubleButton({ trouble, describe, retryOf, appKind, sync, reread }: { trouble: SyncTrouble; describe: (f: SyncTrouble['failed'][number]) => ReactNode; retryOf: (f: SyncTrouble['failed'][number]) => string | null; appKind: AppState['signedInAppKind']; sync: AppState['sync']; reread: Reread }) {
   const [open, setOpen] = useState(false);
   // GitHub#455: the outcome line stays until the next click or until the panel is put away
   const close = () => {
@@ -350,7 +350,7 @@ function SyncTroubleButton({ trouble, describe, retryOf, appKind, reread }: { tr
         <Icon name="warn" />
         {limitText && <span className="rate-limited-text">{limitText}</span>}
       </button>
-      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} box={box} reread={reread} onClose={close} />}
+      {open && <SyncTroublePanel trouble={trouble} describe={describe} retryOf={retryOf} appKind={appKind} sync={sync} box={box} reread={reread} onClose={close} />}
     </span>
   );
 }
@@ -360,6 +360,7 @@ function SyncTroublePanel({
   describe,
   retryOf,
   appKind,
+  sync,
   box,
   reread,
   onClose,
@@ -368,6 +369,8 @@ function SyncTroublePanel({
   describe: (f: SyncTrouble['failed'][number]) => ReactNode;
   retryOf: (f: SyncTrouble['failed'][number]) => string | null;
   appKind: AppState['signedInAppKind'];
+  /** GitHub#755: where the refresh by hand is (the running line) */
+  sync: AppState['sync'];
   box: RefObject<HTMLSpanElement | null>;
   /** GitHub#455: the one reread both buttons start; the panel shows it running and what it came to */
   reread: Reread;
@@ -375,6 +378,7 @@ function SyncTroublePanel({
 }) {
   const rs = reread.state;
   const running = rs.phase === 'running';
+  const now = useSecondTick(running);
   const result = rs.phase === 'done' ? rereadResultText(rs) : null;
   // on top while open: Esc is ours (the same layer the label picker uses)
   useLayer('picker');
@@ -423,7 +427,7 @@ function SyncTroublePanel({
       {running && (
         <div className="reread-line running" data-testid="sync-trouble-running" role="status">
           <span className="spin" aria-hidden="true" />
-          <span>{rereadRunningText(rs.startedAt)}</span>
+          <span>{rereadRunningText(rs.startedAt, now, sync)}</span>
         </div>
       )}
       {result && (
@@ -953,7 +957,7 @@ export function BoardView({
                   {REREAD_OK_TEXT}
                 </span>
               )}
-              {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} reread={reread} />}
+              {trouble && <SyncTroubleButton trouble={trouble} describe={describeFailed} retryOf={(f) => retryText(f, now)} appKind={state.signedInAppKind} sync={state.sync} reread={reread} />}
               {/* never greyed out while a round runs (GitHub#217): a click starts over */}
               <button
                 className={`icon-btn${sync.syncing ? ' spinning' : ''}`}

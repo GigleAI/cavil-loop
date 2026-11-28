@@ -25,6 +25,13 @@ export const WATCH_GAP_MS = 45_000;
 export const WATCH_FALLBACK_MS = 90_000;
 
 /**
+ * GitHub#755: a refresh by hand reads GitHub for at most this long — counted only while that round
+ * reads (its sources, then the notifications), never while it renews the sign-in or saves what it read
+ * (those are never cut). What is not read by then fails this time; timed rounds have no such limit.
+ */
+export const REREAD_READ_LIMIT_MS = 120_000;
+
+/**
  * After a change succeeded, one more sync round this long after the last one
  * (GigleAI/cavil-loop#177): GitHub's own Project automations (closed / merged →
  * Done, auto-add by label, …) run on GitHub's side a little later, so the

@@ -17,7 +17,6 @@
   "加上 / 去掉": "add / remove",
   "收起": "close",
   "已不在登录状态": "No longer signed in",
-  "{time} 开始重新读取，连不上时每个请求最多等 30 秒。再点一次会放弃这一轮、重新开始。": "{time} started reading again. When GitHub cannot be reached, each request waits up to 30 seconds. Click again to drop this round and start over.",
   "{time} 重新读取完毕：这个来源仍然读取失败（原因见上）。": "{time} read again: this source still could not be read (reason above).",
   "{time} 重新读取完毕：{n} 个来源仍然读取失败（原因见上）。": {
     "one": "{time} read again: {n} source still could not be read (reasons above).",
@@ -295,6 +294,26 @@
   "候选是 {repo} 可指派的账号；一次加上或去掉一个（{key}）": "Choose from the accounts assignable in {repo}; one is added or removed at a time ({key})",
   "改负责人": "Assignees",
   "+ 指派": "+ Assign",
+  "{time} 开始重新读取，已用 {elapsed}。": "{time} started reading again, {elapsed} so far.",
+  "正在开始。": "Starting.",
+  "正在读 GitHub：读完 {done} / {total} 个来源。": "Reading GitHub: {done} of {total} sources done.",
+  "正在读 GitHub。": "Reading GitHub.",
+  "正在「{step}」。": "Now {step}.",
+  "正在「{step}」：这一步不能中途停下，做完马上开始读 GitHub。": "Now {step}: this step cannot be stopped half way; reading GitHub starts right after it.",
+  "正在「{step}」：这一步不能中途停下，做完就给结果。": "Now {step}: this step cannot be stopped half way; the result follows right after it.",
+  "正在等上一轮做完「{step}」：这一步不能中途停下，做完马上开始读 GitHub。": "Waiting for the previous round to finish {step}: that step cannot be stopped half way; reading GitHub starts right after it.",
+  "读 GitHub 最多 {min} 分钟，到时还没读完的来源这次算读取失败。再点一次会放弃这一轮、重新开始。": "Reading GitHub takes at most {min} minutes; a source not read by then counts as failed this time. Click again to drop this round and start over.",
+  "这一步不计入读 GitHub 的 {min} 分钟；再点一次也不会打断它。": "This step does not count towards the {min} minutes of reading GitHub, and clicking again does not interrupt it.",
+  "{time} 重新读取停下：读 GitHub 满 {min} 分钟这个来源还没读完，这次算读取失败（网络太慢或连不上）。之后的自动同步会照常再读。": "{time} reading again stopped: after {min} minutes of reading GitHub this source was still not read, so it counts as failed this time (the network is too slow or down). The automatic syncs that follow read it again as usual.",
+  "{time} 重新读取停下：读 GitHub 满 {min} 分钟还有 {n} 个来源没读完，这次算读取失败（网络太慢或连不上）。之后的自动同步会照常再读。": {
+    "one": "{time} reading again stopped: after {min} minutes of reading GitHub {n} source was still not read, so it counts as failed this time (the network is too slow or down). The automatic syncs that follow read it again as usual.",
+    "other": "{time} reading again stopped: after {min} minutes of reading GitHub {n} sources were still not read, so they count as failed this time (the network is too slow or down). The automatic syncs that follow read them again as usual."
+  },
+  "另有 {n} 个来源读取失败（原因见上）。": {
+    "one": "{n} more source failed to read (reason above).",
+    "other": "{n} more sources failed to read (reasons above)."
+  },
+  "重新读取时读 GitHub 满 {min} 分钟没读完，已停下": "Reading again: stopped after {min} minutes of reading GitHub without finishing",
   "重新打开 issue…": "Reopen issue…",
   "在 GitHub 上重新打开这个 issue（先确认，可附一句评论；标签不动）": "Reopen this issue on GitHub (confirm first, optionally with a comment; labels stay as they are)",
   "重新打开 issue #{number}？": "Reopen issue #{number}?",

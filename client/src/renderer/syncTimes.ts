@@ -129,7 +129,8 @@ export function offlineDataText(sync: SyncState, now: number): string {
   return sync.checkedFrom !== null && sync.checkedFrom > sync.dataFrom ? t('{read}；上次检查：{ago}', { read, ago: ago(sync.checkedFrom, now) }) : read;
 }
 
-function lasted(ms: number): string {
+/** how long something has taken: "45 秒", "1 分 5 秒" (also the running line of a refresh by hand, GitHub#755) */
+export function lasted(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return s < 60 ? t('{s} 秒', { s }) : t('{m} 分 {s} 秒', { m: Math.floor(s / 60), s: s % 60 });
 }

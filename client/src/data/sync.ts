@@ -1,5 +1,5 @@
 import type { SourceConfig, SourceSnapshot, SourceStatus } from '../shared/types';
-import { GitHubClient, GitHubError, RateLimitError, failureInput } from './github';
+import { GitHubClient, GitHubError, RateLimitError, failureInput, isStopped } from './github';
 import { t } from '../shared/i18n';
 import { classifyFailure } from '../shared/readFailure';
 import { fetchSource, repoHistoryDue } from './fetchSources';
@@ -116,8 +116,16 @@ export async function syncRound(
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
   const orgOf = (s: SourceConfig) => (s.kind === 'project' ? (s.ownerType === 'org' ? s.owner : undefined) : s.owner);
-  const unchangedStatus = (e: unknown): SourceStatus[] =>
-    sources.map((s) => ({ sourceKey: s.key, ok: false, error: (e as Error).message, dataFrom: previous.get(s.key)?.fetchedAt ?? null, failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project') }));
+  // GitHub#755: the one way a failed source is said — after who-am-I failed (every source) or its own read failed
+  const failedStatus = (s: SourceConfig, e: unknown): SourceStatus => ({
+    sourceKey: s.key,
+    ok: false,
+    error: (e as Error).message,
+    dataFrom: previous.get(s.key)?.fetchedAt ?? null,
+    rateLimited: e instanceof RateLimitError,
+    failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project'),
+    ...(isStopped(e) ? { stopped: true } : {}),
+  });
 
   let viewer: string | null = null;
   let viewerTag: ViewerTag | null = null;
@@ -136,7 +144,7 @@ export async function syncRound(
     return {
       snapshots: keep(),
       replaced: [],
-      status: unchangedStatus(err).map((st) => ({ ...st, rateLimited: limited })),
+      status: sources.map((s) => failedStatus(s, err)),
       offline,
       offlineReason: offline ? err.message || null : null,
       authFailed,
@@ -225,7 +233,8 @@ export async function syncRound(
         }
         // anything a read of changes cannot handle: the full read below
       } catch (e) {
-        if (!(e instanceof RateLimitError)) deltaTried.set(src.key, true);
+        // GitHub#755: nor one the time limit of a refresh by hand stopped (it says nothing about reading by changes)
+        if (!(e instanceof RateLimitError) && !isStopped(e)) deltaTried.set(src.key, true);
         // the snapshot is untouched and its record still vouches for it: the next round finds the same
         // changes from the same point (a read of changes again — not a full read), until it fails too often
         keepRecords.push(src.key);
@@ -254,14 +263,7 @@ export async function syncRound(
       checks.delete(src.key);
       const err = r.reason as Error;
       if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;
-      status.push({
-        sourceKey: src.key,
-        ok: false,
-        error: err.message,
-        dataFrom: previous.get(src.key)?.fetchedAt ?? null,
-        rateLimited: err instanceof RateLimitError,
-        failure: classifyFailure(failureInput(err), orgOf(src), src.kind === 'project'),
-      });
+      status.push(failedStatus(src, err));
     }
   });
   return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged, held: false, keepRecords, deltaTried, viewerTag };
