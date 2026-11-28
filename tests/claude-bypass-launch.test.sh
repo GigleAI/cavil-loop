@@ -204,15 +204,23 @@ lacks "  …不补 Enter（不知道停在哪个界面）" "$(keys | grep -c 'En
 printf '⏺ 好的\n────\n❯\xc2\xa0\n────\n  ⏵⏵ bypass permissions on\n' > "$TMP/empty-box.txt"
 chk "对照：认出了输入框、框是空的（短任务秒完成）→ 算已提交" "$(inject "$FIX/claude-normal.txt" "$TMP/empty-box.txt")" "rc=0"
 chk "codex 没声明输入框的样子：没看到 ❯ 照旧算已提交（行为不变）" "$(INJ_AGENT=codex inject "$TMP/plain.txt")" "rc=0"
+printf '普通终端文字\nexample text ending with ❯\n' > "$TMP/prose-mark.txt"
+chk "claude：正文里恰好以 ❯ 结尾、没有输入框 → 返回失败（代码复审第 2 轮问题 2）" "$(inject "$TMP/prose-mark.txt")" "rc=1"
+printf '⏺ 好的\n────\n   ❯\xc2\xa0\n────\n' > "$TMP/indented-box.txt"
+chk "  对照：带缩进的真输入框、框是空的 → 算已提交" "$(inject "$FIX/claude-normal.txt" "$TMP/indented-box.txt")" "rc=0"
+printf '⏺ 好的\n────\n❯ 还没提交的字\n────\n' > "$TMP/filled-box.txt"
+chk "  对照：输入框里还留着字 → 不算提交，最后返回失败" "$(inject "$FIX/claude-normal.txt" "$TMP/filled-box.txt")" "rc=1"
 
 echo "── 4. self-heal：会话活着时只凭本次启动的标记清零 ──"
 ID=11111111-2222-4333-8444-555555555555; TAG=99999999-8888-4777-8666-555555555555
 REC_DIR="$H/.claude/projects/$(printf %s "$WT" | tr -c 'A-Za-z0-9' '-')"; REC="$REC_DIR/$ID.jsonl"
 mkdir -p "$REC_DIR" "$ST/selfheal"
 msg() { jq -cn --arg t "$1" '{type:"user",message:{role:"user",content:$t}}'; }
-setup_heal() {   # 计数 2 + 一份本次启动记录
+# 工作窗格进程号：启动记录绑在它上面（代码复审第 2 轮问题 1）
+pane_pid() { tmux display-message -p -t =bp-issue7: '#{pane_pid}' 2>/dev/null; }
+setup_heal() {   # 计数 2 + 一份本次启动记录（绑在会话现在的工作窗格进程上）
     echo 2 > "$ST/selfheal/7"
-    jq -n --arg cwd "$WT" --arg id "$ID" --arg tag "$TAG" '{agent:"claude",cwd:$cwd,id:$id,tag:$tag}' > "$ST/selfheal/7.launch"
+    jq -n --arg cwd "$WT" --arg id "$ID" --arg tag "$TAG" --arg pid "$(pane_pid)" '{agent:"claude",cwd:$cwd,id:$id,tag:$tag,pid:$pid}' > "$ST/selfheal/7.launch"
 }
 count() { cat "$ST/selfheal/7" 2>/dev/null || echo 清零; }
 alive() { lib selfheal_alive 7 bp-issue7 >/dev/null 2>&1; }
@@ -232,6 +240,8 @@ chk "记录里有本次标记（最后一行写到一半）→ 清零" "$(count)
 chk "  …启动记录里记下已核实" "$(proven)" true
 echo 2 > "$ST/selfheal/7"; rm -f "$REC"; alive
 chk "  …之后每轮直接清零（会话记录不用再读，删了也一样）" "$(count)" 清零
+setup_heal; msg "任务 $TAG" > "$REC"; jq --arg p 1 '.pid = $p' "$ST/selfheal/7.launch" > "$TMP/x" && mv "$TMP/x" "$ST/selfheal/7.launch"; alive
+chk "启动记录的进程号和窗格现在的对不上（不是这次启动的）→ 不清零" "$(count)" 2
 setup_heal; jq -cn --arg t "任务 $TAG" '{type:"user",message:{content:[{type:"text",text:$t}]}}' > "$REC"; alive
 chk "content 是分段数组 → 同样认得出" "$(count)" 清零
 setup_heal; msg "任务 $TAG" > "$REC"; chmod 000 "$REC"
@@ -268,7 +278,36 @@ EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1)
 ptag="$(grep -o 'coding-agent-launch: [0-9a-f-]*' "$PF.launch.md" 2>/dev/null | tail -1 | awk '{print $2}')"
 has "  拼命令时用了附上标记的提示词副本" "$ptag" "-"
 chk "  …原提示词文件没动" "$(cat "$PF")" "任务"
-chk "  启动记录 = 这次的 id 和这个标记" "$(jq -c '[.agent, .id, .tag]' "$ST/selfheal/7.launch" 2>/dev/null)" "[\"claude\",\"$ID\",\"$ptag\"]"
+chk "  启动记录 = 这次的 id、这个标记、工作窗格进程" "$(jq -c '[.agent, .id, .tag, .pid]' "$ST/selfheal/7.launch" 2>/dev/null)" "[\"claude\",\"$ID\",\"$ptag\",\"$(pane_pid)\"]"
+
+echo "  · 跨轮：上一次启动已核实 → 这次换了程序、新记录写不进去 → 下一次检查不清零（代码复审第 2 轮问题 1）"
+relaunch() { tmux respawn-pane -k -t =bp-issue7: "sleep 300"; }   # 起新程序：窗格换新进程（daemon 原地换程序也是这样）
+setup_heal; msg "任务 $TAG" > "$REC"; alive
+chk "  到达性 · 上一次启动核实过、清零了" "$(count)/$(proven)" "清零/true"
+old_pid="$(pane_pid)"; relaunch; new_pid="$(pane_pid)"
+chk "  到达性 · 换程序后窗格进程变了" "$([ -n "$new_pid" ] && [ "$new_pid" != "$old_pid" ] && echo yes)" yes
+echo 2 > "$ST/selfheal/7"; fresh
+EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1 WORKER_SESSION_ID=$ID AGENT_LAUNCH_KIND=new)
+chmod 500 "$ST/selfheal"
+if [ -w "$ST/selfheal" ]; then echo "  ⏭ 以 root 跑，目录权限挡不住写入，跳过跨轮反例"
+else
+    lib eval "agent_launch_command '$WT' issue7 '$PF' >/dev/null; selfheal_launch_record 7 '$WT' '$PF'"
+    chmod 700 "$ST/selfheal"
+    chk "  …旧的已核实记录还留着（删不掉、新的写不进）" "$(proven)" true
+    EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1); alive
+    chk "  …下一次检查：不拿上一次的已核实替这次清零" "$(count)" 2
+fi
+chmod 700 "$ST/selfheal"
+echo "  · 对照：正常替换——新记录写进去、这次的标记出现后才清零"
+echo 2 > "$ST/selfheal/7"; fresh
+EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1 WORKER_SESSION_ID=$ID AGENT_LAUNCH_KIND=new)
+lib eval "agent_launch_command '$WT' issue7 '$PF' >/dev/null; selfheal_launch_record 7 '$WT' '$PF'"
+EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1)
+ntag="$(jq -r .tag "$ST/selfheal/7.launch" 2>/dev/null)"
+chk "  …新记录绑在新进程上、还没核实" "$(jq -r '[.pid, (.proven // false)] | join(" ")' "$ST/selfheal/7.launch" 2>/dev/null)" "$new_pid false"
+alive; chk "  …这次的标记还没出现 → 不清零" "$(count)" 2
+msg "任务 $ntag" >> "$REC"; alive
+chk "  …这次的标记出现 → 清零" "$(count)" 清零
 
 echo "  · 这次的标记副本 / 启动记录写不出：没有记录，会话活着也不清零（代码复审第 1 轮问题 1）"
 EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1 WORKER_SESSION_ID=$ID AGENT_LAUNCH_KIND=new)
@@ -290,9 +329,9 @@ if [ -w "$ST/selfheal" ]; then echo "  ⏭ 以 root 跑，目录权限挡不住�
 else
     lib eval "agent_launch_command '$WT' issue7 '$PF' >/dev/null; selfheal_launch_record 7 '$WT' '$PF'"
     has "启动记录写不出：poll.log 写明" "$(plog)" "记不下 #7 这次启动的开工标记"
-    chmod 700 "$ST/selfheal"; rm -f "$ST/selfheal/7.launch"
+    chmod 700 "$ST/selfheal"
     EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1); alive
-    chk "  …会话活着：计数不清零" "$(count)" 2
+    chk "  …会话活着：计数不清零（目录里留着什么就是什么，不手动清）" "$(count)" 2
 fi
 chmod 700 "$ST/selfheal"
 EXTRA_ENV=(DISPATCH_WORKER_MODEL= DISPATCH_WORKER_MODEL_SET=1)
@@ -341,6 +380,7 @@ msg "上一次的任务" > "$PREC_DIR/$ID.jsonl"
 jq -n --arg cwd "$PWT" --arg id "$ID" --arg tag "$TAG" '{agent:"claude",cwd:$cwd,id:$id,tag:$tag}' > "$POLLS/state/selfheal/7.launch"
 echo 2 > "$POLLS/state/selfheal/7"
 tmux new-session -d -s bp-issue7 -c "$PWT" "sleep 300"
+jq --arg pid "$(pane_pid)" '.pid = $pid' "$POLLS/state/selfheal/7.launch" > "$TMP/x" && mv "$TMP/x" "$POLLS/state/selfheal/7.launch"
 poll_round() {
     (cd "$POLLS/project" && tmux_sandbox_env_i HOME="$H" LANG=C.UTF-8 CODING_AGENT_CONFIG="$POLLS/config" \
         FAKE_GH_LISTS=1 FAKE_GH_REPO=example/bp FAKE_GH_DIR="$GD" \

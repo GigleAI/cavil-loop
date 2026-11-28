@@ -104,7 +104,9 @@ case "$1" in
         case " ${FAKE_TMUX_DIE_LAUNCHES:-} " in *" $n "*) rm -f "$FT/alive.$name" ;; esac
         exit 0 ;;
     has-session) [ -e "$FT/alive.$(tgt "$@")" ] ;;
-    list-panes)  [ -e "$FT/alive.$(tgt "$@")" ] && echo 0 ;;
+    # 要窗格清单（id / 进程号 / 是否已结束 / 是否在记日志）时给一个窗格；其余照旧只答「没结束」
+    list-panes)  [ -e "$FT/alive.$(tgt "$@")" ] || exit 1
+                 case "$*" in *'#{pane_id} #{pane_pid}'*) echo "%1 4242 0 0" ;; *) echo 0 ;; esac ;;
     capture-pane) [ -e "$FT/alive.$(tgt "$@")" ] || exit 1; cat "${FAKE_PANE_FILE:-/dev/null}" 2>/dev/null; exit 0 ;;
     kill-session) echo "$(tgt "$@")" >> "$FT/killed"; rm -f "$FT/alive.$(tgt "$@")"; exit 0 ;;
     *) exit 0 ;;

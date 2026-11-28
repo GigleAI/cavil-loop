@@ -350,14 +350,18 @@ default_inject_prompt() {
                 #      C locale 下 [[:space:]] 不认它，不显式清掉就永远判「非空」。
                 local _box _cap _line _mark="${AGENT_INPUT_MARK:-❯}"
                 _cap="$(tmux capture-pane -t "$sess" -p 2>/dev/null)" || { _inject_gone; return 1; }
-                _line=$(printf '%s\n' "$_cap" | tail -"${AGENT_BUSY_TAIL}" | grep -F -- "$_mark" | tail -1)
+                # 输入框是以这个字符开头的那一行（前面可以有空白）；正文里恰好带这个字符的行不算（代码复审第 2 轮问题 2）
+                _line=$(printf '%s\n' "$_cap" | tail -"${AGENT_BUSY_TAIL}" | while IFS= read -r _l; do
+                            _l="${_l#"${_l%%[![:space:]]*}"}"
+                            case "$_l" in "$_mark"*) printf '%s\n' "$_l" ;; esac
+                        done | tail -1)
                 if [ -z "$_line" ] && [ -n "${AGENT_INPUT_MARK:-}" ]; then
                     # driver 声明了输入框的样子、画面里却没有：不知道停在哪个界面，不按键、不算提交（GitHub#744）
                     retries=$((retries + 1))
                     [ "$retries" -ge 5 ] && { echo "[default_inject_prompt] WARN: $sess 画面里认不出输入框，不知道提示是否送达 → 没送进去" >&2; return 1; }
                     continue
                 fi
-                _box=$(printf '%s\n' "$_line" | sed "s/.*$_mark//; s/\xc2\xa0//g" | tr -d '[:space:]')
+                _box=$(printf '%s\n' "${_line#"$_mark"}" | sed 's/\xc2\xa0//g' | tr -d '[:space:]')
                 if [ -z "$_box" ]; then
                     return 0
                 fi

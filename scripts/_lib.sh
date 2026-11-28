@@ -1930,9 +1930,19 @@ selfheal_reset() {
 # 却没有启动记录——这次的标记副本或启动记录写不出（代码复审第 1 轮问题 1：以前没有记录就照旧清零，
 # 写失败反而等于「核实过」）、续接的是没有 id 的旧会话、本功能上线前起的会话；会话上记的 agent 读不出。
 # 只有会话跑的 agent 不支持这项检查（driver 没有 agent_session_has_tag）时，才和以前一样会话活着就清零。
+# 启动记录绑在本次启动的工作窗格进程上（代码复审第 2 轮问题 1）：每次起程序窗格都换新进程
+# （新建会话或 respawn-pane），记录里的进程号和窗格现在的进程号对不上，就不是这次启动的记录——
+# 新记录写不进、旧记录又删不掉时，留下的上一次「已核实」也不会被拿来替这次清零。
 selfheal_launch_file() { printf '%s/%s.launch' "$SELFHEAL_DIR" "$1"; }
+selfheal_pane_pid() {   # <tmux_session> → stdout：工作窗格进程号；读不出返回 1
+    local st id pid dead pipe
+    read -r st id pid dead pipe <<<"$(worker_pane_lookup "$1")"
+    case "$st" in found|single) ;; *) return 1 ;; esac
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$pid"
+}
 selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话后调用
-    local n="$1" cwd="$2" pf="${3:-}" f tag tmp
+    local n="$1" cwd="$2" pf="${3:-}" f tag tmp pid
     f="$(selfheal_launch_file "$n")"
     rm -f "$f" 2>/dev/null || true
     declare -f agent_session_has_tag >/dev/null || return 0
@@ -1940,16 +1950,20 @@ selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话
     [ -f "$pf.launch.md" ] || return 0
     tag="$(agent_session_prompt_tag "$pf.launch.md")"
     [ -n "$tag" ] && [ -n "${WORKER_SESSION_ID:-}" ] || return 0
+    if ! pid="$(selfheal_pane_pid "$(tmux_session_name "$n")")"; then
+        log "  ⚠️ 读不出 #$n 这次启动的工作窗格进程，不记开工标记：self-heal 在这条会话活着时不清零失败计数"
+        return 0
+    fi
     if mkdir -p "$SELFHEAL_DIR" 2>/dev/null && tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" \
-       && jq -n --arg agent "$WORKER_AGENT" --arg cwd "$cwd" --arg id "$WORKER_SESSION_ID" --arg tag "$tag" \
-            '{agent: $agent, cwd: $cwd, id: $id, tag: $tag}' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+       && jq -n --arg agent "$WORKER_AGENT" --arg cwd "$cwd" --arg id "$WORKER_SESSION_ID" --arg tag "$tag" --arg pid "$pid" \
+            '{agent: $agent, cwd: $cwd, id: $id, tag: $tag, pid: $pid}' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
         return 0
     fi
     [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null || true
     log "  ⚠️ 记不下 #$n 这次启动的开工标记（${f}）：self-heal 在这条会话活着时不清零失败计数"
 }
 selfheal_alive() {   # <工作编号> <tmux_session>：self-heal 看到会话活着时调用
-    local n="$1" sess="${2:-}" f doc agent cwd id tag rc=0 tmp
+    local n="$1" sess="${2:-}" f doc agent cwd id tag rpid cpid="" rc=0 tmp
     f="$(selfheal_launch_file "$n")"
     if [ ! -e "$f" ]; then
         # 没有启动记录：看会话跑的是哪个 agent，它支持「开工证据」就不清零（这次没有证据）
@@ -1975,8 +1989,14 @@ selfheal_alive() {   # <工作编号> <tmux_session>：self-heal 看到会话活
        || ! agent="$(printf '%s' "$doc" | jq -er '.agent | strings | select(test("^[A-Za-z0-9._-]+$"))' 2>/dev/null)" \
        || ! cwd="$(printf '%s' "$doc" | jq -er '.cwd | strings | select(length > 0)' 2>/dev/null)" \
        || ! id="$(printf '%s' "$doc" | jq -er '.id | strings | select(length > 0)' 2>/dev/null)" \
-       || ! tag="$(printf '%s' "$doc" | jq -er '.tag | strings | select(length > 0)' 2>/dev/null)"; then
+       || ! tag="$(printf '%s' "$doc" | jq -er '.tag | strings | select(length > 0)' 2>/dev/null)" \
+       || ! rpid="$(printf '%s' "$doc" | jq -er '.pid | strings | select(test("^[0-9]+$"))' 2>/dev/null)"; then
         log_debug "self-heal: #$n 的启动记录读不懂（${f}），不清零失败计数"
+        return 0
+    fi
+    # 记录必须是这次启动的：窗格进程号对得上（见 selfheal_launch_file 上方）
+    if ! cpid="$(selfheal_pane_pid "$sess")" || [ "$cpid" != "$rpid" ]; then
+        log_debug "self-heal: #$n 的启动记录不是会话里这次启动的（记录 ${rpid}，窗格 ${cpid:-读不出}），不清零失败计数"
         return 0
     fi
     if [ "$(printf '%s' "$doc" | jq -r '.proven // false' 2>/dev/null)" = true ]; then
