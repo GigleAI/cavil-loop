@@ -39,10 +39,11 @@ export function rereadOutcome(state: Pick<AppState, 'phase' | 'sync'>): RereadOu
   const s = state.sync;
   // the round's own failure (controller: a round that threw) — not hidden behind "ok"
   if (isRoundError(s.problem)) return { kind: 'error', message: s.problem! };
-  if (s.offline) return { kind: 'offline' };
   const failed = s.sources.filter((x) => !x.ok);
+  // GitHub#755: the read limit stopped it — said so even when it stopped before GitHub said who the account is (then offline too)
   const stopped = failed.filter((x) => x.stopped === true).map((x) => x.sourceKey);
   if (stopped.length) return { kind: 'stopped', keys: stopped, others: failed.length - stopped.length };
+  if (s.offline) return { kind: 'offline' };
   return failed.length ? { kind: 'failed', keys: failed.map((x) => x.sourceKey) } : { kind: 'ok' };
 }
 

@@ -456,6 +456,8 @@ interface Hand {
   /** the refresh is answered (its round's result is in, or it will never be): idempotent */
   settle(): void;
   settled: boolean;
+  /** asked for while a round ran: it queued one more round (taken back when the round running takes it over) */
+  queued: boolean;
 }
 
 /** GitHub#448: how long the picker reuses a repository's complete list of open items */
@@ -495,6 +497,8 @@ export class Controller {
   private listeners = new Set<(s: AppState) => void>();
   private syncing: Promise<void> | null = null;
   private resync = false;
+  /** GitHub#755: a call other than a refresh by hand asked for that one more round (a refresh taken over by the round running gives up only its own) */
+  private resyncOthers = false;
   /** the round in flight (GitHub#217): a restart may drop it, but only while it is reading GitHub */
   private round: SyncRun | null = null;
   private loginRun = 0;
@@ -2011,8 +2015,14 @@ export class Controller {
 
   /** Run one round; a call during a round queues exactly one more round. */
   syncNow(): Promise<void> {
+    return this.queueSync(false);
+  }
+
+  /** `byHand`: the call of a refresh by hand — the round it queues is taken back if the round running takes the refresh over */
+  private queueSync(byHand: boolean): Promise<void> {
     if (this.syncing) {
       this.resync = true;
+      if (!byHand) this.resyncOthers = true;
       return this.syncing;
     }
     // GitHub#324: this round is the sync a waiting timed round was for — no alarm outlives its start
@@ -2021,6 +2031,7 @@ export class Controller {
       try {
         do {
           this.resync = false;
+          this.resyncOthers = false;
           try {
             await this.runOne();
           } catch (e) {
@@ -2146,20 +2157,20 @@ export class Controller {
     // GitHub#397: and every open tab no source lists, also an ended one checked a moment ago
     this.tabsForce = true;
     // GitHub#755: this refresh replaces one no round has taken yet (that one is answered now: a newer one took its place)
-    const hand = this.newHand();
+    const hand = this.newHand(this.syncing !== null);
     const replaced = this.handNext;
     this.handNext = hand;
     replaced?.settle();
     if (this.round?.reading) this.round.drop();
     this.publishManual();
-    const loop = this.syncNow();
+    const loop = this.queueSync(true);
     // syncing went idle without any round taking it (not signed in, or the round ended before reading): answered too
     loop.then(hand.settle, hand.settle);
     return { hand, loop };
   }
 
   /** GitHub#755: a refresh by hand not taken yet */
-  private newHand(): Hand {
+  private newHand(queued: boolean): Hand {
     let resolve!: () => void;
     const done = new Promise<void>((r) => (resolve = r));
     const budget = new ReadBudget(REREAD_READ_LIMIT_MS, this.timers, this.now);
@@ -2167,6 +2178,7 @@ export class Controller {
       budget,
       done,
       settled: false,
+      queued,
       settle: () => {
         if (hand.settled) return;
         hand.settled = true;
@@ -2289,6 +2301,9 @@ export class Controller {
     if (!run.hand && this.handNext) {
       run.hand = this.handNext;
       this.handNext = null;
+      // this round does the refresh it queued one more round for: that round is not needed any more —
+      // unless another caller asked for one meanwhile (and a round dropped to start this one has already gone)
+      if (run.hand.queued && !this.resyncOthers) this.resync = false;
       this.publishManual();
     }
     const budget = run.hand?.budget ?? null;

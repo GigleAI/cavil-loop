@@ -1,8 +1,9 @@
 // GigleAI/cavil-loop#217: refresh by hand while a round runs starts over.
 //   - a round reading GitHub is dropped: nothing it read lands (screen, cache),
 //     it sends no further page, and a new round starts without waiting for it;
-//   - a round renewing the sign-in or saving what it read is not cut: it
-//     finishes, then the new round starts right after;
+//   - a round renewing the sign-in or saving what it read is not cut: a saving
+//     round finishes, then the new round starts right after; a renewing round
+//     (it has not read yet) does the refresh itself (GitHub#755);
 //   - automatic calls (the timer) keep queueing, they never cut a round.
 // Real controller, the real Rust back end as a child process, the fake GitHub
 // over HTTP (responses held to stop a round half way), real SQLite.
@@ -222,7 +223,7 @@ describe('refresh by hand while a round reads GitHub: drop it, start over at onc
 });
 
 describe('refresh by hand during the two stretches that are not cut', () => {
-  it('renewing the sign-in: the renewal finishes, the new round starts right after, still signed in', async () => {
+  it('renewing the sign-in: the renewal finishes, and that round itself does the refresh (it had not read yet), still signed in', async () => {
     let hold: ReturnType<typeof gate> | null = null;
     let reached = false;
     const { c } = await ready(async (cmd, args, harness) => {
@@ -243,7 +244,9 @@ describe('refresh by hand during the two stretches that are not cut', () => {
     expect(rounds()).toBe(before); // not cut: no new round went to GitHub meanwhile
     g.open();
     await restarted;
-    expect(rounds()).toBe(before + 2); // round 1 ran on, then the restart's round
+    // GitHub#755 (PR #757 review round 1, problem 1): round 1 had not started reading, so it took the refresh over
+    // and read every source in full — no second round after it
+    expect(rounds()).toBe(before + 1);
     expect(c.getState().phase).toBe('ready');
     expect(c.getState().sync.syncing).toBe(false);
   });

@@ -9,6 +9,10 @@
 //   5. A timed round has no such limit.
 //   6. Clicking again starts over with a fresh limit; the earlier click is answered at once.
 //   7. Normal network: answered once the result is in, outcome ok.
+//   8. (PR #757 review round 1) A round taken over before it read: no extra round after the stop — but one
+//      another caller asked for meanwhile still runs. A wait before asking a failed read again ends at the
+//      limit (and the retry still happens when there is time). A limit reached before GitHub said who the
+//      account is gives the same "stopped" result as any other read it stopped.
 // Real controller, the real Rust back end as a child process, the fake GitHub over HTTP, real SQLite.
 // "Stuck" = one chosen call from the window to the back end is held (test/support/held.ts). Time is a
 // clock the test moves: the limit is the real constant, 120 s on that clock.
@@ -59,7 +63,7 @@ afterEach(async () => {
   await fake.close();
 });
 
-async function boot(opts: { board?: boolean } = {}) {
+async function boot(opts: { board?: boolean; retry?: { delaysMs: number[]; sleep: (ms: number) => Promise<void> } } = {}) {
   const cache = new Cache(join(dir, 'cache.sqlite'));
   caches.push(cache);
   cache.setSetting('trustedCredentials', trustedList(FAKE_TOKEN));
@@ -78,7 +82,8 @@ async function boot(opts: { board?: boolean } = {}) {
     timers: clock.timers,
     defaultClientId: '',
     followUpSyncMs: 600_000,
-    readRetryDelaysMs: [0, 0],
+    readRetryDelaysMs: opts.retry?.delaysMs ?? [0, 0],
+    ...(opts.retry ? { readRetrySleep: opts.retry.sleep } : {}),
     // every round reads in full: rounds are counted by full reads
     fullReadEveryMs: 0,
   });
@@ -291,5 +296,93 @@ describe('only a refresh by hand has the limit', () => {
     await c.restartSync();
     expect(syncing(c)).toBe(false);
     expect(rounds()).toBe(before + 2);
+  });
+});
+
+describe('PR #757 review round 1', () => {
+  it('problem 1: a round taken over while renewing the sign-in, then stopped: no round reads again by itself', async () => {
+    const { c, clock, backend } = await boot();
+    const before = rounds();
+    backend.hold((cmd) => cmd === 'ensureFresh');
+    void c.syncNow(); // a timed round
+    await waitUntil(() => backend.held() === 1, 'the timed round renews');
+    const answered = track(c.reread());
+    expect(c.getState().sync.manual).toEqual({ claimed: false, step: 'renew' });
+    backend.hold(isRepoRead);
+    backend.releaseOne();
+    await waitUntil(() => backend.held() === 1, 'the read is held');
+    expect(c.getState().sync.manual).toEqual({ claimed: true, step: 'read' }); // the running round took it over
+    clock.by(LIMIT_S);
+    await waitUntil(() => answered.done, 'answered at the limit');
+    await waitUntil(idle(c), 'syncing goes idle');
+    await sleepMs(200);
+    expect(rounds()).toBe(before); // nothing read again (the held read never reached GitHub)
+    expect(repoStatus(c).stopped).toBe(true);
+  });
+
+  it('problem 1: the same, with another caller asking for a round meanwhile: that round does run', async () => {
+    const { c, clock, backend } = await boot();
+    const before = rounds();
+    backend.hold((cmd) => cmd === 'ensureFresh');
+    void c.syncNow();
+    await waitUntil(() => backend.held() === 1, 'the timed round renews');
+    const answered = track(c.reread());
+    void c.syncNow(); // e.g. a change's follow-up asks for one more round
+    backend.hold(isRepoRead);
+    backend.releaseOne();
+    await waitUntil(() => backend.held() === 1, 'the read is held');
+    clock.by(LIMIT_S);
+    await waitUntil(() => answered.done, 'answered at the limit');
+    await waitUntil(() => rounds() === before + 1, 'the round the other caller asked for reads GitHub');
+    await waitUntil(idle(c), 'syncing goes idle');
+    expect(repoStatus(c).ok).toBe(true);
+  });
+
+  it('problem 2: waiting to ask a failed read again, the limit ends the wait at once', async () => {
+    let waits = 0;
+    const { c, clock } = await boot({ retry: { delaysMs: [3000], sleep: () => (waits++, new Promise<void>(() => {})) } });
+    fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+    const answered = track(c.reread());
+    // (the repository's lists each fail and wait: at least one wait is under way)
+    await waitUntil(() => waits >= 1, 'a read failed and waits to be asked again');
+    clock.by(LIMIT_S - 1);
+    await breathe();
+    expect(answered.done).toBe(false);
+    clock.by(1);
+    await waitUntil(() => answered.done, 'answered at the limit, the wait never ending by itself');
+    expect(repoStatus(c).stopped).toBe(true);
+    expect(rereadOutcome(c.getState()).kind).toBe('stopped');
+  });
+
+  it('problem 2: with time left, the failed read is still asked again (and read)', async () => {
+    let waits = 0;
+    const { c } = await boot({
+      retry: {
+        delaysMs: [3000],
+        sleep: async () => {
+          waits++;
+          fake.state.failRepoPage.delete('gigleai/cavil-loop'); // GitHub answers again
+        },
+      },
+    });
+    const before = rounds();
+    fake.state.failRepoPage.set('gigleai/cavil-loop', 1);
+    await c.reread();
+    expect(waits).toBeGreaterThanOrEqual(1);
+    expect(repoStatus(c).ok).toBe(true);
+    expect(rounds()).toBe(before + 2); // the first page asked twice: refused (502), then asked again and read
+  });
+
+  it('problem 3: the limit reached before GitHub said who the account is: every source "stopped", the stopped result', async () => {
+    const { c, clock, backend } = await boot({ board: true });
+    backend.hold((cmd, args) => cmd === 'request' && /\/user(\?|$)/.test(String(args?.url ?? '')));
+    const answered = track(c.reread());
+    await waitUntil(() => backend.held() === 1, 'who-am-I is held');
+    clock.by(LIMIT_S);
+    await waitUntil(() => answered.done, 'answered at the limit');
+    const sources = c.getState().sync.sources;
+    expect(sources).toHaveLength(2);
+    expect(sources.every((s) => !s.ok && s.stopped === true && s.failure?.kind === 'network')).toBe(true);
+    expect(rereadOutcome(c.getState())).toEqual({ kind: 'stopped', keys: sources.map((s) => s.sourceKey), others: 0 });
   });
 });

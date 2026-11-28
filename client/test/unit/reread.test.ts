@@ -45,6 +45,8 @@ describe('rereadOutcome', () => {
     expect(rereadOutcome(at({ sources: [st('a', false), st('b', false, true), st('c', false, true)] }))).toEqual({ kind: 'stopped', keys: ['b', 'c'], others: 1 });
     // failures of another kind alone stay "failed"
     expect(rereadOutcome(at({ sources: [st('a', false)] }))).toEqual({ kind: 'failed', keys: ['a'] });
+    // PR #757 review round 1, problem 3: stopped before GitHub said who the account is (offline too): still "stopped"
+    expect(rereadOutcome(at({ offline: true, sources: [st('a', false, true), st('b', false, true)] }))).toEqual({ kind: 'stopped', keys: ['a', 'b'], others: 0 });
   });
   it('signed out meanwhile: error', () => {
     expect(rereadOutcome(at({ sources: [st('a', true)] }, 'login')).kind).toBe('error');

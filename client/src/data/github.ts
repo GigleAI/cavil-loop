@@ -330,6 +330,26 @@ export function isStopped(e: unknown): boolean {
   return e instanceof GitHubError && e.meta.stopped === true;
 }
 
+/** `p`, or as soon as `signal` aborts (whichever comes first; `p` itself goes on, unwatched) */
+function untilAborted(p: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const off = () => resolve();
+    signal.addEventListener('abort', off, { once: true });
+    p.then(
+      () => {
+        signal.removeEventListener('abort', off);
+        resolve();
+      },
+      () => {
+        signal.removeEventListener('abort', off);
+        resolve();
+      },
+    );
+  });
+}
+
 /** aborted as soon as any of `signals` is (or already); undefined when none is given */
 function eitherSignal(...signals: (AbortSignal | undefined)[]): AbortSignal | undefined {
   const given = signals.filter((x): x is AbortSignal => x !== undefined);
@@ -405,7 +425,11 @@ export class GitHubClient {
         return await read();
       } catch (e) {
         if (i >= delays.length || !isTransient(e) || this.cancelled?.aborted || this.reads?.deadline?.aborted) throw e;
-        await (this.reads?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delays[i]);
+        // GitHub#755: the wait is part of reading — the read time of a refresh by hand running out ends it at once.
+        // A round given up on is not hurried: nothing it reads lands anywhere, the new round does not wait for it
+        // (and its next request is refused without being sent).
+        await untilAborted((this.reads?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(delays[i]), this.reads?.deadline);
+        if (this.reads?.deadline?.aborted && !this.cancelled?.aborted) throw stoppedError();
       }
     }
   }

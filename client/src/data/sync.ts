@@ -116,8 +116,16 @@ export async function syncRound(
   const keep = () => new Map([...previous].filter(([k]) => sources.some((s) => s.key === k)));
   // GitHub#401: the source's organisation, for a failure GitHub's words do not name one in
   const orgOf = (s: SourceConfig) => (s.kind === 'project' ? (s.ownerType === 'org' ? s.owner : undefined) : s.owner);
-  const unchangedStatus = (e: unknown): SourceStatus[] =>
-    sources.map((s) => ({ sourceKey: s.key, ok: false, error: (e as Error).message, dataFrom: previous.get(s.key)?.fetchedAt ?? null, failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project') }));
+  // GitHub#755: the one way a failed source is said — after who-am-I failed (every source) or its own read failed
+  const failedStatus = (s: SourceConfig, e: unknown): SourceStatus => ({
+    sourceKey: s.key,
+    ok: false,
+    error: (e as Error).message,
+    dataFrom: previous.get(s.key)?.fetchedAt ?? null,
+    rateLimited: e instanceof RateLimitError,
+    failure: classifyFailure(failureInput(e), orgOf(s), s.kind === 'project'),
+    ...(isStopped(e) ? { stopped: true } : {}),
+  });
 
   let viewer: string | null = null;
   let viewerTag: ViewerTag | null = null;
@@ -136,7 +144,7 @@ export async function syncRound(
     return {
       snapshots: keep(),
       replaced: [],
-      status: unchangedStatus(err).map((st) => ({ ...st, rateLimited: limited })),
+      status: sources.map((s) => failedStatus(s, err)),
       offline,
       offlineReason: offline ? err.message || null : null,
       authFailed,
@@ -255,15 +263,7 @@ export async function syncRound(
       checks.delete(src.key);
       const err = r.reason as Error;
       if (err instanceof GitHubError && err.kind === 'auth') authFailed = true;
-      status.push({
-        sourceKey: src.key,
-        ok: false,
-        error: err.message,
-        dataFrom: previous.get(src.key)?.fetchedAt ?? null,
-        rateLimited: err instanceof RateLimitError,
-        failure: classifyFailure(failureInput(err), orgOf(src), src.kind === 'project'),
-        ...(isStopped(err) ? { stopped: true } : {}),
-      });
+      status.push(failedStatus(src, err));
     }
   });
   return { snapshots, replaced, status, offline: false, offlineReason: null, authFailed, viewer, checks, unchanged, held: false, keepRecords, deltaTried, viewerTag };
