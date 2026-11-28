@@ -13,6 +13,7 @@
 #   【3】修复范围脚本：真实 git 仓库里造跨轮历史，docs/operations.md 两张表每行一例；往返记录里的复审节
 #        （GitHub#676：记录由真实的 round-log.sh post 写出）
 #   【4】问题编号不带井号：六份成品里的编号规则、返工回应句、「只有真的 issue / PR 才写 #编号」，示例按自动链接规则对拍
+#   【5】worker 四个入口的提示词第一行是维护者给的身份句（GitHub#758），复审两份不带，整份替换模板的项目不加
 #
 # ── Problem numbers in review lists (GitHub#646); read before changing ──
 # Reviews number problems 「问题 1」「问题 2」, never `#1`: GitHub turns `#1` into a link to issue 1, and the lists
@@ -310,6 +311,34 @@ check "示例（新写法）只认出真的 issue 号" "$(autolinks <<<"$ex")" "
 check "同一句换回旧写法（问题 2 → #2）会多认出一个链接" "$(sed 's/问题 \([0-9]\)/#\1/' <<<"$ex" | autolinks)" "2 610"
 check "跨轮写法「第 1 轮问题 3」不会被认成链接" "$(printf '| 第 1 轮问题 3 | 已改 |\n' | autolinks)" ""
 check "旧跨轮写法「第 1 轮 #3」会被认成链接（测得出两种写法的差别）" "$(printf '| 第 1 轮 #3 | 已改 |\n' | autolinks)" "3"
+
+# ════════ 【5】worker 提示词第一行是维护者给的身份句（GitHub#758）════════
+# 放在这里，因为这个文件已经经真实派工脚本写出全部 worker 入口和复审的成品。这句话写在三份 worker 模板的
+# 开头（同一句三份副本，这里逐份对拍）；复审独立、不改代码，不带它；整份替换了模板的项目用自己的开头
+echo "── 【5】worker 提示词第一行（真实派工脚本拼出的成品）──"
+OWNER_LINE='You are the owner and long-term maintainer of this codebase, and its design is up to you.'
+for O in "$TMP/out-present" "$TMP/out-guarded"; do
+    probs=""
+    for w in "${WORKERS[@]}"; do
+        f="$O/$w.md"
+        [ -s "$f" ] || { probs+="$w 派工没写出提示词; "; continue; }
+        [ "$(sed -n 1p "$f")" = "$OWNER_LINE" ] || probs+="$w 第一行是「$(sed -n 1p "$f")」; "
+        [ -z "$(sed -n 2p "$f")" ] || probs+="$w 第二行不是空行; "
+        [ "$(grep -cxF -- "$OWNER_LINE" "$f")" = 1 ] || probs+="$w 这句出现了不止一次; "
+    done
+    # 第三行起就是原来的开头（这句只是加在前面，没有顶掉模板原有内容）
+    case "$(sed -n 3p "$O/new-issue.md")" in '仓库：example/rc') ;; *) probs+="new-issue 第三行不是原来的开头; " ;; esac
+    case "$(sed -n 3p "$O/pr-comment.md")" in "PR #$N_PR 有新评论，请处理。") ;; *) probs+="pr-comment 第三行不是原来的开头; " ;; esac
+    for f in review review-autopilot; do
+        [ -s "$O/$f.md" ] || { probs+="$f 派工没写出提示词; "; continue; }
+        has "$O/$f.md" "$OWNER_LINE" && probs+="$f 带了身份句; "
+    done
+    tag=${O##*/out-}
+    [ -z "$probs" ] && ok "$tag：worker ×4（含子项）第一行是身份句、第二行空、只出现一次；复审 ×2 不带" || bad "$tag：身份句" "$probs"
+done
+probs=""
+for w in "${WORKERS[@]}"; do has "$TMP/out-replace/$w.md" "$OWNER_LINE" && probs+="$w 带了身份句; "; done
+[ -z "$probs" ] && ok "整份替换了 worker 模板的项目：用项目自己的开头，不加身份句" || bad "整份替换的项目" "$probs"
 
 # ════════ 【3】修复范围脚本 ════════
 echo "── 【3】修复范围脚本 ──"

@@ -1,3 +1,5 @@
+You are the owner and long-term maintainer of this codebase, and its design is up to you.
+
 仓库：${REPO}
 Issue：#${ISSUE}
 工作目录：`${WORKTREE}`（git worktree）
