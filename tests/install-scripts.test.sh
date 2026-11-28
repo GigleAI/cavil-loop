@@ -137,7 +137,9 @@ if ! compat_skip "setup.sh 不带 --yes" "$OLD_SRC" "$NEW_SRC" setup.sh scripts 
             # 没配令牌、本机也没登录，所以是缺令牌的提醒；内容在第 9 组细测）
             chk "$os / 答 $ans：多了 worker 令牌检查，报缺 GH_TOKEN" \
                 "$(printf '%s\n' "$new" | sed -n '/^── worker 令牌检查 ──$/,/^$/p' | grep -c 'worker 需要 GH_TOKEN')" 1
+            # 两边都去掉：合入基点在 GitHub#739 之后时，改前的副本也有这一段
             new="$(printf '%s\n' "$new" | sed '/^── worker 令牌检查 ──$/,/^$/d')"
+            old="$(printf '%s\n' "$old" | sed '/^── worker 令牌检查 ──$/,/^$/d')"
             # 唯一允许的差异：配置模板开了暂缓标签（GitHub#463），本版 setup.sh 按配置建它，多一行建标签输出。
             # 两边都去掉这一行再比（合入之后改前的副本也会建它），并单独断言本版确实建了
             chk "$os / 答 $ans：按模板里的暂缓标签建了它" "$(printf '%s\n' "$new" | grep -cxF "$LATER_LINE")" 1

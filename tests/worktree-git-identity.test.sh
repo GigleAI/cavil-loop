@@ -47,6 +47,8 @@ case "$1" in
         for a in "$@"; do [ "$prev" = -t ] && t="${a#=}"; prev="$a"; done
         grep -qxF -- "$t" "$log.live" 2>/dev/null; exit $? ;;
     ls|list-sessions) [ -s "$log.live" ] && cat "$log.live"; exit 0 ;;
+    # 画面：claude 的空输入框（往会话里送字后认得出输入框、框是空的，才算送达，GitHub#744）
+    capture-pane) printf '\342\235\257 \n'; exit 0 ;;
 esac
 exit 0
 SH
