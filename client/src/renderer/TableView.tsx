@@ -247,10 +247,13 @@ function ListLine({ kind, lists, count }: { kind: SpecialSlice; lists: TableList
             aria-label={t('最近几天')}
             value={custom !== null ? 'custom' : String(lists.days)}
             onChange={(e) => {
-              if (e.target.value === 'custom') {
-                setCustom(String(lists.days));
-                setBad(false);
-              } else void Promise.resolve(api().setDoneDays(Number(e.target.value))).catch(() => undefined);
+              setBad(false);
+              if (e.target.value === 'custom') setCustom(String(lists.days));
+              else {
+                // a fixed number picked: the typing box (and what was typed in it) goes, so 「确定」 cannot put an old number back
+                setCustom(null);
+                void Promise.resolve(api().setDoneDays(Number(e.target.value))).catch(() => undefined);
+              }
             }}
           >
             {choices.map((d) => (
@@ -1143,6 +1146,12 @@ export function TableView({
               <button className={flat === 'done' ? 'slice on' : 'slice'} data-testid="slice-done" title={t('最近 {n} 天内更新、已完成的条目；只列「只看我的」范围内的', { n: lists.days })} onClick={() => api().setView({ table: { slice: SLICE_DONE } })}>
                 <span className="slice-name">{t('最近完成')}</span> <span className="count" data-testid="slice-done-count">{lists.done}</span>
               </button>
+              {/* the repository list hidden: its 「全部」 goes with it, so the way back to the ordinary table stays here */}
+              {!table.slices && (
+                <button className={flat === null ? 'slice on' : 'slice'} data-testid="slice-all" title={t('回到普通表格，列出全部条目')} onClick={() => api().setView({ table: { slice: null } })}>
+                  <span className="slice-name">{t('全部')}</span> <span className="count">{items.length}</span>
+                </button>
+              )}
               {table.slices && <hr className="slices-sep" />}
             </>
           )}

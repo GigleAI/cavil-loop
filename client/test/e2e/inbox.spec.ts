@@ -166,6 +166,18 @@ test('GitHub#752: 「收件箱」 lists my pending items open and closed plus my
   await expect.poll(() => rowKeys(page)).toEqual(doneWant(30));
   await expect(page.getByTestId('slice-done-count')).toHaveText(String(doneWant(30).length));
   await shot(page, 'inbox-02-done');
+  // PR #756 review round 1, problem 1: a fixed number picked while typing one — the box goes, the picker says it,
+  // and nothing typed earlier can come back
+  await page.getByTestId('done-days').selectOption('custom');
+  await expect(page.getByTestId('done-days-custom')).toHaveValue('30');
+  await page.getByTestId('done-days').selectOption('7');
+  await expect(page.getByTestId('done-days')).toHaveValue('7');
+  await expect(page.getByTestId('done-days-custom')).toHaveCount(0);
+  await expect(page.getByTestId('done-days-apply')).toHaveCount(0);
+  await expect.poll(() => rowKeys(page)).toEqual(doneWant(7));
+  await expect.poll(async () => (await page.evaluate(async () => (await (window as any).cavil.get()).state.doneDays))).toBe(7);
+  await page.getByTestId('done-days').selectOption('30');
+  await expect.poll(() => rowKeys(page)).toEqual(doneWant(30));
   // a number typed by hand: out of range is refused, 365 is taken
   await page.getByTestId('done-days').selectOption('custom');
   await page.getByTestId('done-days-custom').fill('0');
@@ -188,10 +200,32 @@ test('GitHub#752: 「收件箱」 lists my pending items open and closed plus my
   await expect(page.getByTestId('slice-done')).toHaveClass(/on/);
   await expect(page.getByTestId('done-days')).toHaveValue('365');
 
-  // ---- 「左侧按仓库切片」 off: the two entries stay, the repositories go ----
+  // ---- 「左侧按仓库切片」 off: the two entries stay, the repositories go; 「全部」 stays as the way back ----
   await page.getByTestId('open-view-panel').click();
   await page.getByTestId('slice-by-repo').uncheck();
+  await page.getByTestId('open-view-panel').click();
   await expect(page.getByTestId('slice-inbox')).toBeVisible();
   await expect(page.locator('[data-testid="slice"]')).toHaveCount(0);
+  await expect(page.getByTestId('slice-done')).toHaveClass(/on/);
+  await expect(page.getByTestId('list-line')).toBeVisible();
+  // PR #756 review round 1, problem 2: back to the ordinary table without turning the repository list on again
+  await page.getByTestId('slice-all').click();
+  await expect(page.getByTestId('slice-all')).toHaveClass(/on/);
+  await expect(page.getByTestId('slice-done')).not.toHaveClass(/on/);
+  await expect(page.getByTestId('list-line')).toHaveCount(0);
+  const openKeys = all.filter((i) => i.state === 'open').map((i) => i.key).sort();
+  await expect.poll(async () => (await page.$$eval('[data-testid="row"]:not([data-pulled]):not([data-carried])', (rs) => [...new Set(rs.map((r) => r.getAttribute('data-key')!))])).sort()).toEqual(openKeys);
+  await expect(page.locator('[data-testid="slice"]')).toHaveCount(0);
+  // in and out again, and a restart keeps 「全部」
+  await page.getByTestId('slice-inbox').click();
+  await expect(page.getByTestId('list-line')).toBeVisible();
+  await page.getByTestId('slice-all').click();
+  await expect(page.getByTestId('list-line')).toHaveCount(0);
+  await app.close();
+  app = await launchApp(env);
+  page = app.page;
+  await expect(page.getByTestId('table')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId('slice-all')).toHaveClass(/on/);
+  await expect(page.getByTestId('list-line')).toHaveCount(0);
   await app.close();
 });

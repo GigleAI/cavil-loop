@@ -316,5 +316,6 @@
   "最近 {n} 天内更新、已完成的条目；只列「只看我的」范围内的": {
     "one": "Done items updated in the last {n} day; only what “Only mine” covers",
     "other": "Done items updated in the last {n} days; only what “Only mine” covers"
-  }
+  },
+  "回到普通表格，列出全部条目": "Back to the ordinary table, every item"
 }
