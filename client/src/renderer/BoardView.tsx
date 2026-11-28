@@ -16,7 +16,7 @@ import { noteOf, ResultBanner, type ResultNote } from './DetailPanel';
 import { noteEditOf, stepNoteEdits, type NoteEdit } from './noteEdits';
 import { NewIssueDialog, type GroupSeed } from './NewIssueDialog';
 import { applyFilter, mineActive, mineOnly, openOnly, parseFilter, statesStated, type ParsedFilter } from '../shared/filter';
-import { MineFilterButton } from './MineFilterButton';
+import { MineFilterButton, mineLabel } from './MineFilterButton';
 import { isFiltering, syncTrouble, type SyncTrouble, type WarnKind } from './warnings';
 import { useLayer, useShortcuts } from './keyboard';
 import { EmptyGuide, type SettingsIntent } from './EmptyGuide';
@@ -530,6 +530,7 @@ export function BoardView({
   // Items brought along faded (an issue with its matched PR, sub-issues, the graph's context) still come from
   // all of `data.items`, as for a search.
   const mineOn = mineActive(state.mineFilter, state.viewer);
+  const mineOthers = state.mineFilter.authors.length + state.mineFilter.assignees.length > 0;
   const pool = useMemo(() => mineOnly(data.items, state.mineFilter, state.viewer), [data.items, state.mineFilter, state.viewer]);
   const tally = useMemo(
     () =>
@@ -993,7 +994,7 @@ export function BoardView({
             </label>
           </>
         )}
-        <MineFilterButton filter={state.mineFilter} viewer={state.viewer} onChange={(patch) => void Promise.resolve(api().setMineFilter(patch)).catch(() => undefined)} />
+        <MineFilterButton filter={state.mineFilter} viewer={state.viewer} items={data.items} onChange={(patch) => void Promise.resolve(api().setMineFilter(patch)).catch(() => undefined)} />
         {/* GitHub#721: keeps 「只看我的」 apart from the "显示已关闭" switch that follows it */}
         <span className="vbar-sep" data-testid="mine-filter-sep" aria-hidden="true" />
         <label
@@ -1057,7 +1058,7 @@ export function BoardView({
                 [
                   `${tallyCountText(e)} · ${e.query === null ? t('这个标签名写不进搜索框（含双引号，或以 < > 开头），不能点开筛选') : on ? t('再点一下回到之前的搜索') : t('点一下只看这些')}`,
                   t('当前来源共 {n} 个条目', { n: data.items.length }),
-                  ...(mineOn ? [t('只看我的：其中 {n} 个', { n: pool.length })] : []),
+                  ...(mineOn ? [t('{label}：其中 {n} 个', { label: mineLabel(state.mineFilter, state.viewer), n: pool.length })] : []),
                   ...(parkedHidden > 0 ? [t('另有 {n} 个稍后处理的条目没显示（打开「显示稍后处理」查看）', { n: parkedHidden })] : []),
                   ...(filtering ? [t('搜索命中 {n} 条', { n: table?.matchCount ?? items.length })] : []),
                   ...(filtering && table && table.pulledCount > 0 ? [t('另有 {n} 个子 issue 随父 issue 显示', { n: table.pulledCount })] : []),
@@ -1125,9 +1126,12 @@ export function BoardView({
           reads as data gone; the switch is kept across restarts, so this can be the first thing seen */}
       {mineOn && items.length === 0 && data.items.length > 0 && !guide && (
         <div className="banner info" data-testid="mine-empty">
-          {t('已开「只看我的」：没有当前账号提出或被指派、并且符合其余筛选条件的条目。')}
+          {/* GitHub#746: with other accounts picked the switch is about more than the signed-in account */}
+          {mineOthers
+            ? t('已开「只看」：没有符合面板里所选条件、并且符合其余筛选条件的条目。')
+            : t('已开「只看我的」：没有当前账号提出或被指派、并且符合其余筛选条件的条目。')}
           <button className="link" data-testid="mine-empty-off" onClick={() => void Promise.resolve(api().setMineFilter({ on: false })).catch(() => undefined)}>
-            {t('关掉「只看我的」')}
+            {mineOthers ? t('关掉「只看」') : t('关掉「只看我的」')}
           </button>
         </div>
       )}
