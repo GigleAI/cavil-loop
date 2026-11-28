@@ -4971,6 +4971,9 @@ test('GitHub#231: 托管 asks in three paragraphs (four with the 「继续」 it
     [...sel.querySelectorAll('optgroup option')].map((o) => ({ id: (o as HTMLOptionElement).value, part: o.parentElement!.getAttribute('label')! })),
   );
   expect(cellOptions).toEqual(detailOptions.map(({ id, part }) => ({ id, part })));
+  // GitHub#747: a press outside an open cell editor only puts it away, so the list is put away first
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
 
   // ---- 5. only the repository shown at the top: a new issue still starts on the board holding its items ----
   await showSource(page, '[data-key^="project:"]', false);

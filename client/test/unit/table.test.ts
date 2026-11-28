@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildTable, foldRuns, foldTally, GROUP_NONE_KEY, iterationRange, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
+import { buildTable, columnSlot, foldRuns, foldTally, GROUP_NONE_KEY, iterationRange, moveColumn, repoSources, type Group, type RepoSource, type Table } from '../../src/data/table';
 import { buildBoard, iterationColumnKey } from '../../src/data/board';
 import { fetchProject } from '../../src/data/fetchSources';
 import { GitHubClient } from '../../src/data/github';
@@ -639,5 +639,33 @@ describe('merging a Project copy with a repository copy of the same item', () =>
       expect(merged[0].title).toBe('newer');
       expect(merged[0].linkedPrs?.map((p) => p.number)).toEqual([2]);
     }
+  });
+});
+
+// GitHub#747: a column moved by dragging its heading. Middles of the columns after the title: 100, 200, 300.
+describe('moving a table column by its heading', () => {
+  const mids = [100, 200, 300];
+  it.each([
+    [0, 0],
+    [99, 0],
+    [101, 1],
+    [250, 2],
+    [301, 3],
+    [10_000, 3],
+  ])('pointer at %i → slot %i', (x, slot) => expect(columnSlot(mids, x)).toBe(slot));
+
+  const saved = ['title', 'assignees', 'labels', 'linkedPrs', 'updated'] as const;
+  it('to the front: right after the title', () => expect(moveColumn([...saved], 'updated', 0)).toEqual(['title', 'updated', 'assignees', 'labels', 'linkedPrs']));
+  it('to the end', () => expect(moveColumn([...saved], 'assignees', 4)).toEqual(['title', 'labels', 'linkedPrs', 'updated', 'assignees']));
+  it('one step right (the slot counts the dragged column itself)', () => expect(moveColumn([...saved], 'assignees', 2)).toEqual(['title', 'labels', 'assignees', 'linkedPrs', 'updated']));
+  it('dropped on either side of itself: nothing moved', () => {
+    expect(moveColumn([...saved], 'labels', 1)).toBeNull();
+    expect(moveColumn([...saved], 'labels', 2)).toBeNull();
+  });
+  it('the title keeps its place in the saved list (not first there): only the others change order', () =>
+    expect(moveColumn(['assignees', 'title', 'labels', 'updated'], 'updated', 0)).toEqual(['updated', 'title', 'assignees', 'labels']));
+  it('the title itself, or a column not shown, does not move', () => {
+    expect(moveColumn([...saved], 'title', 3)).toBeNull();
+    expect(moveColumn([...saved], 'milestone', 0)).toBeNull();
   });
 });

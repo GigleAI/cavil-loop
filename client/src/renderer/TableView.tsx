@@ -1,14 +1,15 @@
 import { stateTone } from '../shared/stateTone';
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Item, ProjectMeta, TableColumn, ViewSettings } from '../shared/types';
 import type { RepoAssignees, RepoOptions, WriteAction } from '../shared/actions';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH } from '../shared/viewSettings';
-import { boardMode, buildTable, foldRuns, foldTally, isOwnGroup, tableDropPlan, type Group, type Row, type Table } from '../data/table';
+import { boardMode, buildTable, columnSlot, foldRuns, foldTally, isOwnGroup, moveColumn, tableDropPlan, type Group, type Row, type Table } from '../data/table';
 import type { DropPlan } from '../data/board';
 import { issuePrLinks } from '../data/prNest';
 import { api } from './api';
 import { Person } from './Avatar';
-import { OPENS_ITEM } from './outsideClick';
+import { CELL_EDITOR, MOVE_SLOP, OPENS_ITEM } from './outsideClick';
+import { useLayer, useShortcuts } from './keyboard';
 import { labelStyle, useDarkMode } from './colors';
 import { Icon, itemIcon } from './Icons';
 import { LabelPicker } from './LabelPicker';
@@ -199,18 +200,9 @@ type Editor = {
   pinned?: readonly string[];
 };
 
-/** The open editor of one cell: a picker for labels, one dropdown per Project for iteration / status, a dropdown for the milestone. */
+/** The open editor of one cell: a picker for labels / assignees, a list in the page for the milestone, one per Project for iteration / status (GitHub#747). */
 function CellEditor({ item, col, projects, options, assignees, viewer, disabled, today, act, close, pinned }: Editor) {
-  const box = useRef<HTMLSpanElement>(null);
-  // a click outside the editor puts it away (the label / assignee pickers have their own)
-  useEffect(() => {
-    if (col === 'labels' || col === 'assignees') return;
-    const out = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as Node)) close();
-    };
-    document.addEventListener('mousedown', out);
-    return () => document.removeEventListener('mousedown', out);
-  }, [col, close]);
+  // a press outside the editor puts it away and does nothing else: one rule for every cell editor, in TableView (GitHub#747)
   if (col === 'assignees') {
     return (
       <span className="picker-anchor">
@@ -248,73 +240,194 @@ function CellEditor({ item, col, projects, options, assignees, viewer, disabled,
     if (options.error) return <span className="small err">{options.error}</span>;
     const titles = [...new Set(options.milestones.map((m) => m.title))];
     if (item.milestone && !titles.includes(item.milestone.title)) titles.unshift(item.milestone.title);
+    const now = item.milestone?.title ?? '';
     return (
-      <span ref={box}>
-        <select
-          className="cell-select"
-          data-testid="cell-milestone"
-          autoFocus
-          disabled={disabled}
-          value={item.milestone?.title ?? ''}
-          onChange={(e) => {
-            act({ kind: 'setMilestone', key: item.key, title: e.target.value || null }, e.target.value ? t('里程碑改成「{title}」', { title: e.target.value }) : t('已去掉里程碑'));
-            close();
-          }}
-        >
-          <option value="">{t('（无）')}</option>
-          {titles.map((x) => (
-            <option key={x} value={x} data-verbatim="github">
-              {x}
-            </option>
-          ))}
-        </select>
-      </span>
+      <CellLists
+        close={close}
+        lists={[
+          {
+            key: 'milestone',
+            testid: 'cell-milestone',
+            disabled,
+            value: now,
+            commit: (v) => {
+              if (v !== now) act({ kind: 'setMilestone', key: item.key, title: v || null }, v ? t('里程碑改成「{title}」', { title: v }) : t('已去掉里程碑'));
+              close();
+            },
+            options: (
+              <>
+                <option value="">{t('（无）')}</option>
+                {titles.map((x) => (
+                  <option key={x} value={x} data-verbatim="github">
+                    {x}
+                  </option>
+                ))}
+              </>
+            ),
+          },
+        ]}
+      />
     );
   }
-  // iteration / status: one dropdown per Project the item is on (the values belong to the Project)
+  // iteration / status: one list per Project the item is on (the values belong to the Project)
   const field = col as 'iteration' | 'status';
   const rows = item.projects
     .map((m) => ({ m, p: projects.find((x) => x.key === m.projectKey) }))
     .filter((x): x is { m: Item['projects'][number]; p: ProjectMeta } => Boolean(x.p && (field === 'iteration' ? x.p.hasIterationField : x.p.statusFieldId)));
   if (!rows.length) return <span className="small muted">{item.projects.length ? t('看板没有这个字段') : t('不在看板上；加入看板请在详情里')}</span>;
   return (
-    <span ref={box} className="cell-selects">
-      {rows.map(({ m, p }) => {
+    <CellLists
+      close={close}
+      lists={rows.map(({ m, p }) => {
         const ro = !p.viewerCanUpdate;
-        return (
-          <select
-            key={p.key}
-            className="cell-select"
-            data-testid={`cell-${field}`}
-            data-project={p.key}
-            disabled={disabled || ro}
-            title={ro ? t('你在看板「{board}」上没有修改权限', { board: p.title }) : t('看板「{board}」', { board: p.title })}
-            {...verbatimParts('github', [p.title])}
-            value={field === 'iteration' ? (m.iteration?.id ?? '') : (m.status ?? '')}
-            onChange={(e) => {
-              const v = e.target.value || null;
+        const now = field === 'iteration' ? (m.iteration?.id ?? '') : (m.status ?? '');
+        return {
+          key: p.key,
+          testid: `cell-${field}`,
+          project: p.key,
+          disabled: disabled || ro,
+          title: ro ? t('你在看板「{board}」上没有修改权限', { board: p.title }) : t('看板「{board}」', { board: p.title }),
+          boardTitle: p.title,
+          value: now,
+          commit: (v: string) => {
+            if (v !== now)
               act(
                 field === 'iteration'
-                  ? { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: v }
-                  : { kind: 'setStatus', key: item.key, projectKey: p.key, status: v },
+                  ? { kind: 'setIteration', key: item.key, projectKey: p.key, iterationId: v || null }
+                  : { kind: 'setStatus', key: item.key, projectKey: p.key, status: v || null },
                 field === 'iteration' ? t('看板「{board}」的迭代已改', { board: p.title }) : t('看板「{board}」的状态已改', { board: p.title }),
               );
-              close();
+            close();
+          },
+          options: (
+            <>
+              <option value="">{field === 'iteration' ? t('（无迭代）') : t('（无状态）')}</option>
+              {field === 'iteration' ? (
+                <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => (rows.length > 1 ? t('{board}：{value}', { board: p.title, value: i.title }) : i.title)} />
+              ) : (
+                p.statusOptions.map((o) => (
+                  <option key={o} value={o} data-verbatim="github">
+                    {rows.length > 1 ? t('{board}：{value}', { board: p.title, value: o }) : o}
+                  </option>
+                ))
+              )}
+            </>
+          ),
+        };
+      })}
+    />
+  );
+}
+
+/** One list of a cell editor (GitHub#747): a milestone, or one Project's iteration / status. */
+type CellList = {
+  key: string;
+  testid: string;
+  /** the Project the list belongs to (iteration / status) */
+  project?: string;
+  /** the Project's name, GitHub's text (the hover text names it) */
+  boardTitle?: string;
+  title?: string;
+  disabled: boolean;
+  /** the item's value now */
+  value: string;
+  options: React.ReactNode;
+  /** a value picked: written when it differs from `value`, and the editor put away */
+  commit: (v: string) => void;
+};
+
+/** the part of an open cell editor that floats out of the cell: the label / assignee picker, the lists */
+const EDITOR_POPS = '.picker, .cell-lists';
+
+/** keys a list box would act on by itself (type-ahead, paging): each would be a write, so they do nothing here */
+const LIST_KEYS_KEPT = new Set(['PageUp', 'PageDown', 'Home', 'End']);
+
+/**
+ * GitHub#747: the milestone / iteration / status editor of a table cell. The same dropdown with its
+ * options as before, shown as a list in the page (`size` > 1) instead of the system's pop-up menu:
+ * a system menu is not part of the page, so the table cannot keep a click outside it from reaching
+ * what lies under it, and it ignores the row's fading rules. A click on an option (or a value set
+ * directly) writes it; ↑↓ only move the mark — a list box changes its value with every arrow, and
+ * each change would be a write — and Enter writes the marked one; Esc puts it away.
+ */
+function CellLists({ lists, close }: { lists: CellList[]; close: () => void }) {
+  useLayer('picker');
+  const refs = useRef<(HTMLSelectElement | null)[]>([]);
+  const [marked, setMarked] = useState<Record<string, string>>({});
+  const valueOf = (l: CellList) => marked[l.key] ?? l.value;
+  // one pick per open list, however it came (a change, a click on the marked option, Enter): never written twice
+  const picked = useRef(false);
+  const pick = (l: CellList, v: string) => {
+    if (picked.current || l.disabled) return;
+    picked.current = true;
+    l.commit(v);
+  };
+  useLayoutEffect(() => {
+    // as many rows as it has (options and section headings), up to 10, never 1 (that is the pop-up menu again)
+    for (const sel of refs.current) if (sel) sel.size = Math.max(2, Math.min(10, sel.options.length + sel.querySelectorAll('optgroup').length));
+  }, [lists.length]);
+  useEffect(() => {
+    refs.current.find((x) => x && !x.disabled)?.focus();
+  }, []);
+  const focused = () => Math.max(0, refs.current.findIndex((x) => x !== null && x === document.activeElement));
+  const move = (step: number) => {
+    const i = focused();
+    const sel = refs.current[i];
+    const l = lists[i];
+    if (!sel || !l || sel.disabled) return;
+    const values = [...sel.options].filter((o) => !o.disabled).map((o) => o.value);
+    if (!values.length) return;
+    const at = values.indexOf(valueOf(l));
+    const next = values[Math.max(0, Math.min(values.length - 1, at < 0 ? 0 : at + step))];
+    setMarked((m) => ({ ...m, [l.key]: next }));
+    sel.querySelector<HTMLOptionElement>(`option[value="${CSS.escape(next)}"]`)?.scrollIntoView?.({ block: 'nearest' });
+  };
+  useShortcuts({
+    pickerUp: () => move(-1),
+    pickerDown: () => move(1),
+    pickerToggle: () => {
+      const l = lists[focused()];
+      if (l) pick(l, valueOf(l));
+    },
+    pickerClose: close,
+  });
+  return (
+    <span className="picker-anchor">
+      <span className="cell-lists" data-testid="cell-lists">
+        {lists.map((l, i) => (
+          <select
+            key={l.key}
+            ref={(el) => {
+              refs.current[i] = el;
+            }}
+            size={10}
+            className="cell-select"
+            data-testid={l.testid}
+            data-project={l.project}
+            disabled={l.disabled}
+            title={l.title}
+            {...(l.boardTitle !== undefined ? verbatimParts('github', [l.boardTitle]) : {})}
+            value={valueOf(l)}
+            onChange={(e) => pick(l, e.target.value)}
+            onKeyDown={(e) => {
+              if ((e.key.length === 1 && !e.metaKey && !e.ctrlKey) || LIST_KEYS_KEPT.has(e.key)) e.preventDefault();
+            }}
+            onMouseDown={(e) => {
+              // only the main button picks: another (right / middle) must not move the selection, which would be a change
+              if (e.button !== 0) e.preventDefault();
+            }}
+            onMouseUp={(e) => {
+              if (e.button !== 0) return;
+              // a click on an option picks it, also the one already marked (no change event then): the marked one
+              // after ↑↓ is written, the item's own value just puts the list away (commit writes only a different value)
+              const o = e.target as HTMLElement;
+              if (o.tagName === 'OPTION' && !(o as HTMLOptionElement).disabled) pick(l, (o as HTMLOptionElement).value);
             }}
           >
-            <option value="">{field === 'iteration' ? t('（无迭代）') : t('（无状态）')}</option>
-            {field === 'iteration' ? (
-              <IterationOptions iterations={p.iterations} chosen={m.iteration} today={today} label={(i) => (rows.length > 1 ? t('{board}：{value}', { board: p.title, value: i.title }) : i.title)} />
-            ) : (
-              p.statusOptions.map((o) => (
-                <option key={o} value={o} data-verbatim="github">
-                  {rows.length > 1 ? t('{board}：{value}', { board: p.title, value: o }) : o}
-                </option>
-              ))
-            )}
+            {l.options}
           </select>
-        );
-      })}
+        ))}
+      </span>
     </span>
   );
 }
@@ -443,6 +556,49 @@ export function TableView({
   // which cell is open: the table row (item + group: an item can show in two groups, PR #220 review round 1) and column
   const [editing, setEditing] = useState<{ row: string; col: TableColumn } | null>(null);
   const [options, setOptions] = useState<Record<string, RepoOptions>>({});
+  // GitHub#747: a press outside an open cell editor only puts it away. Listening from the window's capture phase,
+  // before anything under the pointer reacts, this press and what follows from it (button up, click, a drag, the
+  // context menu) are kept from the page; the next press is an ordinary one. Installed once: putting the editor
+  // away removes it from the page in the middle of that very click, and the rest of the click must still be kept.
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+  useEffect(() => {
+    let swallowing = false;
+    let until = 0;
+    const keep = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    };
+    const down = (e: Event) => {
+      const cellBox = editingRef.current ? document.querySelector(`[${CELL_EDITOR}]`) : null;
+      if (!cellBox) return;
+      // inside = the picker / lists that float out of the cell; the cell itself only while nothing floats yet
+      // ("读取标签…", an error, "不在看板上"): blank space of the cell around a picker or list is outside
+      const box = cellBox.querySelector(`${EDITOR_POPS}`) ?? cellBox;
+      if (e.target instanceof Node && box.contains(e.target)) return;
+      swallowing = true;
+      until = 0;
+      keep(e);
+      setEditing(null);
+    };
+    const follow = (e: Event) => {
+      if (!swallowing) return;
+      keep(e);
+      // the button went up: the click (and a double-click's second one) still to come belongs to this press
+      if (e.type === 'pointerup' || e.type === 'pointercancel') until = window.setTimeout(() => (swallowing = false), 0);
+    };
+    const kinds = ['mousedown', 'pointerup', 'pointercancel', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu', 'dragstart'];
+    window.addEventListener('pointerdown', down, true);
+    for (const k of kinds) window.addEventListener(k, follow, true);
+    return () => {
+      window.clearTimeout(until);
+      window.removeEventListener('pointerdown', down, true);
+      for (const k of kinds) window.removeEventListener(k, follow, true);
+    };
+  }, []);
+  // GitHub#747: an editor that would stick out past the table's right edge opens leftwards, from the cell's right edge
+  const [flip, setFlip] = useState(false);
   // GitHub#711: the assignee candidates per repository, asked the first time a cell of that repository opens
   const [assignees, setAssignees] = useState<Record<string, RepoAssignees>>({});
   const askedAssignees = useRef(new Set<string>());
@@ -489,6 +645,14 @@ export function TableView({
     if (said) onNote?.(said, a);
   };
 
+  useLayoutEffect(() => {
+    if (!editing) return setFlip(false);
+    const pop = document.querySelector(`[${CELL_EDITOR}]`)?.querySelector<HTMLElement>(EDITOR_POPS);
+    const scroller = pop?.closest('.table-scroll');
+    if (!pop || !scroller) return;
+    if (!flip && pop.getBoundingClientRect().right > scroller.getBoundingClientRect().right) setFlip(true);
+  });
+
   // ---- column widths (GitHub#205): dragged on the head's right edge, kept in the view settings; double-click = default ----
   const widths = tb.widths ?? {};
   const [live, setLive] = useState<{ col: TableColumn; w: number } | null>(null);
@@ -520,8 +684,81 @@ export function TableView({
     delete next[col];
     void api().setView({ table: { widths: next } });
   };
+  // ---- moving a column by its heading (GitHub#747): pressed and moved past MOVE_SLOP, the heading follows the
+  // pointer, a line shows where it goes; let go = saved in the view settings. The title column stays first.
+  /** ends a column drag still going without saving (the table going away) */
+  const colDragEnd = useRef<(() => void) | null>(null);
+  useEffect(() => () => colDragEnd.current?.(), []);
+  const [colDrag, setColDrag] = useState<{ col: TableColumn; x: number; top: number; slot: number; line: number | null; bottom: number } | null>(null);
+  const startMove = (col: TableColumn) => (e: React.PointerEvent<HTMLTableCellElement>) => {
+    if (col === 'title' || e.button !== 0) return;
+    const table = (e.currentTarget as HTMLElement).closest('table');
+    if (!table) return;
+    e.preventDefault();
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const top = (e.currentTarget as HTMLElement).getBoundingClientRect().top;
+    let on = false;
+    let slot = -1;
+    /** where the dragged heading goes, read from the headings as drawn now */
+    const place = (x: number) => {
+      const heads = [...table.querySelectorAll<HTMLElement>('thead [data-testid="col-head"]')].filter((h) => h.dataset.col !== 'title');
+      const rects = heads.map((h) => h.getBoundingClientRect());
+      slot = columnSlot(rects.map((r) => r.left + r.width / 2), x);
+      const scroller = table.closest('.table-scroll')?.getBoundingClientRect();
+      const line = slot < rects.length ? rects[slot].left : (rects[rects.length - 1]?.right ?? null);
+      const bottom = Math.min(table.getBoundingClientRect().bottom, scroller?.bottom ?? Infinity);
+      setColDrag({ col, x, top, slot, line, bottom });
+    };
+    const move = (ev: PointerEvent) => {
+      if (!on && Math.abs(ev.clientX - x0) <= MOVE_SLOP && Math.abs(ev.clientY - y0) <= MOVE_SLOP) return;
+      on = true;
+      place(ev.clientX);
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('keydown', esc, true);
+      if (colDragEnd.current === cancel) colDragEnd.current = null;
+      setColDrag(null);
+    };
+    // the system took the pointer away, the window lost focus, or the table goes: the drag ends, nothing is saved
+    const cancel = () => {
+      on = false;
+      stop();
+    };
+    const up = () => {
+      stop();
+      if (!on) return;
+      const next = moveColumn(tb.columns, col, slot);
+      if (next) void api().setView({ table: { columns: next } });
+    };
+    const esc = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancel();
+    };
+    colDragEnd.current?.();
+    colDragEnd.current = cancel;
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('keydown', esc, true);
+  };
   const head = (c: TableColumn) => (
-    <th key={c} data-testid="col-head" data-col={c} data-width={sized ? widthOf(c, shown) : undefined}>
+    <th
+      key={c}
+      data-testid="col-head"
+      data-col={c}
+      data-width={sized ? widthOf(c, shown) : undefined}
+      className={[c !== 'title' ? 'col-movable' : '', colDrag?.col === c ? 'col-moving' : ''].filter(Boolean).join(' ') || undefined}
+      title={c !== 'title' ? t('拖动换列的位置') : undefined}
+      onPointerDown={startMove(c)}
+    >
       {columnLabel(c)}
       <span
         className={`col-resize${live?.col === c ? ' on' : ''}`}
@@ -677,6 +914,7 @@ export function TableView({
                   data-testid="cell"
                   data-col={c}
                   data-editing={open ? 'yes' : undefined}
+                  {...(open ? { [CELL_EDITOR]: '', 'data-flip': flip ? 'yes' : undefined } : {})}
                   title={editable && !open ? t('点一下修改') : undefined}
                   onClick={editable && !open ? () => startEdit(r.id, r.item, c) : undefined}
                 >
@@ -829,6 +1067,14 @@ export function TableView({
             : groupList(table.groups, null)}
           {table.blankRepo && <tbody data-testid="repo-blank-body">{blankLine(table.blankRepo.repo, Boolean(table.blankRepo.unread), true, 12)}</tbody>}
         </table>
+        {colDrag && colDrag.line !== null && (
+          <>
+            <div className="col-drop-line" data-testid="col-drop-line" style={{ left: colDrag.line - 1, top: colDrag.top, height: Math.max(0, colDrag.bottom - colDrag.top) }} />
+            <div className="col-drag-ghost" data-testid="col-drag-ghost" style={{ left: colDrag.x + 12, top: colDrag.top + 4 }}>
+              {columnLabel(colDrag.col)}
+            </div>
+          </>
+        )}
         {table.itemCount === 0 && !hasBlank(table) && <div className="center muted" data-testid="table-empty">{t('没有符合条件的条目')}</div>}
       </div>
     </div>
