@@ -278,8 +278,10 @@ dispatch() {
     mkdir -p "$W/out"; OUT="$W/out/$name.md"; rm -f "$OUT" "$OUT.full"
     # 原样的字节数、是不是改成了交文件（超过单个参数上限时提示词旁边会多一份短指令 + 一份完整副本）
     DISPATCH_PROMPT_BYTES=$( [ -s "$f" ] && wc -c < "$f" | tr -d ' ' || echo 0)
-    DISPATCH_ARGV=no; [ -e "$f.argv.md" ] && DISPATCH_ARGV=yes
-    local full; for full in "$f".full-*.md; do [ -s "$full" ] && cp "$full" "$OUT.full"; break; done
+    # claude 起会话用的是带启动标记的副本 <提示词>.launch.md（GitHub#744），转交文件从它派生；老脚本没有副本
+    local lf="$f"; [ -e "$f.launch.md" ] && lf="$f.launch.md"
+    DISPATCH_ARGV=no; [ -e "$lf.argv.md" ] && DISPATCH_ARGV=yes
+    local full; for full in "$lf".full-*.md; do [ -s "$full" ] && cp "$full" "$OUT.full"; break; done
     # GitHub#614 加了 ${FEEDBACK_FP_CMD}：改动前的派工脚本不认识它，按它在当前脚本里的值对齐
     [ -s "$f" ] && sed -e "s|$root|<ROOT>|g" -e "s|\\\${FEEDBACK_FP_CMD}|bash '<ROOT>/scripts/feedback-fingerprint.sh' --config '$CONF'|g" \
         -e 's/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]/<TS>/g' "$f" > "$OUT"

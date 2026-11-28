@@ -1174,6 +1174,8 @@ DISPATCH_MAX_RETRIES=3
 # self-heal 在放弃、转 pending/human 之前，最多自动重派多少次 tmux session 已经
 # 死掉的 worker。形状跟 DISPATCH_MAX_RETRIES 一样，但针对的是另一种失败：派工本身
 # 成功了，worker 起来之后立刻死。计数文件在 $STATE_DIR/selfheal/。
+# 会话活着不等于开工了：claude 的计数要等它的对话记录里出现这次启动的提示词才清零
+# （停在启动确认框上的会话一直活着，以前每轮都把计数清零，重派永远是「第 1 次」）。
 SELFHEAL_MAX_RETRIES=3
 
 # ── Stuck workers / 卡在 doing/agent 没人管的条目（GitHub#339）──

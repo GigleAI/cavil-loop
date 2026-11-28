@@ -553,13 +553,21 @@ FAKE_ITEM_DIR="$CTL/items" . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/
 case "\$*" in *title*) echo "测试标题"; exit 0 ;; esac
 echo "{}"
 SH
-# 假 agent：不在 tmux 里（driver 探版本之类）立刻退出；在 tmux 里记一行然后睡着
+# 假 agent：不在 tmux 里（driver 探版本之类）立刻退出；在 tmux 里记一行，然后像真界面一样把 claude 的
+# 空输入框留在画面底部：收下每一行输入后重画一次（往会话里送字后认得出输入框、框是空的，才算送达，GitHub#744）
 cat > "$FAKEBIN/claude" <<SH
 #!/usr/bin/env bash
 [ -n "\${TMUX:-}" ] || exit 0
 trap '' HUP
 echo "claude \$\$" >> "$CTL/runs"
-exec sleep 600
+printf '\342\235\257 \n'
+end=\$((SECONDS + 600))
+while [ "\$SECONDS" -lt "\$end" ]; do
+    IFS= read -r -t 1 _line; rc=\$?
+    if [ "\$rc" = 0 ]; then printf '\342\235\257 \n'
+    elif [ "\$rc" -le 128 ]; then sleep 1   # 终端没了（读到结尾，不是超时）：别空转
+    fi
+done
 SH
 cat > "$FAKEBIN/tmux" <<SH
 #!/usr/bin/env bash

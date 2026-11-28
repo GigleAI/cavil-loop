@@ -104,6 +104,7 @@ agent_exit_forget "$TMUX_SESSION" || log "  ⚠️ 删不掉 $TMUX_SESSION 的�
 # ── 3c. 派工提示词 ──
 # worker 只在启动那一刻读它，session 已经杀掉，留着只会在状态目录里越积越多
 prompt_files_forget "$ISSUE" || log "  ⚠️ 删不掉条目 #$ISSUE 的派工提示词（继续 cleanup）"
+rm -f "$(selfheal_launch_file "$ISSUE")" 2>/dev/null || true   # 本次启动的开工标记（GitHub#744）
 
 # ── 4. worktree ──
 if [ "$KEEP_WORKTREE" -eq 0 ] && [ -d "$WORKTREE" ]; then

@@ -85,6 +85,8 @@ chk() {
 }
 
 FAKE_LOG="$TMP/fake.log"
+# 提示词放在沙盒里：项目让 claude 进 bypass 模式时，启动的临时设置写在提示词旁边（GitHub#744）
+PF="$TMP/prompt"
 # 每次在干净子进程里、从「daemon 目录」拼命令；claude 实际起在 $TMP/cwd（worktree）
 resume_cmd() {   # <dispatch model_set> <model> [VAR=VAL ...]
     local model_set="$1" model="$2"; shift 2
@@ -95,20 +97,20 @@ resume_cmd() {   # <dispatch model_set> <model> [VAR=VAL ...]
         DISPATCH_WORKER_AGENT=claude \
         DISPATCH_WORKER_MODEL="$model" DISPATCH_WORKER_MODEL_SET="$model_set" \
         "$@" \
-        bash -c 'cd "$3" && source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_resume "$2" issue-test /tmp/prompt' \
-        _ "$REPO_DIR" "$TMP/cwd" "$TMP/daemon"
+        bash -c 'cd "$3" && source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_resume "$2" issue-test "$4"' \
+        _ "$REPO_DIR" "$TMP/cwd" "$TMP/daemon" "$PF"
 }
 new_cmd() {
     rm -f "$FAKE_LOG"
     env -u ANTHROPIC_MODEL HOME="$TMP/home" PATH="$TMP/bin:$PATH" FAKE_LOG="$FAKE_LOG" \
         CODING_AGENT_CONFIG="$TMP/coding-agent.config" \
         DISPATCH_WORKER_AGENT=claude DISPATCH_WORKER_MODEL="" DISPATCH_WORKER_MODEL_SET=1 \
-        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_new "$2" issue-test /tmp/prompt' \
-        _ "$REPO_DIR" "$TMP/cwd"
+        bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; agent_command_new "$2" issue-test "$3"' \
+        _ "$REPO_DIR" "$TMP/cwd" "$PF"
 }
 probe_ran() { [ -f "$FAKE_LOG" ] && echo yes || echo no; }
 has_arg()   { grep -qxF "arg=$1" "$FAKE_LOG" 2>/dev/null && echo yes || echo no; }
-P='"$(cat /tmp/prompt)"'
+P="\"\$(cat $PF)\""
 
 echo "── 续接没指定模型：带上探测到的当前默认 ──"
 FLAGS=""
@@ -239,7 +241,7 @@ FLAGS="--model sonnet"
 chk "extra flags 已有 --model → 不追加" "$(resume_cmd 1 '')" "claude --continue --model sonnet  $P"
 chk "  …也不起探测" "$(probe_ran)" "no"
 FLAGS="--dangerously-skip-permissions --model=sonnet"
-chk "--model=X 形式同样不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
+chk "--model=X 形式同样不追加（bypass 参数照常附临时设置）" "$(resume_cmd 1 '')" "claude --continue $FLAGS --settings $PF.settings.json  $P"
 FLAGS="--settings '{\"model\":\"sonnet\"}"
 chk "引号不配对、拆不开 → 不追加" "$(resume_cmd 1 '')" "claude --continue $FLAGS  $P"
 chk "  …也不起探测" "$(probe_ran)" "no"

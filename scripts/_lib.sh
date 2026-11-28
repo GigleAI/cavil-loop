@@ -1941,6 +1941,107 @@ selfheal_bump() {
 selfheal_reset() {
     rm -f "$SELFHEAL_DIR/$1" 2>/dev/null || true
 }
+# ── 会话活着 ≠ 本次启动真的开工了（GitHub#744）──
+# 以前「探到活着就 reset」：worker 停在启动确认框上时会话一直活着，每轮都把计数清零；催促把它
+# 关掉、自愈重派、又停在框上——永远是「第 1/3 次」，一条 issue 循环了一整夜。
+# 现在起会话时记下本次启动（会话 id + 提示词副本里那个一次性标记，见 agent_launch_prompt_copy），
+# 只有 driver 在会话记录里查到这个标记（agent_session_has_tag）才清零，并在启动记录里记下「已核实」，
+# 之后每轮直接清零、不再读会话记录。
+# 不清零的情况（读不到 ≠ 已开工）：查到没有 / 读不了 / 启动记录读不懂；会话跑的 agent 支持这项检查，
+# 却没有启动记录——这次的标记副本或启动记录写不出（代码复审第 1 轮问题 1：以前没有记录就照旧清零，
+# 写失败反而等于「核实过」）、续接的是没有 id 的旧会话、本功能上线前起的会话；会话上记的 agent 读不出。
+# 只有会话跑的 agent 不支持这项检查（driver 没有 agent_session_has_tag）时，才和以前一样会话活着就清零。
+# 启动记录绑在本次启动的工作窗格进程上（代码复审第 2 轮问题 1）：每次起程序窗格都换新进程
+# （新建会话或 respawn-pane），记录里的进程号和窗格现在的进程号对不上，就不是这次启动的记录——
+# 新记录写不进、旧记录又删不掉时，留下的上一次「已核实」也不会被拿来替这次清零。
+selfheal_launch_file() { printf '%s/%s.launch' "$SELFHEAL_DIR" "$1"; }
+selfheal_pane_pid() {   # <tmux_session> → stdout：工作窗格进程号；读不出返回 1
+    local st id pid dead pipe
+    read -r st id pid dead pipe <<<"$(worker_pane_lookup "$1")"
+    case "$st" in found|single) ;; *) return 1 ;; esac
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$pid"
+}
+selfheal_launch_record() {   # <工作编号> <cwd> <prompt_file>：起完会话后调用
+    local n="$1" cwd="$2" pf="${3:-}" f tag tmp pid
+    f="$(selfheal_launch_file "$n")"
+    rm -f "$f" 2>/dev/null || true
+    declare -f agent_session_has_tag >/dev/null || return 0
+    # 标记在这次启动用的副本里（agent_launch_prompt_copy）；没有副本 = 这次没附标记
+    [ -f "$pf.launch.md" ] || return 0
+    tag="$(agent_session_prompt_tag "$pf.launch.md")"
+    [ -n "$tag" ] && [ -n "${WORKER_SESSION_ID:-}" ] || return 0
+    if ! pid="$(selfheal_pane_pid "$(tmux_session_name "$n")")"; then
+        log "  ⚠️ 读不出 #$n 这次启动的工作窗格进程，不记开工标记：self-heal 在这条会话活着时不清零失败计数"
+        return 0
+    fi
+    if mkdir -p "$SELFHEAL_DIR" 2>/dev/null && tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" \
+       && jq -n --arg agent "$WORKER_AGENT" --arg cwd "$cwd" --arg id "$WORKER_SESSION_ID" --arg tag "$tag" --arg pid "$pid" \
+            '{agent: $agent, cwd: $cwd, id: $id, tag: $tag, pid: $pid}' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+        return 0
+    fi
+    [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null || true
+    log "  ⚠️ 记不下 #$n 这次启动的开工标记（${f}）：self-heal 在这条会话活着时不清零失败计数"
+}
+selfheal_alive() {   # <工作编号> <tmux_session>：self-heal 看到会话活着时调用
+    local n="$1" sess="${2:-}" f doc agent cwd id tag rpid cpid="" rc=0 tmp
+    f="$(selfheal_launch_file "$n")"
+    if [ ! -e "$f" ]; then
+        # 没有启动记录：看会话跑的是哪个 agent，它支持「开工证据」就不清零（这次没有证据）
+        if ! agent="$(tmux show-options -qv -t "=$sess:" @worker_agent 2>/dev/null)" \
+           || ! [[ "$agent" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_debug "self-heal: #$n 读不出会话 $sess 跑的是哪个 agent，不清零失败计数"
+            return 0
+        fi
+        (
+            agent_screen_rules_reset
+            source_driver "$agent" >/dev/null 2>&1 || exit 3
+            declare -f agent_session_has_tag >/dev/null && exit 1
+            exit 0
+        ) || rc=$?
+        case "$rc" in
+            0) selfheal_reset "$n" ;;
+            1) log_debug "self-heal: #$n 会话活着，但没有这次启动的记录（标记或记录写不出、旧会话），不清零失败计数" ;;
+            *) log_debug "self-heal: #$n 加载不了 agent「${agent}」，不清零失败计数" ;;
+        esac
+        return 0
+    fi
+    if ! doc="$(cat "$f" 2>/dev/null)" \
+       || ! agent="$(printf '%s' "$doc" | jq -er '.agent | strings | select(test("^[A-Za-z0-9._-]+$"))' 2>/dev/null)" \
+       || ! cwd="$(printf '%s' "$doc" | jq -er '.cwd | strings | select(length > 0)' 2>/dev/null)" \
+       || ! id="$(printf '%s' "$doc" | jq -er '.id | strings | select(length > 0)' 2>/dev/null)" \
+       || ! tag="$(printf '%s' "$doc" | jq -er '.tag | strings | select(length > 0)' 2>/dev/null)" \
+       || ! rpid="$(printf '%s' "$doc" | jq -er '.pid | strings | select(test("^[0-9]+$"))' 2>/dev/null)"; then
+        log_debug "self-heal: #$n 的启动记录读不懂（${f}），不清零失败计数"
+        return 0
+    fi
+    # 记录必须是这次启动的：窗格进程号对得上（见 selfheal_launch_file 上方）
+    if ! cpid="$(selfheal_pane_pid "$sess")" || [ "$cpid" != "$rpid" ]; then
+        log_debug "self-heal: #$n 的启动记录不是会话里这次启动的（记录 ${rpid}，窗格 ${cpid:-读不出}），不清零失败计数"
+        return 0
+    fi
+    if [ "$(printf '%s' "$doc" | jq -r '.proven // false' 2>/dev/null)" = true ]; then
+        selfheal_reset "$n"; return 0
+    fi
+    (
+        agent_screen_rules_reset
+        source_driver "$agent" >/dev/null 2>&1 || exit 3
+        declare -f agent_session_has_tag >/dev/null || exit 4
+        agent_session_has_tag "$cwd" "$id" "$tag"
+    ) || rc=$?
+    case "$rc" in
+        0|4)
+            selfheal_reset "$n"
+            # 记下「已核实」，之后不用每轮再读会话记录；记不下就下一轮再核实一次
+            if tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)"; then
+                if printf '%s' "$doc" | jq -c '.proven = true' > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then :
+                else rm -f "$tmp" 2>/dev/null || true; fi
+            fi ;;
+        1) log_debug "self-heal: #$n 会话活着，但还没有本次启动已开工的证据，不清零失败计数" ;;
+        *) log_debug "self-heal: #$n 查不了本次启动是否已开工（rc=${rc}），不清零失败计数" ;;
+    esac
+    return 0
+}
 
 # ── dispatch 连续失败计数（防失败条目变成每轮重试的热循环）──
 # 派工失败时旧逻辑**什么状态都不改**：label 没翻、cursor 没动，于是下一轮看到的还是
@@ -3325,7 +3426,8 @@ prompt_files_forget() {   # <工作编号>
     local d
     d="$(prompt_dir)"
     [ -d "$d" ] || return 0
-    rm -f -- "$d/$1"-new.md "$d/$1"-cmt-*.md "$d/$1"-pr-*.md
+    # GitHub#744：*.launch.md*（带启动标记的副本，及从它派生的转交 / 设置文件）、*.settings.json（claude 的 bypass 临时设置）
+    rm -f -- "$d/$1"-new.md "$d/$1"-cmt-*.md "$d/$1"-pr-*.md "$d/$1"-*.launch.md* "$d/$1"-*.settings.json
 }
 
 # ── preview 端口与归属（GigleAI/GigleTutor-Web#1009）──
@@ -12075,21 +12177,30 @@ agent_prepare_trust() {   # <cwd>
     return 0
 }
 
-# 起完会话后看一眼屏幕：认出本 agent 的目录信任确认框 → 截屏进日志、杀会话、返回 0。
+# 起完会话后看一眼屏幕：认出本 agent 的启动确认框（目录信任，或 bypass 模式：GitHub#744）
+# → 截屏进日志、杀会话、返回 0，认出的是哪种放在 AGENT_LAUNCH_DIALOG（trust / bypass）。
 # 没认出（或 driver 没给特征）→ 返回 1。最多看 AGENT_TRUST_PROMPT_WAIT_SECS 秒
-# （claude 实测 0.3 秒内出框，codex 几秒内），会话自己退了就不再等。
+# （claude 实测 0.3 秒内出信任框、0.3–0.7 秒出 bypass 框，codex 几秒内），会话自己退了就不再等。
 agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
-    local sess="$1" cwd="$2" n i log_path key
-    [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}" ] || return 1
+    local sess="$1" cwd="$2" n i log_path key kind what
+    AGENT_LAUNCH_DIALOG=""
+    [ -n "${AGENT_TRUST_PROMPT_FOOTER_RE:-}${AGENT_BYPASS_PROMPT_FOOTER_RE:-}" ] || return 1
     n=$(( ${AGENT_TRUST_PROMPT_WAIT_SECS:-4} * 2 ))
     for ((i = 0; i < n; i++)); do
         session_alive "$sess" || return 1
-        if tmux capture-pane -t "$sess" -p 2>/dev/null | agent_trust_prompt_on_screen; then
-            key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
-            log "  ❌ $sess 卡在 $WORKER_AGENT 的目录信任确认框上（工作目录 ${cwd}，该补的信任记录：${key}）"
+        if kind="$(tmux capture-pane -t "$sess" -p 2>/dev/null | agent_launch_dialog_kind)"; then
+            AGENT_LAUNCH_DIALOG="$kind"
+            if [ "$kind" = bypass ]; then
+                what="bypass 模式确认框"
+                log "  ❌ $sess 卡在 $WORKER_AGENT 的 bypass 模式（跳过权限确认）确认框上（工作目录 ${cwd}）：这个账号还没接受过这个模式，启动时附的「已接受」临时设置没有生效或没能附上（原因见上面几行）"
+            else
+                what="目录信任框"
+                key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
+                log "  ❌ $sess 卡在 $WORKER_AGENT 的目录信任确认框上（工作目录 ${cwd}，该补的信任记录：${key}）"
+            fi
             log_path="$(session_log_path "$sess")"
             {
-                printf '\n===== %s session=%s 卡在目录信任框，pane capture =====\n' "$(date -Iseconds)" "$sess"
+                printf '\n===== %s session=%s 卡在%s，pane capture =====\n' "$(date -Iseconds)" "$sess" "$what"
                 tmux capture-pane -t "$sess" -p -S -200 2>/dev/null | sed '/^[[:space:]]*$/d'
             } | redact_pipe >> "${log_path:-/dev/null}" 2>/dev/null
             tmux kill-session -t "$sess" 2>/dev/null || true
@@ -12105,6 +12216,14 @@ agent_trust_prompt_blocked() {   # <tmux_session> <cwd>
 agent_launch_trust_gate() {   # <num> <tmux_session> <cwd> → 0 = 没卡住；1 = 已转人工；77 / 78 = 卡住了但条目变了或读不到，没写
     local num="$1" sess="$2" cwd="$3" key rc=0
     agent_trust_prompt_blocked "$sess" "$cwd" || return 0
+    if [ "$AGENT_LAUNCH_DIALOG" = bypass ]; then
+        dispatch_to_human "$num" \
+            "\`$WORKER_AGENT\` 在工作目录 \`$cwd\` 弹出了「Bypass Permissions mode」确认框，没法自动开工：项目让它跳过权限确认启动，而 daemon 机器上这个账号还没接受过这个模式。daemon 起会话时会在这一条启动命令上附一份临时设置声明「已接受」（不改账号设置），这次没有生效或没能附上——可能是项目启动参数里的设置文件读不到或不是 JSON、启动参数写法 daemon 判断不了，或者管理员策略禁用了这个模式（具体原因见 daemon 机器的 poll.log）。" \
+            "二选一：① 修好 poll.log 里写的原因（例如项目启动参数里 \`--settings\` 指向的文件）；② 在 daemon 机器上用 worker 的账号，进入 \`$cwd\` 用项目的启动参数手动运行一次 \`$(agent_bin)\`，在确认框里选「Yes, I accept」后退出——这会让这个账号以后都不再提示这段警告。然后把标签改回 \`$LABEL_PENDING_AGENT\`。" \
+            "卡在 bypass 模式确认框" || rc=$?
+        [ "$rc" = 0 ] || return "$rc"
+        return 1
+    fi
     key="$( (agent_trust_key "$cwd") 2>/dev/null || echo "$cwd")"
     dispatch_to_human "$num" \
         "\`$WORKER_AGENT\` 在工作目录 \`$cwd\` 弹出了目录信任确认框，没法自动开工。daemon 起会话前已经尝试写入信任记录（\`$key\`），但 \`$WORKER_AGENT\` 仍然要确认——可能是它改了判定规则，或者配置文件写不进去（原因见 daemon 机器的 poll.log）。" \
@@ -12219,11 +12338,30 @@ agent_session_plan() {   # <num> <cwd> <prompt_file> [force_new]
 # 调用方不能起会话，走 dispatch_prompt_refused 转人工，见下面「提示词太长」。
 agent_launch_command() {   # <cwd> <session_name> <prompt_file>
     local pf
-    pf="$(agent_prompt_argv_file "$3")" || return 1
+    pf="$(agent_prompt_argv_file "$(agent_launch_prompt_copy "${3:-}")")" || return 1
     case "${AGENT_LAUNCH_KIND:-new}" in
         new) agent_command_new "$1" "$2" "$pf" ;;
         *)   agent_command_resume "$1" "$2" "$pf" ;;
     esac
+}
+
+# ── 本次启动用的提示词：附上一次性标记的副本（GitHub#744）──
+# driver 能在会话记录里查「本次启动是否已开工」（agent_session_has_tag）时，每次启动交给 agent 的
+# 不是提示词文件本身，而是 <提示词>.launch.md：原文 + 一行本次启动独有的标记。self-heal 凭它判断
+# 「这次真的开工了」（selfheal_alive）。原文件不动：它是渲染结果，别处（和测试）按原样读它。
+# 在算转交文件之前做：提示词太长时，短指令照抄的是副本里的标记。
+# 写不出副本就用原文件启动（日志一行）：self-heal 那时没有启动记录，会话活着时不清零失败计数。
+agent_launch_prompt_copy() {   # <prompt_file> → stdout：这次启动实际用的提示词文件
+    local f="${1:-}" copy
+    if ! declare -f agent_session_has_tag >/dev/null || [ ! -f "$f" ]; then printf '%s' "$f"; return 0; fi
+    copy="$f.launch.md"
+    rm -f "$copy" 2>/dev/null || true
+    if cp "$f" "$copy" 2>/dev/null && [ -n "$(agent_session_tag_prompt "$copy")" ]; then
+        printf '%s' "$copy"; return 0
+    fi
+    rm -f "$copy" 2>/dev/null || true
+    log "  ⚠️ 写不出带本次启动标记的提示词副本（${copy}），用原提示词启动；self-heal 这次没法核实是否已开工，会话活着时不清零失败计数" 2>/dev/null || true
+    printf '%s' "$f"
 }
 
 # ── 提示词太长：改成让 worker 自己去读文件 ──
@@ -12811,6 +12949,8 @@ agent_session_register_launched() {   # <num> <cwd> <prompt_file>
     local role="$WORKER_SESSION_ROLE"
     local step=0.5 line deadline found="" reason=""
     local -a cands proven
+
+    selfheal_launch_record "$num" "$cwd" "$prompt_file"
 
     [ "${AGENT_LAUNCH_KIND:-}" = "new" ] || return 0
     [ -z "${WORKER_SESSION_ID:-}" ] || return 0

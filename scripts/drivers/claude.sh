@@ -25,8 +25,10 @@ claude_encoded_cwd() {
     printf %s "$1" | tr -c 'A-Za-z0-9' '-'
 }
 
+# 会话记录在账号目录下：和 agent_account_dir 同一来源（CLAUDE_CONFIG_DIR，没设就是 ~/.claude）。
+# 以前写死 ~/.claude，worker 用别的账号目录时「本次启动开工了没有」查错地方（代码复审第 1 轮问题 3）。
 claude_session_dir() {
-    echo "$HOME/.claude/projects/$(claude_encoded_cwd "$1")"
+    echo "$(agent_account_dir)/projects/$(claude_encoded_cwd "$1")"
 }
 
 agent_has_history() {
@@ -84,6 +86,9 @@ AGENT_BUSY_RE='esc to interrupt|…[[:space:]]*\([0-9]+[hms]'
 # spinner 实测稳定落在倒数第 8 行（下面还有输入框 + 两行 footer），老的 tail -5
 # 刚好够不着。给到 20 留余量；idle pane 整屏 0 命中，放宽不会引入误判。
 AGENT_BUSY_TAIL=20
+# 输入框那一行以 ❯ 开头；空框里是一个不换行空格（见 default_inject_prompt）。设了它，画面里认不出
+# 输入框时送字不算成功（GitHub#744）。
+AGENT_INPUT_MARK='❯'
 
 agent_is_busy() {
     local sess="$1"
@@ -105,6 +110,9 @@ agent_command_new() {
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
         flags="$(printf -- '--session-id %q' "$WORKER_SESSION_ID") $flags"
     fi
+    # 项目让 claude 进 bypass 模式时，附上「已接受」的临时设置（GitHub#744，见下方 bypass 一节）。
+    # 不进 bypass 模式时什么都不加，命令行跟改版前逐字节一致。
+    flags="$flags$(claude_settings_arg "$(claude_bypass_settings_file "$cwd" "$prompt_file")")"
     # name 含 / # 等需要 shell-quote（worker_session_name 现在用 GigleAI/repo#42 风格）
     printf 'claude -n %q %s %s "$(cat %q)"' \
         "$name" \
@@ -189,8 +197,8 @@ _claude_split_flags() {
     return 0
 }
 
-claude_default_model() {
-    local cwd="$1" a line model fifo pid _probe_fd
+claude_default_model() {   # <cwd> [本次启动附上的临时设置文件]
+    local cwd="$1" settings="${2:-}" a line model fifo pid _probe_fd
     local -a flags=()
 
     # 探测拿到的参数必须跟 worker 真正收到的逐个相同。worker 的命令是 tmux 用 bash
@@ -202,6 +210,8 @@ claude_default_model() {
         return 0
     fi
     flags=(${_CLAUDE_FLAGS[@]+"${_CLAUDE_FLAGS[@]}"})
+    # 和真正的启动命令用同一份临时设置（它就是最后一个 --settings，项目自己的已经合并进去）
+    [ -z "$settings" ] || flags+=(--settings "$settings")
     # extra flags 里已经写了 --model：它本来就会带进续接命令，别再叠一份
     for a in ${flags[@]+"${flags[@]}"}; do
         case "$a" in --model|--model=*) return 0 ;; esac
@@ -254,10 +264,12 @@ agent_command_resume() {
     local cwd="$1"
     local name="$2"  # 未用：会话由 id / cwd 定位，不靠显示名
     local prompt_file="$3"
-    local model_arg default_model
+    local model_arg default_model settings flags
     model_arg="$(worker_model_arg)"
+    settings="$(claude_bypass_settings_file "$cwd" "$prompt_file")"
+    flags="${CLAUDE_EXTRA_FLAGS:-}$(claude_settings_arg "$settings")"
     if [ -z "$model_arg" ]; then
-        default_model="$(claude_default_model "$cwd")"
+        default_model="$(claude_default_model "$cwd" "$settings")"
         [ -z "$default_model" ] || model_arg="$(printf -- '--model %q' "$default_model")"
     fi
     # 有 id 就续那一条。没有 id 只会出现在「本功能上线前留下的会话」这一种情况，
@@ -265,13 +277,13 @@ agent_command_resume() {
     if [ -n "${WORKER_SESSION_ID:-}" ]; then
         printf 'claude --resume %q %s %s "$(cat %q)"' \
             "$WORKER_SESSION_ID" \
-            "${CLAUDE_EXTRA_FLAGS:-}" \
+            "$flags" \
             "$model_arg" \
             "$prompt_file"
         return 0
     fi
     printf 'claude --continue %s %s "$(cat %q)"' \
-        "${CLAUDE_EXTRA_FLAGS:-}" \
+        "$flags" \
         "$model_arg" \
         "$prompt_file"
 }
@@ -290,7 +302,7 @@ agent_command_resume() {
 #      Yes, I trust this folder
 #    Enter to confirm · Esc to cancel          ← 屏幕最后一行
 # 认框看结构不看单个词：正常对话里引用这句话（修的就是这个功能时天天出现）不能被当成弹框。
-# 「bypass permissions」确认框底栏一模一样，靠选项行区分开。
+# 「bypass permissions」确认框底栏一模一样，靠选项行区分开（它自己的结构见下方 bypass 一节）。
 AGENT_TRUST_PROMPT_TITLE='Quick safety check: Is this a project you created or one you trust?'
 AGENT_TRUST_PROMPT_OPTION_RE='^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Yes, I trust this folder[[:space:]]*$'
 AGENT_TRUST_PROMPT_FOOTER_RE='^[[:space:]]*Enter to confirm · Esc to cancel[[:space:]]*$'
@@ -347,4 +359,130 @@ agent_trust_paths() {
     # 已经全信任就一个字节都不写，也不拿锁（只读）。真要写时锁里还会再判一次。
     _claude_trust_verify "$cfg" "$@" && return 0
     trust_config_locked_update "$cfg" _claude_trust_render _claude_trust_verify "$@"
+}
+
+# ── 可选 hook：bypass 模式的首次确认（GitHub#744，接口见 _common.sh「启动确认框」）──
+# 带 --dangerously-skip-permissions（或 --permission-mode bypassPermissions）起 claude，而这个
+# 账号从没接受过 bypass 模式时，先弹这个框（2.1.330 实测，tests/fixtures/trust-dialog/claude-bypass-modal.txt）：
+#    WARNING: Claude Code running in Bypass Permissions mode
+#    …
+#    ❯ No, exit
+#      Yes, I accept
+#    Enter to confirm · Esc to cancel
+# 默认项是退出：Esc（退出码 0）和「文字 + 回车」（退出码 1）都让 claude 退出——worker 停在框上
+# 什么都没做，卡住检测的催促一来就把它关掉，self-heal 再重派，每半小时一圈。
+AGENT_BYPASS_PROMPT_TITLE='WARNING: Claude Code running in Bypass Permissions mode'
+AGENT_BYPASS_PROMPT_OPTION_RE='^[[:space:]]*(❯[[:space:]]*)?([0-9]+\.[[:space:]]*)?Yes, I accept[[:space:]]*$'
+AGENT_BYPASS_PROMPT_FOOTER_RE="$AGENT_TRUST_PROMPT_FOOTER_RE"
+
+# 「已接受」只声明在 daemon 起的这一条命令上，不写账号设置（~/.claude/settings.json 里的
+# skipDangerousModePermissionPrompt 就是人点「Yes, I accept」时 claude 自己写的那一项，但那会让
+# 整个账号以后都不再提示，方案复审第 1 轮否了）。claude 2.1.330 实测（方案评论里有可复跑的脚本）：
+#   · --settings '{"skipDangerousModePermissionPrompt":true}' 单独一份 → 不弹框
+#   · **只读最后一个 --settings**，前面的整个不读（指向不存在的文件都不报错）→ 项目自己写了
+#     --settings 时必须把它的内容合进来，否则项目原有设置失效
+#   · 值是 JSON 或文件路径；相对路径按 claude 的工作目录（worker 的 cwd）解析
+# 合并结果写进提示词旁边的 <提示词>.settings.json（状态目录，700 目录里的 600 文件，条目清理时
+# prompt_files_forget 删掉），不内联进命令行：项目设置里可能有 env / 令牌，命令行会进进程列表和日志。
+CLAUDE_BYPASS_SETTING='skipDangerousModePermissionPrompt'
+
+# 项目的启动参数让不让 claude 进 bypass 模式。返回 0 = 进；1 = 不进；2 = 判断不了（参数拆不确定）。
+# 顺带记下最后一个 --settings 的值：_CLAUDE_LAST_SETTINGS（_CLAUDE_HAS_SETTINGS=1 表示有）。
+claude_bypass_flags() {
+    local a prev="" bypass=1
+    _CLAUDE_LAST_SETTINGS=""; _CLAUDE_HAS_SETTINGS=0
+    if ! _claude_split_flags "${CLAUDE_EXTRA_FLAGS:-}"; then
+        case "${CLAUDE_EXTRA_FLAGS:-}" in
+            *dangerously-skip-permissions*|*bypassPermissions*) return 2 ;;
+        esac
+        return 1
+    fi
+    for a in ${_CLAUDE_FLAGS[@]+"${_CLAUDE_FLAGS[@]}"}; do
+        case "$prev" in
+            --permission-mode) [ "$a" != bypassPermissions ] || bypass=0; prev=""; continue ;;
+            --settings) _CLAUDE_LAST_SETTINGS="$a"; _CLAUDE_HAS_SETTINGS=1; prev=""; continue ;;
+        esac
+        case "$a" in
+            --dangerously-skip-permissions|--permission-mode=bypassPermissions) bypass=0 ;;
+            --settings=*) _CLAUDE_LAST_SETTINGS="${a#--settings=}"; _CLAUDE_HAS_SETTINGS=1 ;;
+        esac
+        prev="$a"
+    done
+    return "$bypass"
+}
+
+# 本次启动要附的临时设置文件：stdout 写路径；不需要或写不成时什么都不写（原因进 poll.log）。
+# 写不成也不挡派工：起会话后认出确认框会转人工（agent_launch_trust_gate）。
+claude_bypass_settings_file() {   # <cwd> <提示词文件>
+    local cwd="$1" pf="${2:-}" rc=0 src json out tmp
+    claude_bypass_flags || rc=$?
+    case "$rc" in
+        0) ;;
+        2) _claude_probe_log "  ⚠️ CLAUDE_EXTRA_FLAGS ${_CLAUDE_SPLIT_WHY}，判断不了是否进 bypass 模式，不附「已接受 bypass 模式」的临时设置；若卡在确认框，起会话后会转人工"
+           return 0 ;;
+        *) return 0 ;;
+    esac
+    if [ -z "$pf" ]; then
+        _claude_probe_log "  ⚠️ 没有提示词文件，不知道把 bypass 临时设置写在哪，不附"
+        return 0
+    fi
+    json='{}'
+    if [ "$_CLAUDE_HAS_SETTINGS" = 1 ]; then
+        src="$_CLAUDE_LAST_SETTINGS"
+        case "${src#"${src%%[![:space:]]*}"}" in
+            '{'*) json="$src" ;;
+            *)
+                case "$src" in /*) ;; *) src="$cwd/$src" ;; esac
+                if ! json="$(cat -- "$src" 2>/dev/null)"; then
+                    _claude_probe_log "  ⚠️ 读不了项目启动参数里的设置文件 ${src}，不附 bypass 临时设置（附了会让项目这份设置失效）；若卡在确认框，起会话后会转人工"
+                    return 0
+                fi ;;
+        esac
+    fi
+    out="$pf.settings.json"
+    tmp="$(umask 077 && mktemp "$out.XXXXXX" 2>/dev/null)" || {
+        _claude_probe_log "  ⚠️ 写不出 bypass 临时设置文件（${out}），不附；若卡在确认框，起会话后会转人工"
+        return 0
+    }
+    if ! printf '%s' "$json" | jq -e --arg k "$CLAUDE_BYPASS_SETTING" \
+            'if type == "object" then .[$k] = true else error("not an object") end' > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        _claude_probe_log "  ⚠️ 项目启动参数里的设置不是 JSON 对象，不附 bypass 临时设置（附了会让项目这份设置失效）；若卡在确认框，起会话后会转人工"
+        return 0
+    fi
+    if ! mv -f "$tmp" "$out" 2>/dev/null; then
+        rm -f "$tmp"
+        _claude_probe_log "  ⚠️ 写不出 bypass 临时设置文件（${out}），不附；若卡在确认框，起会话后会转人工"
+        return 0
+    fi
+    printf '%s' "$out"
+}
+
+# 有文件就产出「 --settings <文件>」（带前导空格，直接接在 extra flags 后面），没有就什么都不产出
+claude_settings_arg() {
+    [ -n "${1:-}" ] || return 0
+    printf -- ' --settings %q' "$1"
+}
+
+# ── 可选 hook：本次启动是否真的开工了（GitHub#744，接口见 _common.sh「开工证据」）──
+# 只认对话记录里的 user 消息带着本次启动提示词副本里的一次性标记：任务提交出去 claude 才写这条。
+# 续接时旧记录文件一直都在，不能当证据——2.1.330 实测续接卡在确认框上，记录一个字节不变、
+# 本次标记 0 次；点接受后才出现。记录最后一行可能正写到一半，逐行解析、坏行跳过。
+# 返回 0 = 有；1 = 没有（含记录文件还不存在）；2 = 读不了
+agent_session_has_tag() {   # <cwd> <session_id> <标记>
+    local f v
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || return 2
+    f="$(agent_session_record "$1" "$2")"
+    [ -n "$f" ] || return 2
+    [ -e "$f" ] || return 1
+    v="$(jq -nR --arg t "$3" '
+        [inputs | fromjson? | select(type == "object" and .type == "user")
+         | .message.content?
+         | if type == "string" then . elif type == "array" then (map(.text? // "" | strings) | join("")) else "" end]
+        | any(.[]; index($t) != null)' < "$f" 2>/dev/null)" || return 2
+    case "$v" in
+        true) return 0 ;;
+        false) return 1 ;;
+        *) return 2 ;;
+    esac
 }

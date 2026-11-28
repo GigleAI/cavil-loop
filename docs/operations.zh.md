@@ -119,6 +119,8 @@ POLL_DUE_SLACK_SECS=10
 # 计数在 $STATE_DIR/dispatch-fail/，成功和升级转人工时都会清零。
 DISPATCH_MAX_RETRIES=3
 # self-heal 那边同理：tmux session 死掉的 worker 最多自动重派几次，超了转 pending/human。
+# 会话活着要等 worker 真正开工（claude：这次启动的提示词进了它的对话记录）才清零计数，
+# 停在确认框上的会话不算。
 SELFHEAL_MAX_RETRIES=3
 
 # 条目挂着 doing/agent、会话还在却没人干活：agent 空闲、GitHub 和本地分支都没有
@@ -4079,6 +4081,28 @@ systemd 报告为「已启用 + 失败、原因 `resources`」的定时任务—
 ### Worker session 卡在权限弹窗
 
 确认 `cavil-loop.config` 里 `CLAUDE_EXTRA_FLAGS="--dangerously-skip-permissions"`。本机受信任环境下强烈推荐。
+
+### Worker 卡在「Bypass Permissions mode」警告框
+
+`CLAUDE_EXTRA_FLAGS` 里有 `--dangerously-skip-permissions`（或 `--permission-mode bypassPermissions`）时，从没接受过
+这个模式的 Claude 账号会先弹 `WARNING: Claude Code running in Bypass Permissions mode`，默认选中「No, exit」。daemon
+在每条启动命令上附一份声明「已接受」的一次性设置（`--settings` 指向派工提示词旁边的一个文件；项目自己最后一个
+`--settings` 的内容合并在里面），所以这个框不会出现，账号自己的设置也不动。仍然出现时，daemon 结束会话、留言、把
+这条活翻到 `pending/human`；`poll.log` 里有一行 `卡在 claude 的 bypass 模式（跳过权限确认）确认框上`，它前面写着
+设置没附上的原因。daemon 不会在这个框上按任何键：Esc 和回车都会让 Claude 退出。
+
+<details><summary>怎么处理</summary>
+
+1. 看 `poll.log` 里那一行之前的几行。「读不了项目启动参数里的设置文件」「不是 JSON 对象」：`CLAUDE_EXTRA_FLAGS` 里
+   `--settings` 指向的文件读不到（相对路径按 worktree 算）或不是 JSON 对象，修好它。「判断不了是否进 bypass 模式」：
+   参数里有 daemon 不解释的 shell 写法（`$VAR`、`*` 等），改成字面写法。「写不出 bypass 临时设置文件」：状态目录写不进去。
+2. 都没有，可能是管理员策略禁用了这个模式，或 Claude 改了判断方式。兜底办法：在 daemon 机器上用 worker 的用户，
+   进入留言里的那个目录，带上 `CLAUDE_EXTRA_FLAGS` 里的参数运行一次 `claude`，选「Yes, I accept」后退出。这会往这个
+   账号的 `~/.claude/settings.json`（或 `CLAUDE_CONFIG_DIR` 下那份）写入 `"skipDangerousModePermissionPrompt": true`，
+   之后这个账号下任何一次启动 Claude（包括人自己用）都不再出这个警告；删掉这一行就恢复。
+3. 把标签改回 `pending/agent`。
+
+</details>
 
 ### Worker 卡在目录信任确认框（「Quick safety check」/「Trust this folder?」）
 

@@ -73,12 +73,17 @@ BRANCH_PREFIX="feature/issue-"
 SESSION_NAME_PREFIX="issue"
 LABEL_PENDING_AGENT="pending/agent"
 LABEL_PENDING_HUMAN="pending/human"
-WORKER_AGENT_DEFAULT="$agent"
+WORKER_AGENT="$agent"
 CONF
     env CODING_AGENT_CONFIG="$d/config" PATH="$SANDBOX/bin:$PATH" FAKE_OUT="$SANDBOX/out" \
         bash -c 'source "$1/scripts/_lib.sh" 2>/dev/null; shift; set +e; "$@"' _ "$REPO_DIR" "$@"
 }
 LIBP() { printf '%s/lib-%s/state/prompts' "$SANDBOX" "$1"; }
+# claude 每次起会话用的是 <提示词>.launch.md：原文 + 一行一次性的启动标记（GitHub#744：self-heal 靠它认
+# 「本次启动开工了」）；原提示词文件不动。codex 只在起全新会话、回捞要用时由 agent_session_plan 附在原文件里。
+# lp <agent> <提示词> → 这次启动实际读的那个文件；untag 去掉标记行再比对原文：
+lp() { if [ "$1" = claude ]; then printf '%s.launch.md' "$2"; else printf '%s' "$2"; fi; }
+untag() { sed '/^<!-- coding-agent-launch: [0-9a-f-]\{36\} -->$/d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'; }
 
 echo "── 0. 本机确实有这个上限（不然下面「起得来」证明不了什么）──"
 mkdir -p "$(LIBP claude)"
@@ -104,21 +109,29 @@ for agent in claude codex; do
     fi
     cmd="$(lib_run "$agent" agent_launch_command "$SANDBOX/lib-$agent/wt" "issue1" "$P/1-pr-2.md")"; rc=$?
     chk "$agent：拼命令成功" "$rc" 0
-    yes_ "$agent：命令读的是短指令文件" grep -qF "$P/1-pr-2.md.argv.md" <<<"$cmd"
+    L="$(lp "$agent" "$P/1-pr-2.md")"
+    yes_ "$agent：命令读的是短指令文件" grep -qF "$L.argv.md" <<<"$cmd"
     rm -f "$SANDBOX/out/last"
     env PATH="$SANDBOX/bin:$PATH" FAKE_OUT="$SANDBOX/out" bash -c "$cmd" 2>/dev/null; rc=$?
     chk "$agent：命令真跑，程序起来了" "$rc" 0
     yes_ "$agent：程序收到了提示词参数" test -s "$SANDBOX/out/last"
     got="$(cat "$SANDBOX/out/last")"
-    chk "$agent：收到的参数就是短指令全文" "$got" "$(cat "$P/1-pr-2.md.argv.md")"
+    chk "$agent：收到的参数就是短指令全文" "$got" "$(cat "$L.argv.md")"
     yes_ "$agent：短指令远小于上限" test "$(printf '%s' "$got" | wc -c)" -lt 4096
-    full="$(grep -o "$P/1-pr-2.md.full-[0-9a-f-]*\.md" <<<"$got" | head -1)"
+    full="$(grep -o "$L.full-[0-9a-f-]*\.md" <<<"$got" | head -1)"
     yes_ "$agent：短指令写明了完整副本的路径" test -n "$full"
-    yes_ "$agent：完整副本和原提示词逐字节相同" cmp -s "$full" "$P/1-pr-2.md"
-    lines="$(awk 'END { print NR }' "$P/1-pr-2.md")"
+    yes_ "$agent：完整副本和这次启动用的提示词逐字节相同" cmp -s "$full" "$L"
+    # 副本 = 原文逐字节 + 末尾的标记行
+    yes_ "$agent：…开头逐字节就是原提示词" cmp -s <(head -c "$(wc -c < "$P/1-pr-2.md")" "$full") "$P/1-pr-2.md"
+    lines="$(awk 'END { print NR }' "$L")"
     yes_ "$agent：短指令写明读到第 $lines 行（最后一行）" grep -qF "第 $lines 行" <<<"$got"
-    chk "$agent：回捞会话拿短指令当本次原文" \
-        "$(lib_run "$agent" agent_prompt_argv_used "$P/1-pr-2.md")" "$P/1-pr-2.md.argv.md"
+    if [ "$agent" = codex ]; then
+        chk "codex：回捞会话拿短指令当本次原文" \
+            "$(lib_run "$agent" agent_prompt_argv_used "$P/1-pr-2.md")" "$P/1-pr-2.md.argv.md"
+    else
+        yes_ "claude：短指令里照抄了副本里的启动标记" grep -qF "$(lib_run claude agent_session_prompt_tag "$L")" "$L.argv.md"
+        no_ "claude：原提示词文件没被改（没附标记）" grep -q 'coding-agent-launch' "$P/1-pr-2.md"
+    fi
     if [ "$agent" = codex ]; then
         chk "codex：启动标记照抄进短指令" \
             "$(lib_run codex agent_session_prompt_tag "$P/1-pr-2.md.argv.md")" "0123abcd-0000-4000-8000-0123456789ab"
@@ -130,25 +143,32 @@ for agent in claude codex; do
     echo "── 2. $agent：没超上限，命令和改版前逐字节一致 ──"
     printf '小提示词\n第二行\n' > "$P/1-pr-2.md"
     cmd="$(lib_run "$agent" agent_launch_command "$SANDBOX/lib-$agent/wt" "issue1" "$P/1-pr-2.md")"
-    want="$(lib_run "$agent" agent_command_new "$SANDBOX/lib-$agent/wt" "issue1" "$P/1-pr-2.md")"
-    chk "$agent：命令和 driver 直接拼的一样" "$cmd" "$want"
-    no_ "$agent：上次超长留下的短指令删掉了" test -e "$P/1-pr-2.md.argv.md"
+    want="$(lib_run "$agent" agent_command_new "$SANDBOX/lib-$agent/wt" "issue1" "$(lp "$agent" "$P/1-pr-2.md")")"
+    chk "$agent：命令和 driver 直接拼的一样（claude 读带标记的副本）" "$cmd" "$want"
+    no_ "$agent：上次超长留下的短指令删掉了" test -e "$(lp "$agent" "$P/1-pr-2.md").argv.md"
     chk "$agent：回捞会话拿原提示词比对" \
         "$(lib_run "$agent" agent_prompt_argv_used "$P/1-pr-2.md")" "$P/1-pr-2.md"
     rm -f "$SANDBOX/out/last"
     env PATH="$SANDBOX/bin:$PATH" FAKE_OUT="$SANDBOX/out" bash -c "$cmd"
-    chk "$agent：程序收到的是原提示词" "$(cat "$SANDBOX/out/last")" "$(printf '小提示词\n第二行')"
+    chk "$agent：程序收到的是原提示词（去掉启动标记）" "$(untag < "$SANDBOX/out/last")" "$(printf '小提示词\n第二行')"
+    if [ "$agent" = claude ]; then
+        yes_ "claude：提示词带上了本次启动的标记" grep -qE '^<!-- coding-agent-launch: [0-9a-f-]{36} -->$' "$SANDBOX/out/last"
+    else
+        no_ "codex：拼命令时不另附启动标记" grep -q 'coding-agent-launch' "$SANDBOX/out/last"
+    fi
 done
 
 echo "── 2b. 上限正好等于提示词大小：照旧整份传 ──"
+# 比的是这次启动用的副本（原文 + 启动标记行，标记行固定 68 字节：换行 + 「<!-- coding-agent-launch: 」+ 36 位 id + 「 -->」+ 换行）
 P="$(LIBP claude)"
-head -c 1000 /dev/zero | tr '\0' 'a' > "$P/5-new.md"
+head -c 932 /dev/zero | tr '\0' 'a' > "$P/5-new.md"
 cmd="$(CAVIL_PROMPT_ARGV_MAX=1000 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
-yes_ "1000 字节、上限 1000：读原文件" grep -qF "\"\$(cat $P/5-new.md)\"" <<<"$cmd"
+chk "附上标记的副本正好 1000 字节" "$(wc -c < "$P/5-new.md.launch.md" | tr -d ' ')" 1000
+yes_ "1000 字节、上限 1000：整份传（读副本本身）" grep -qF "\"\$(cat $P/5-new.md.launch.md)\"" <<<"$cmd"
 cmd="$(CAVIL_PROMPT_ARGV_MAX=999 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
-yes_ "1000 字节、上限 999：读短指令" grep -qF "$P/5-new.md.argv.md" <<<"$cmd"
+yes_ "1000 字节、上限 999：读短指令" grep -qF "$P/5-new.md.launch.md.argv.md" <<<"$cmd"
 cmd="$(CAVIL_PROMPT_ARGV_MAX=999999 lib_run claude agent_launch_command "$SANDBOX/lib-claude/wt" "issue5" "$P/5-new.md")"
-yes_ "测试上限超出范围按真机上限算（1000 字节照旧整份传）" grep -qF "\"\$(cat $P/5-new.md)\"" <<<"$cmd"
+yes_ "测试上限超出范围按真机上限算（1000 字节照旧整份传）" grep -qF "\"\$(cat $P/5-new.md.launch.md)\"" <<<"$cmd"
 
 echo "── 3. 写不出转交文件：失败，不留半截文件 ──"
 P="$(LIBP claude)"; rm -f "$P"/*
@@ -249,9 +269,10 @@ setup ok
 run_pr CAVIL_PROMPT_ARGV_MAX=2000; rc=$?
 chk "派工成功" "$rc" 0
 yes_ "起了会话" grep -q '^new-session' "$W/log/tmux.log"
-yes_ "会话命令读的是短指令" grep -qF "$W/state/prompts/$N-pr-$PR.md.argv.md" "$W/log/tmux.log"
-yes_ "完整副本在状态目录里、和提示词相同" \
-    bash -c 'cmp -s "$1"/'"$N-pr-$PR"'.md.full-*.md "$1/'"$N-pr-$PR"'.md"' _ "$W/state/prompts"
+# claude 这次启动用的是带启动标记的副本 <提示词>.launch.md（GitHub#744），转交文件从它派生
+yes_ "会话命令读的是短指令" grep -qF "$W/state/prompts/$N-pr-$PR.md.launch.md.argv.md" "$W/log/tmux.log"
+yes_ "完整副本在状态目录里、和这次启动用的提示词相同" \
+    bash -c 'cmp -s "$1"/'"$N-pr-$PR"'.md.launch.md.full-*.md "$1/'"$N-pr-$PR"'.md.launch.md"' _ "$W/state/prompts"
 yes_ "翻到了 doing/agent" grep -q 'doing/agent' "$W/log/gh.log"
 no_ "没有转人工" grep -q 'pending/human' "$W/log/gh.log"
 yes_ "poll.log 记下了改走文件" grep -q '超过单个命令行参数上限 2000：改为让 worker 从' "$W/state/poll.log"
@@ -260,8 +281,8 @@ echo "── 4b. 派工脚本：没超上限 → 照旧整份传 ──"
 setup small
 run_pr; rc=$?
 chk "派工成功" "$rc" 0
-yes_ "会话命令读的是原提示词" grep -qF "\$(cat $W/state/prompts/$N-pr-$PR.md)" "$W/log/tmux.log"
-chk "提示词目录只有原提示词" "$(ls "$W/state/prompts" | tr '\n' ' ')" "$N-pr-$PR.md "
+yes_ "会话命令整份读这次启动用的提示词" grep -qF "\$(cat $W/state/prompts/$N-pr-$PR.md.launch.md)" "$W/log/tmux.log"
+chk "提示词目录只有原提示词和这次启动用的副本（没有转交文件）" "$(ls "$W/state/prompts" | tr '\n' ' ')" "$N-pr-$PR.md $N-pr-$PR.md.launch.md "
 
 echo "── 4c. 派工脚本：转交文件写不出 → 不起会话，评论说明，转 pending/human ──"
 setup refuse
