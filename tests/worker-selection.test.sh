@@ -50,6 +50,10 @@ echo "      --remote <ADDR>"
 FAKE
 chmod +x "$TMP/bin/codex"
 export PATH="$TMP/bin:$PATH"
+# _lib.sh 把 $HOME/.local/bin 等放到 PATH 最前面：本机在那里装了真 codex 时，它会挡在上面这个假的
+# 前面，拼出的命令就取决于本机版本（GitHub#753 复审实测：多出 --disable shell_snapshot）。HOME 指向空目录。
+export HOME="$TMP/home"
+mkdir -p "$HOME"
 
 export CODING_AGENT_CONFIG="$TMP/coding-agent.config"
 exec 8>&2
