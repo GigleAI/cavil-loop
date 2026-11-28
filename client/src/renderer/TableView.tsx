@@ -412,7 +412,12 @@ function CellLists({ lists, close }: { lists: CellList[]; close: () => void }) {
             onKeyDown={(e) => {
               if ((e.key.length === 1 && !e.metaKey && !e.ctrlKey) || LIST_KEYS_KEPT.has(e.key)) e.preventDefault();
             }}
+            onMouseDown={(e) => {
+              // only the main button picks: another (right / middle) must not move the selection, which would be a change
+              if (e.button !== 0) e.preventDefault();
+            }}
             onMouseUp={(e) => {
+              if (e.button !== 0) return;
               // a click on an option picks it, also the one already marked (no change event then): the marked one
               // after ↑↓ is written, the item's own value just puts the list away (commit writes only a different value)
               const o = e.target as HTMLElement;

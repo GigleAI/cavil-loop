@@ -294,6 +294,21 @@ test('GitHub#747: the iteration list — arrows only move, Enter writes once, a 
   await page.waitForTimeout(300);
   expect(writes().slice(w16)).toEqual([]);
 
+  // PR #749 review round 2, problem 4: a right click on another option writes nothing; a left click on it then writes once
+  await cell(page, 349, 'iteration').click();
+  await expect(list).toBeVisible();
+  const own = await list.inputValue();
+  const another = await list.evaluate((s: HTMLSelectElement, v) => [...s.options].find((o) => o.value !== v && o.value !== '')!.value, own);
+  const w17 = writes().length;
+  await list.locator(`option[value="${another}"]`).click({ button: 'right' });
+  await list.locator(`option[value="${another}"]`).click({ button: 'middle' });
+  await page.waitForTimeout(500);
+  expect(writes().slice(w17)).toEqual([]);
+  expect(await list.inputValue()).toBe(own);
+  await list.locator(`option[value="${another}"]`).click();
+  await expect(page.locator('[data-cell-editor]')).toHaveCount(0);
+  await expect.poll(() => writes().slice(w17)).toEqual(['CavilSetIteration']);
+
   // Esc puts it away without a write
   await cell(page, 349, 'iteration').click();
   await expect(list).toBeVisible();
